@@ -4,13 +4,15 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="app-base-path" content="__APP_BASE_PATH__">
+  <meta name="platform-login-url" content="__PLATFORM_LOGIN_URL__">
+  <meta name="platform-api-base-path" content="__PLATFORM_API_BROWSER_BASE_PATH__">
   <meta name="description" content="桉侨集团财务报表与经营分析安全工作台">
   <meta property="og:type" content="website">
   <meta property="og:title" content="桉侨集团财务报表看板">
-  <meta property="og:description" content="通过企业微信身份认证，按接收人的数据权限安全查看。">
+  <meta property="og:description" content="通过桉侨小Q企微登录，按接收人的数据权限安全查看。">
   <meta property="og:url" content="__SHARE_PAGE_URL__">
   <meta property="og:image" content="__SHARE_IMAGE_URL__">
-  <title>桉侨集团财务报表看板 · 企业微信应用</title>
+  <title>桉侨集团财务报表看板 · 小Q统一登录</title>
   <link rel="stylesheet" href="__APP_BASE_PATH__/styles.css">
   <style>
     .statement-table{min-width:820px}.statement-table th,.statement-table td{height:44px}.statement-table th{background:#eaf1f9;color:#364d68;text-align:right}.statement-table th:first-child{text-align:left}.statement-group td{background:#f5f8fc;color:#49617d;font-weight:750;border-top:1px solid #dbe5f0;border-bottom:1px solid #dbe5f0}.statement-row.clickable{cursor:pointer}.statement-row.clickable:hover td{background:#eef6ff}.statement-name{font-weight:560;color:#2d425d;padding-left:22px!important}.statement-total td{font-weight:750;background:#fffdf0}.statement-total.clickable:hover td{background:#fff7d6}.drilldown-row.clickable{cursor:pointer}.drilldown-row.clickable:hover .bar-label,.drilldown-row.clickable:hover .bar-value{color:#1f68d2}.standard-hint{margin-top:12px;color:#8291a4;font-size:12px}.raw-table{table-layout:fixed;min-width:0;width:100%;font-size:11px}.raw-table th,.raw-table td{padding:5px 6px;white-space:normal;overflow-wrap:anywhere;line-height:1.25}.raw-table th:first-child,.raw-table td:first-child{width:42px}.raw-table th{font-size:11px}.journal-detail-table{width:100%;min-width:0;table-layout:fixed}.journal-detail-table .journal-voucher{width:13%}.journal-detail-table .journal-account{width:25%}.journal-detail-table .journal-summary{width:39%}.journal-detail-table .journal-direction{width:12%;white-space:nowrap;text-align:center}.journal-detail-table .journal-amount{width:11%}.journal-detail-table.no-direction .journal-summary{width:47%}.journal-detail-table.no-direction .journal-amount{width:15%}.journal-detail-table th,.journal-detail-table td{white-space:normal;overflow-wrap:anywhere;word-break:break-word;vertical-align:top}.journal-detail-table .summary-cell{text-align:left;line-height:1.45}.journal-detail-table .direction-cell{text-align:center;font-weight:700;color:#49617d;white-space:nowrap}.journal-detail-table .amount-cell{white-space:nowrap}.setting-divider{width:1px;height:28px;background:#e0e8f2;margin:0 8px}.copy-permission-form{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap}.copy-permission-form label{display:grid;gap:6px;color:#6d7d91;font-size:13px;min-width:240px}.copy-permission-form select{border:1px solid #ccd9e8;background:#fff;border-radius:9px;padding:9px 28px 9px 10px;color:#23344b;font:inherit}.copy-arrow{color:#7c8da3;font-size:20px;padding-bottom:8px}@media(max-width:900px){.copy-permission-form label{min-width:100%}.copy-arrow{display:none}}.journal-layout{width:100%;min-width:0;table-layout:fixed}.journal-layout .journal-date{width:11%}.journal-layout .journal-voucher{width:9%}.journal-layout .journal-summary{width:30%}.journal-layout .journal-code{width:12%}.journal-layout .journal-account{width:22%}.journal-layout .journal-amount{width:8%}.journal-layout td{white-space:normal;overflow-wrap:anywhere;word-break:break-word;vertical-align:top}.journal-summary-text,.journal-account-text{line-height:1.4;text-align:left}.original-upload,#go-upload{display:none!important}.folder-drop{border:1px dashed #9eb7d4;border-radius:12px;background:#f8fbff;min-height:150px;padding:22px;text-align:center;display:grid;place-items:center;gap:5px;color:#566f8d}.folder-drop.dragging{border-color:#2676e9;background:#eaf4ff}.folder-drop strong{font-size:16px;color:#213a5a}.folder-drop span{font-size:12px}.folder-icon{width:34px;height:34px;border-radius:10px;background:#e7f1ff;color:#2676e9;display:grid;place-items:center;font-size:22px}.folder-file-list{width:100%;max-height:55px;overflow:auto;text-align:left;font-size:11px;color:#7a8ca1}.upload-slots{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;margin-top:14px}.upload-slot{border:1px solid #e0e8f2;border-radius:10px;padding:12px;background:#fff;display:grid;gap:8px}.slot-title{font-weight:700;color:#2f4b6b}.slot-file{font-size:11px;color:#8796a8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.slot-input{display:none}.upload-submit-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:14px}.upload-submit-row label{font-size:13px;color:#6c7d92}.upload-submit-row input{padding:9px;border:1px solid #ccd9e8;border-radius:9px}.upload-submit-row input#upload-notes{flex:1;min-width:190px}@media(max-width:900px){.upload-slots{grid-template-columns:repeat(2,minmax(0,1fr))}}
@@ -65,6 +67,10 @@
         <button id="share-entry" class="share-entry" type="button" aria-label="分享应用" title="分享应用">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12.6 4.4 18.2 10l-5.6 5.6M18 10H9.3a4.8 4.8 0 0 0-4.8 4.8v3"/></svg>
         </button>
+        <a class="portal-return" href="__PORTAL_HOME_URL__" aria-label="返回桉侨企业中台主页面">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m10 6-6 6 6 6M4 12h11a5 5 0 0 0 5-5V5"/></svg>
+          <span>返回中台</span>
+        </a>
       </div>
     </header>
     <div id="notice" class="notice hidden"></div>
@@ -72,7 +78,7 @@
       <aside class="sidebar">
         <div id="nav-container"></div>
         <div class="sidebar-footer">
-          <div>v1.1.5 · 财务数据</div>
+          <div>v1.1.12 · 财务数据</div>
           <a class="icp-link" href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">粤ICP备2022138475号-5</a>
         </div>
       </aside>
@@ -88,6 +94,7 @@
         <div id="business-analysis-page" class="page hidden"></div>
         <div id="expense-analysis-page" class="page hidden"></div>
         <div id="group-profit-analysis-page" class="page hidden"></div>
+        <div id="consultant-roi-analysis-page" class="page hidden"></div>
         <div id="permissions-page" class="page hidden"></div>
       </section>
     </main>
@@ -101,7 +108,7 @@
       <div class="share-dialog-heading"><span>企微分享预览</span><strong id="share-modal-title">发送应用卡片</strong></div>
       <article class="share-card-preview">
         <img src="__APP_BASE_PATH__/anqiao-logo.png" alt="桉侨移民">
-        <div><strong id="share-card-title">桉侨集团财务报表看板</strong><p id="share-card-description">通过企业微信安全查看财务报表与经营分析</p><small>qiandianxiaoq.com</small></div>
+        <div><strong id="share-card-title">桉侨集团财务报表看板</strong><p id="share-card-description">通过企业微信安全查看财务报表与经营分析</p><small>anqiaoyiminxq.com</small></div>
       </article>
       <p class="share-security-note"><span class="share-security-check" aria-hidden="true">✓</span><span id="share-environment-note">链接不携带登录凭证；接收人打开后按自己的企微身份和数据权限显示。</span></p>
       <div class="share-actions"><button id="share-copy" class="button" type="button">复制链接</button><button id="share-send" class="button primary" type="button">发送到企微聊天</button></div>
@@ -110,4 +117,3 @@
   <script src="__APP_BASE_PATH__/app.js" type="module"></script>
 </body>
 </html>
-

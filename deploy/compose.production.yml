@@ -1,0 +1,35 @@
+name: wecom-finance-report-board
+
+services:
+  finance-report-board:
+    build:
+      context: ${FINANCE_SOURCE_DIR:-/data/repos/wecom-finance-report-board}
+      dockerfile: Dockerfile
+    image: aqllm/finance-report-board:1.1.12
+    container_name: wecom-finance-report-board
+    restart: unless-stopped
+    env_file:
+      - /data/secrets/wecom-finance-report-board/report-board.env
+    environment:
+      HOST: 0.0.0.0
+      PORT: 3180
+      DB_FILE: /var/lib/wecom-finance/report-board.db
+      UPLOADS_DIR: /var/lib/wecom-finance/uploads
+    ports:
+      - 127.0.0.1:3180:3180
+    volumes:
+      - /data/data/wecom-finance-report-board:/var/lib/wecom-finance
+    networks:
+      - finance-report-board
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  finance-report-board:
+    name: wecom-finance-report-board
+    internal: false

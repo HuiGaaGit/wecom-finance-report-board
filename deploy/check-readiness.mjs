@@ -17,13 +17,14 @@ if (envPath) {
   }
 }
 
-const required = ['NODE_ENV', 'AUTH_MODE', 'PORT', 'APP_BASE_PATH', 'PUBLIC_BASE_URL', 'SESSION_SECRET', 'WECOM_CORP_ID', 'WECOM_AGENT_ID', 'WECOM_SECRET', 'WECOM_BOOTSTRAP_ADMIN_USERID', 'WECOM_DIRECTORY_SYNC_ENABLED', 'DB_FILE', 'UPLOADS_DIR'];
+const required = ['NODE_ENV', 'AUTH_MODE', 'PORT', 'APP_BASE_PATH', 'PUBLIC_BASE_URL', 'SESSION_SECRET', 'PLATFORM_API_BASE_URL', 'PLATFORM_LOGIN_URL', 'PLATFORM_API_BROWSER_BASE_PATH', 'DB_FILE', 'UPLOADS_DIR'];
 const errors = required.filter(key => !values[key]).map(key => `缺少 ${key}`);
 if (values.NODE_ENV !== 'production') errors.push('NODE_ENV 必须为 production');
-if (values.AUTH_MODE !== 'wecom') errors.push('AUTH_MODE 必须为 wecom');
-if (values.WECOM_DIRECTORY_SYNC_ENABLED !== '1') errors.push('WECOM_DIRECTORY_SYNC_ENABLED 必须为 1，权限页才能同步应用可见通讯录');
+if (values.AUTH_MODE !== 'platform') errors.push('AUTH_MODE 必须为 platform');
 if (!/^https:\/\/[^/]+/i.test(values.PUBLIC_BASE_URL || '')) errors.push('PUBLIC_BASE_URL 必须是 HTTPS 地址');
+if (!/^https:\/\/[^/]+/i.test(values.PLATFORM_API_BASE_URL || '')) errors.push('PLATFORM_API_BASE_URL 必须是 HTTPS 地址');
 if (!/^\/[A-Za-z0-9._~-]+(?:\/[A-Za-z0-9._~-]+)*$/.test(values.APP_BASE_PATH || '')) errors.push('APP_BASE_PATH 必须是安全的绝对路径前缀');
+for (const key of ['PLATFORM_LOGIN_URL', 'PLATFORM_API_BROWSER_BASE_PATH']) if (!/^\/[A-Za-z0-9._~/-]*$/.test(values[key] || '')) errors.push(`${key} 必须是安全的站内绝对路径`);
 try {
   if (new URL(values.PUBLIC_BASE_URL || '').pathname.replace(/\/+$/, '') !== values.APP_BASE_PATH) errors.push('PUBLIC_BASE_URL 路径必须与 APP_BASE_PATH 一致');
 } catch {}

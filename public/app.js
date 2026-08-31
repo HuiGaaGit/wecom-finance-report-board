@@ -3,21 +3,83 @@ const financialBriefModuleKey = 'financial_brief';
 const groupStatementReportTypes = new Set(['consolidated_income_statement', revenueProfitReportType]);
 const reportPageTypes = ['balance_sheet', 'income_statement', 'consolidated_income_statement', revenueProfitReportType, 'cash_flow', 'trial_balance', 'journal'];
 const revenueStatisticsReportType = 'revenue_statistics';
+const payrollStatementReportType = 'payroll_statement';
+const consultantRoiModuleKey = 'consultant_roi_analysis';
 const revenueDimensions = [{ key: 'group', name: '集团维度' }, { key: 'direct', name: '单独直客维度' }, { key: 'channel', name: '单独渠道维度' }];
 const state = { employeeKey: 'admin', bootstrap: null, page: 'home', reportType: 'balance_sheet', company: 'gz', period: '2026-06', periodExplicit: false, detailPeriod: '', detailAccountCodes: [], version: null, summary: null, raw: null, consolidatedEntityReportType: '', consolidatedEntitySheet: '', consolidatedExpanded: false, consolidatedScope: '', revenueDimension: 'group', revenueTable: 'B1', revenueExpanded: false };
+const consultantRoiView = {
+  inputs: { baseSalary: true, commission: true, journalExpense: true },
+  filters: {},
+  sortKey: 'output',
+  sortDirection: 'desc'
+};
 let reportRequestRevision = 0;
 const financialBriefAutoRefreshMs = 60_000;
 let financialBriefRefreshTimer = null;
 let financialBriefRefreshInFlight = false;
 let financialBriefRequestRevision = 0;
 const appBasePath = document.querySelector('meta[name="app-base-path"]')?.content || '';
+const platformLoginUrl = document.querySelector('meta[name="platform-login-url"]')?.content || '/platform/login';
+const platformApiBasePath = document.querySelector('meta[name="platform-api-base-path"]')?.content || '/api';
+const platformAuthStorageKey = 'aqllm_tob_auth';
+const platformReturnStorageKey = 'aqllm:safe-return-to';
 const appUrl = url => `${appBasePath}${String(url).startsWith('/') ? url : `/${url}`}`;
 const $ = selector => document.querySelector(selector);
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 const money = value => `${Number(value || 0).toLocaleString('zh-CN', { maximumFractionDigits: 0 })}`;
-const reportNames = { balance_sheet: '资产负债表', income_statement: '利润表', consolidated_income_statement: '桉侨集团合并利润表', [revenueProfitReportType]: '（营收利润口径）合并利润表', [revenueStatisticsReportType]: '营收统计表', cash_flow: '现金流量表', trial_balance: '科目余额表', journal: '序时账' };
+const reportNames = { balance_sheet: '资产负债表', income_statement: '利润表', consolidated_income_statement: '桉侨集团合并利润表', [revenueProfitReportType]: '（营收利润口径）合并利润表', [revenueStatisticsReportType]: '营收统计表', [payrollStatementReportType]: '每月工资表', cash_flow: '现金流量表', trial_balance: '科目余额表', journal: '序时账' };
 const showNotice = (message, error = false) => { const box = $('#notice'); box.textContent = message; box.classList.toggle('error', error); box.classList.remove('hidden'); window.clearTimeout(showNotice.timer); showNotice.timer = window.setTimeout(() => box.classList.add('hidden'), 3500); };
-const api = async (url, options = {}) => { const headers = { ...(options.headers || {}) }; if (state.bootstrap?.authMode !== 'wecom') headers['x-demo-employee'] = state.employeeKey; const response = await fetch(appUrl(url), { ...options, headers }); const payload = await response.json().catch(() => ({})); if (!response.ok) { if (response.status === 401 && payload.loginUrl) window.location.assign(payload.loginUrl); const error = new Error(payload.error || `请求失败（${response.status}）`); Object.assign(error, payload, { status: response.status }); throw error; } return payload; };
+const platformReturnPath = () => appBasePath.startsWith('/platform/') ? `${appBasePath.slice('/platform'.length)}/`.replace(/\/+/g, '/') : `${appBasePath || '/'}/`.replace(/\/+/g, '/');
+const redirectToPlatformLogin = () => {
+  try { sessionStorage.setItem(platformReturnStorageKey, platformReturnPath()); } catch {}
+  window.location.assign(platformLoginUrl);
+};
+const readPlatformAuth = () => {
+  try { return JSON.parse(localStorage.getItem(platformAuthStorageKey) || 'null'); }
+  catch { return null; }
+};
+const refreshPlatformAccessToken = async auth => {
+  if (!auth?.refreshToken) throw new Error('缺少小Q刷新凭证');
+  const response = await fetch(`${platformApiBasePath}/refresh-token`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ refreshToken: auth.refreshToken }),
+  });
+  const payload = await response.json().catch(() => ({})); const data = payload?.data || payload;
+  if (!response.ok || !data?.accessToken || !data?.refreshToken || !data?.expires) throw new Error('小Q登录状态已失效');
+  const next = { ...auth, accessToken: data.accessToken, refreshToken: data.refreshToken, expires: data.expires };
+  localStorage.setItem(platformAuthStorageKey, JSON.stringify(next)); return next.accessToken;
+};
+let platformSessionPromise = null;
+const ensurePlatformSession = () => {
+  if (platformSessionPromise) return platformSessionPromise;
+  platformSessionPromise = (async () => {
+    const auth = readPlatformAuth();
+    if (!auth?.accessToken) { redirectToPlatformLogin(); throw new Error('正在前往小Q登录'); }
+    const exchange = token => fetch(appUrl('/api/auth/platform-session'), { method: 'POST', headers: { authorization: `Bearer ${token}` } });
+    let response = await exchange(auth.accessToken);
+    if (response.status === 401 && auth.refreshToken) {
+      try { response = await exchange(await refreshPlatformAccessToken(auth)); }
+      catch { localStorage.removeItem(platformAuthStorageKey); redirectToPlatformLogin(); throw new Error('小Q登录状态已失效，正在重新登录'); }
+    }
+    const payload = await response.json().catch(() => ({}));
+    if (response.status === 401) { localStorage.removeItem(platformAuthStorageKey); redirectToPlatformLogin(); throw new Error(payload.error || '小Q登录状态已失效'); }
+    if (!response.ok) throw Object.assign(new Error(payload.error || `登录校验失败（${response.status}）`), { status: response.status });
+    return payload;
+  })().finally(() => { platformSessionPromise = null; });
+  return platformSessionPromise;
+};
+const api = async (url, options = {}, authRetried = false) => {
+  const headers = { ...(options.headers || {}) };
+  if (state.bootstrap?.authMode === 'demo') headers['x-demo-employee'] = state.employeeKey;
+  if (state.bootstrap?.authMode === 'platform' && url === '/api/admin/directory-sync') {
+    const accessToken = readPlatformAuth()?.accessToken;
+    if (accessToken) headers.authorization = `Bearer ${accessToken}`;
+  }
+  const response = await fetch(appUrl(url), { ...options, headers });
+  const payload = await response.json().catch(() => ({}));
+  if (response.status === 401 && payload.loginUrl && !authRetried) { await ensurePlatformSession(); return api(url, options, true); }
+  if (!response.ok) { const error = new Error(payload.error || `请求失败（${response.status}）`); Object.assign(error, payload, { status: response.status }); throw error; }
+  return payload;
+};
 const setActiveNav = () => {
   document.querySelectorAll('.nav-item').forEach(item => {
     const entitySheet = item.dataset.entitySheet || '';
@@ -46,6 +108,7 @@ const pageHostFor = page => {
   if (page === 'main_business_analysis') return $('#business-analysis-page');
   if (page === 'expense_analysis') return $('#expense-analysis-page');
   if (page === 'group_profit_analysis') return $('#group-profit-analysis-page');
+  if (page === consultantRoiModuleKey) return $('#consultant-roi-analysis-page');
   return null;
 };
 const syncPageVisibility = () => {
@@ -96,7 +159,6 @@ const revealActiveNav = nav => {
 };
 const currentCompanyName = () => state.bootstrap?.companies.find(item => item.key === state.company)?.name || state.company;
 const sharePageNames = { home: '首页', [financialBriefModuleKey]: '财务数据简报', cash_analysis: '资产净额分析', main_business_analysis: '主营业务分析', expense_analysis: '费用分析', group_profit_analysis: '集团合并利润趋势图', uploads: '上传报表', database_admin: '数据库管理', permissions: '权限管理', journal_detail: '序时账明细', ...reportNames };
-let wecomShareReadyPromise = null;
 const shareCardData = () => {
   const moduleName = sharePageNames[state.page] || '财务报表看板';
   const scope = state.bootstrap && state.page !== 'home' ? `${currentCompanyName()} · ${state.period}` : '企业微信安全访问';
@@ -107,35 +169,6 @@ const shareCardData = () => {
     imgUrl: new URL(appUrl('/anqiao-logo.png'), window.location.origin).href
   };
 };
-const loadWecomSdk = () => new Promise((resolve, reject) => {
-  if (window.wx?.config) return resolve(window.wx);
-  const existing = document.querySelector('script[data-wecom-js-sdk]');
-  if (existing) { existing.addEventListener('load', () => resolve(window.wx), { once: true }); existing.addEventListener('error', () => reject(new Error('企微分享组件加载失败')), { once: true }); return; }
-  const script = document.createElement('script'); script.src = 'https://res.wx.qq.com/open/js/jweixin-1.2.0.js'; script.dataset.wecomJsSdk = 'true'; script.async = true;
-  script.onload = () => window.wx?.config ? resolve(window.wx) : reject(new Error('企微分享组件不可用'));
-  script.onerror = () => reject(new Error('企微分享组件加载失败'));
-  document.head.appendChild(script);
-});
-const ensureWecomShareReady = () => {
-  if (wecomShareReadyPromise) return wecomShareReadyPromise;
-  wecomShareReadyPromise = (async () => {
-    const signedUrl = window.location.href.split('#')[0];
-    const config = await api(`/api/wecom/js-sdk-config?url=${encodeURIComponent(signedUrl)}`);
-    if (!config.enabled) throw new Error('当前不是企微应用环境');
-    const wx = await loadWecomSdk();
-    await new Promise((resolve, reject) => {
-      let settled = false; const fail = value => { if (settled) return; settled = true; reject(new Error(value?.errMsg || value?.err_msg || '企微分享初始化失败')); };
-      wx.error(fail);
-      wx.ready(() => {
-        if (!wx.agentConfig) return fail({ errMsg: '当前企微版本不支持应用分享' });
-        wx.agentConfig({ corpid: config.corpId, agentid: config.agentId, timestamp: config.timestamp, nonceStr: config.nonceStr, signature: config.agentSignature, jsApiList: ['shareAppMessage'], success: () => { if (!settled) { settled = true; resolve(); } }, fail });
-      });
-      wx.config({ beta: true, debug: false, appId: config.corpId, timestamp: config.timestamp, nonceStr: config.nonceStr, signature: config.signature, jsApiList: ['checkJsApi'] });
-    });
-    return wx;
-  })().catch(error => { wecomShareReadyPromise = null; throw error; });
-  return wecomShareReadyPromise;
-};
 const copyShareLink = async () => {
   const { link } = shareCardData();
   try { await navigator.clipboard.writeText(link); }
@@ -143,25 +176,19 @@ const copyShareLink = async () => {
   showNotice('分享链接已复制，可粘贴到企微聊天');
 };
 const sendShareCard = async () => {
-  const data = shareCardData();
-  if (state.bootstrap?.authMode === 'wecom') {
-    const wx = await ensureWecomShareReady();
-    await new Promise((resolve, reject) => wx.invoke('shareAppMessage', data, result => String(result?.err_msg || '').endsWith(':ok') ? resolve(result) : reject(new Error(result?.err_msg?.includes('cancel') ? '已取消分享' : (result?.err_msg || '企微分享失败')))));
-    $('#share-modal').classList.add('hidden'); showNotice('分享卡片已发送'); return;
-  }
   await copyShareLink(); $('#share-modal').classList.add('hidden');
 };
 function bindShareCard() {
   const modal = $('#share-modal'); const open = () => {
-    const data = shareCardData(); const nativeWecom = state.bootstrap?.authMode === 'wecom'; const copyButton = $('#share-copy'); const actions = modal.querySelector('.share-actions');
+    const data = shareCardData(); const copyButton = $('#share-copy'); const actions = modal.querySelector('.share-actions');
     $('#share-card-title').textContent = data.title; $('#share-card-description').textContent = data.desc;
-    $('#share-environment-note').textContent = nativeWecom ? '链接不携带登录凭证；接收人打开后按自己的企微身份和数据权限显示。' : '当前是普通浏览器预览，无法调起企微会话；复制链接后请粘贴到企微聊天。';
-    $('#share-send').textContent = nativeWecom ? '发送到企微聊天' : '复制链接后到企微发送'; copyButton.classList.toggle('hidden', !nativeWecom); actions.classList.toggle('single-action', !nativeWecom);
+    $('#share-environment-note').textContent = '链接不携带登录凭证；接收人打开后需通过小Q企微登录，并按自己的财务数据权限显示。';
+    $('#share-send').textContent = '复制链接后到企微发送'; copyButton.classList.add('hidden'); actions.classList.add('single-action');
     modal.classList.remove('hidden'); $('#share-send').focus();
   };
   const close = () => { modal.classList.add('hidden'); $('#share-entry').focus(); };
   $('#share-entry').addEventListener('click', open); $('#share-close').addEventListener('click', close); $('#share-copy').addEventListener('click', copyShareLink);
-  $('#share-send').addEventListener('click', async event => { const button = event.currentTarget; const nativeWecom = state.bootstrap?.authMode === 'wecom'; button.disabled = true; button.textContent = nativeWecom ? '正在打开企微…' : '正在复制…'; try { await sendShareCard(); } catch (error) { if (error.message !== '已取消分享') { showNotice(`${error.message}，已为你复制链接`, true); await copyShareLink(); } } finally { button.disabled = false; button.textContent = nativeWecom ? '发送到企微聊天' : '复制链接后到企微发送'; } });
+  $('#share-send').addEventListener('click', async event => { const button = event.currentTarget; button.disabled = true; button.textContent = '正在复制…'; try { await sendShareCard(); } catch (error) { showNotice(error.message, true); } finally { button.disabled = false; button.textContent = '复制链接后到企微发送'; } });
   modal.addEventListener('click', event => { if (event.target === modal) close(); });
   document.addEventListener('keydown', event => { if (event.key === 'Escape' && !modal.classList.contains('hidden')) close(); });
 }
@@ -266,6 +293,10 @@ const saveCollapsedAnalysisBlocks = (pageKey, collapsed) => {
 
 function applyAnalysisBlockLayout(container, pageKey) {
   if (!container) return;
+  const blockAccess = state.bootstrap?.analysisBlockAccess?.[pageKey] || {};
+  [...container.querySelectorAll(':scope > [data-analysis-block]')].forEach(block => {
+    if (blockAccess[block.dataset.analysisBlock] === false) block.remove();
+  });
   const blocks = [...container.querySelectorAll(':scope > [data-analysis-block]')];
   const byKey = new Map(blocks.map(block => [block.dataset.analysisBlock, block]));
   const saved = state.bootstrap?.analysisBlockOrder?.[pageKey] || [];
@@ -343,12 +374,11 @@ async function loadBootstrap() {
   const employeeDisplay = $('#employee-display');
   employeeSelect.innerHTML = state.bootstrap.employees.map(employee => `<option value="${escapeHtml(employee.key)}">${escapeHtml(employee.name)} · ${escapeHtml(employee.department)}</option>`).join('');
   employeeSelect.value = state.employeeKey;
-  employeeSelect.classList.toggle('hidden', bootstrap.authMode === 'wecom');
-  employeeDisplay.classList.toggle('hidden', bootstrap.authMode !== 'wecom');
+  employeeSelect.classList.toggle('hidden', bootstrap.authMode !== 'demo');
+  employeeDisplay.classList.toggle('hidden', bootstrap.authMode === 'demo');
   employeeDisplay.textContent = `${bootstrap.employee.name} · ${bootstrap.employee.department}`;
-  employeeSelect.onchange = bootstrap.authMode === 'wecom' ? null : async event => { state.employeeKey = event.target.value; state.periodExplicit = false; state.version = null; await refresh(); };
+  employeeSelect.onchange = bootstrap.authMode !== 'demo' ? null : async event => { state.employeeKey = event.target.value; state.periodExplicit = false; state.version = null; await refresh(); };
   renderNav();
-  if (bootstrap.authMode === 'wecom') ensureWecomShareReady().catch(() => {});
   const visible = new Set((state.bootstrap.modules || []).map(item => item.key));
   if (state.page !== 'journal_detail' && !visible.has(state.page)) state.page = 'home';
 }
@@ -510,7 +540,7 @@ async function renderFinancialBrief({ trigger = 'initial' } = {}) {
   clearFinancialBriefAutoRefresh();
   const scope = { company: state.company, period: state.period }; const revision = ++financialBriefRequestRevision;
   const isCurrent = () => revision === financialBriefRequestRevision && state.page === financialBriefModuleKey && state.company === scope.company && state.period === scope.period;
-  const existingSheet = page.querySelector('.financial-brief-sheet'); const advertisingWasOpen = page.querySelector('.financial-brief-advertising')?.open === true; const existingButton = $('#financial-brief-refresh'); const existingStatus = $('#financial-brief-refresh-status');
+  const existingSheet = page.querySelector('.financial-brief-sheet'); const existingButton = $('#financial-brief-refresh'); const existingStatus = $('#financial-brief-refresh-status');
   financialBriefRefreshInFlight = true; page.setAttribute('aria-busy', 'true');
   if (existingButton) { existingButton.disabled = true; existingButton.classList.add('refreshing'); existingButton.innerHTML = '<span aria-hidden="true">↻</span>刷新中…'; }
   if (existingStatus) existingStatus.textContent = trigger === 'auto' ? '正在自动检查最新已发布数据…' : '正在读取最新已发布数据…';
@@ -520,12 +550,9 @@ async function renderFinancialBrief({ trigger = 'initial' } = {}) {
     const value = amount => amount === null || amount === undefined ? '—' : Number(amount).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     const [year, month] = String(brief.period || scope.period).split('-'); const m = brief.metrics || {};
     const missing = (brief.missing || []).length ? `<div class="financial-brief-warning"><strong>部分来源尚未齐全</strong><span>${escapeHtml(brief.missing.join('；'))}<small>新报表发布后会自动补刷新，也可点击“刷新数据”立即检查。</small></span></div>` : '';
-    const advertisingSources = brief.advertisingSources || []; const advertisingAvailable = advertisingSources.filter(source => source.available).length;
-    const advertisingRows = advertisingSources.map(source => `<li class="${source.available ? 'available' : 'missing'}"><div><strong>${escapeHtml(source.companyName)}</strong><span>${source.available ? `${escapeHtml(source.report)} · ${escapeHtml(source.basis || '本期发生额')}${source.sourceSheet ? ` · ${escapeHtml(source.sourceSheet)}` : ''}` : '待发布科目余额表或序时账'}</span><small>${source.available ? escapeHtml(source.fileName) : '当前期间未找到可用广宣费来源'}</small></div><div class="financial-brief-advertising-amount"><b>${source.available ? `净发生额 ${value(source.amount)}` : '待补充'}</b>${source.available ? `<small>借方 ${value(source.debitAmount)} · 贷方 ${value(source.creditAmount)}</small>` : ''}</div></li>`).join('');
-    const advertisingDetail = `<details class="financial-brief-advertising" ${advertisingWasOpen || advertisingAvailable < advertisingSources.length ? 'open' : ''}><summary><span>广宣费来源明细</span><strong>${advertisingAvailable}/${advertisingSources.length || 0} 家已齐全</strong><i aria-hidden="true">⌄</i></summary><ul>${advertisingRows || '<li class="missing"><div><strong>暂无来源</strong><span>请发布当前期间科目余额表或序时账</span></div><b>待补充</b></li>'}</ul></details>`;
-    const sources = (brief.sources || []).filter(source => source.category !== 'advertising').map(source => `<li><strong>${escapeHtml(source.report)}</strong><span>${escapeHtml(source.scope || brief.company)} · ${escapeHtml(source.fileName)}</span></li>`).join('');
+    const sources = (brief.sources || []).map(source => `<li><strong>${escapeHtml(source.report)}</strong><span>${escapeHtml(source.scope || brief.company)} · ${escapeHtml(source.fileName)}</span></li>`).join('');
     const refreshedAt = new Date().toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    page.innerHTML = `<div class="page-title"><div><h1>财务数据简报</h1><p>${escapeHtml(brief.company)} · ${escapeHtml(brief.period)}</p></div><div class="financial-brief-page-actions">${filterHtml()}<div class="financial-brief-refresh-control"><button class="button financial-brief-refresh" id="financial-brief-refresh" type="button"><span aria-hidden="true">↻</span>刷新数据</button><small id="financial-brief-refresh-status">${escapeHtml(refreshedAt)} 已更新 · 每 60 秒自动刷新</small></div></div></div><article class="financial-brief-sheet"><header><span>FINANCIAL BRIEF</span><h2>${escapeHtml(year)}年${Number(month)}月收支部分明细</h2><p>${escapeHtml(brief.scopeLabel)}</p></header>${missing}<div class="financial-brief-copy"><p><strong>预计营收</strong><b>${value(m.expectedRevenue)}</b></p><p><strong>账户余额</strong><b>${value(m.accountBalance)}元</b></p><p><strong>营业收入（销售额）</strong><b>${value(m.operatingRevenue)}</b></p><p><strong>营业成本（项目成本）</strong><b>${value(m.operatingCost)}</b></p><p><strong>销售费用</strong><b>${value(m.sellingExpense)}</b><span>包括销售人员工资社保公积金、办公费、业务招待费等；广宣费单独按科目余额表优先、序时账兜底汇总。</span></p>${advertisingDetail}<p><strong>管理费用</strong><b>${value(m.managementExpense)}</b><span>（包括租金管理费，后勤人员工资社保公积金，办公费、固定资产的折旧等）</span></p><p><strong>财务费用</strong><b>${value(m.financeExpense)}</b><span>（包括银行及二维码收款的手续费、预付款承担的税点、汇率差等）</span></p><p><strong>净利润</strong><b>${value(m.netProfit)}</b><span>（考虑上面所有收支最终得出公司利润）</span></p><p class="financial-brief-result"><strong>营收综合利润</strong><b>${value(m.comprehensiveRevenueProfit)}</b></p></div><footer><h3>本期其他数据来源</h3><ul>${sources || '<li><span>当前期间尚无其他可用来源文件</span></li>'}</ul><small>简报仅使用当前期间的已发布版本；缺失项不会按 0 处理，也不会复用其他月份数据。</small></footer></article>`;
+    page.innerHTML = `<div class="page-title"><div><h1>财务数据简报</h1><p>${escapeHtml(brief.company)} · ${escapeHtml(brief.period)}</p></div><div class="financial-brief-page-actions">${filterHtml()}<div class="financial-brief-refresh-control"><button class="button financial-brief-refresh" id="financial-brief-refresh" type="button"><span aria-hidden="true">↻</span>刷新数据</button><small id="financial-brief-refresh-status">${escapeHtml(refreshedAt)} 已更新 · 每 60 秒自动刷新</small></div></div></div><article class="financial-brief-sheet"><header><span>FINANCIAL BRIEF</span><h2>${escapeHtml(year)}年${Number(month)}月收支部分明细</h2><p>${escapeHtml(brief.scopeLabel)}</p></header>${missing}<div class="financial-brief-copy"><p><strong>预计营收</strong><b>${value(m.expectedRevenue)}</b></p><p><strong>账户余额</strong><b>${value(m.accountBalance)}元</b></p><p><strong>营业收入（销售额）</strong><b>${value(m.operatingRevenue)}</b></p><p><strong>营业成本（项目成本）</strong><b>${value(m.operatingCost)}</b></p><p><strong>销售费用</strong><b>${value(m.sellingExpense)}</b><span>（包括销售人员工资社保公积金，广宣费，办公费，业务招待费等），其中广宣费 ${value(m.advertisingExpense)}；</span></p><p><strong>管理费用</strong><b>${value(m.managementExpense)}</b><span>（包括租金管理费，后勤人员工资社保公积金，办公费、固定资产的折旧等）</span></p><p><strong>财务费用</strong><b>${value(m.financeExpense)}</b><span>（包括银行及二维码收款的手续费、预付款承担的税点、汇率差等）</span></p><p><strong>净利润</strong><b>${value(m.netProfit)}</b><span>（考虑上面所有收支最终得出公司利润）</span></p><p class="financial-brief-result"><strong>营收综合利润</strong><b>${value(m.comprehensiveRevenueProfit)}</b></p></div><footer><h3>本期其他数据来源</h3><ul>${sources || '<li><span>当前期间尚无其他可用来源文件</span></li>'}</ul><small>简报仅使用当前期间的已发布版本；缺失项不会按 0 处理，也不会复用其他月份数据。</small></footer></article>`;
     bindCommonFilters(); $('#financial-brief-refresh').onclick = () => renderFinancialBrief({ trigger: 'manual' }); applyReportWatermark();
   } catch (error) {
     if (!isCurrent()) return;
@@ -721,6 +748,101 @@ const expenseSectionTable = (section, label) => `<section class="panel expense-s
 const openExpenseDetail = key => { const item = expenseDetailStore.get(key); const modal = $('#expense-detail-modal'); if (!item || !modal) return; const rows = item.details || []; modal.querySelector('.expense-detail-modal-title').textContent = item.title; modal.querySelector('.expense-detail-modal-sub').textContent = `共 ${rows.length} 条序时账分录；金额按当前分析口径归集`; modal.querySelector('.expense-detail-modal-body').innerHTML = `<div class="table-wrap"><table class="data-table expense-detail-table"><thead><tr><th>期间</th><th>日期</th><th>凭证号</th><th>摘要</th><th>科目</th><th>借方</th><th>贷方</th><th>归集金额</th></tr></thead><tbody>${rows.map(row => `<tr><td>${escapeHtml(row.period)}</td><td>${escapeHtml(row.date)}</td><td>${escapeHtml(row.voucher)}</td><td class="expense-detail-summary">${escapeHtml(row.summary)}</td><td>${escapeHtml(row.account)}</td><td class="num">${statementAmount(row.debit)}</td><td class="num">${statementAmount(row.credit)}</td><td class="num">${statementAmount(row.amount)}</td></tr>`).join('')}</tbody></table></div>`; modal.classList.remove('hidden'); };
 const bindExpenseDetail = () => { document.querySelectorAll('[data-expense-detail]').forEach(button => button.onclick = () => openExpenseDetail(button.dataset.expenseDetail)); $('#expense-detail-close')?.addEventListener('click', () => $('#expense-detail-modal').classList.add('hidden')); $('#expense-detail-modal')?.addEventListener('click', event => { if (event.target.id === 'expense-detail-modal') event.currentTarget.classList.add('hidden'); }); };
 
+const consultantRoiInputDefinitions = [
+  { key: 'baseSalary', label: '基本工资' },
+  { key: 'commission', label: '提成' },
+  { key: 'journalExpense', label: '人员费用' }
+];
+const consultantRoiColumns = [
+  { key: 'name', label: '顾问', type: 'text' }, { key: 'region', label: '业绩归属', type: 'text' },
+  { key: 'baseSalary', label: '基本工资', type: 'number' }, { key: 'commission', label: '提成', type: 'number' },
+  { key: 'journalExpense', label: '人员费用', type: 'number' }, { key: 'input', label: '投入合计', type: 'number' },
+  { key: 'output', label: '预计营收', type: 'number' }, { key: 'roi', label: '投入产出比', type: 'number' },
+  { key: 'matchLabel', label: '匹配状态', type: 'status' }
+];
+const consultantRoiMatchLabel = status => status === 'matched' ? '已匹配' : status === 'missing_payroll' ? '缺工资' : '缺营收';
+const consultantRoiSourceText = row => [
+  ...(row.payrollDetails || []).map(item => `${item.sourceSheet}第${item.row}行`),
+  ...(row.revenueDetails || []).map(item => `${item.sourceSheet}第${item.row}行`),
+  ...(row.expenseDetails || []).map(item => `${item.companyName}${item.voucher}${item.account}${item.summary}`)
+].join('；');
+const consultantRoiNumberFilterMatches = (value, filter) => {
+  const text = String(filter || '').trim().replace(/[,，]/g, ''); if (!text) return true;
+  const range = text.match(/^(-?\d+(?:\.\d+)?)\s*(?:-|~|～|至)\s*(-?\d+(?:\.\d+)?)$/);
+  if (range) return Number(value) >= Math.min(Number(range[1]), Number(range[2])) && Number(value) <= Math.max(Number(range[1]), Number(range[2]));
+  const comparison = text.match(/^(>=|<=|>|<|=|≥|≤)\s*(-?\d+(?:\.\d+)?)$/);
+  if (comparison) {
+    const target = Number(comparison[2]);
+    return ({ '>': () => value > target, '>=': () => value >= target, '≥': () => value >= target, '<': () => value < target, '<=': () => value <= target, '≤': () => value <= target, '=': () => value === target }[comparison[1]])();
+  }
+  const exact = Number(text); return Number.isFinite(exact) ? Number(value) === exact : String(value ?? '').includes(text);
+};
+const consultantRoiRowsForView = rawRows => {
+  const rows = (rawRows || []).map(row => {
+    const input = consultantRoiInputDefinitions.reduce((sum, item) => sum + (consultantRoiView.inputs[item.key] ? Number(row[item.key] || 0) : 0), 0);
+    const output = Number(row.output || 0); const matchLabel = consultantRoiMatchLabel(row.matchStatus);
+    return { ...row, input, output, roi: input ? output / input : null, matchLabel, sourceText: consultantRoiSourceText(row) };
+  }).filter(row => consultantRoiColumns.every(column => {
+    const filter = consultantRoiView.filters[column.key]; if (!filter) return true;
+    if (column.type === 'number') return consultantRoiNumberFilterMatches(row[column.key], filter);
+    return String(row[column.key] ?? '').toLocaleLowerCase('zh-CN').includes(String(filter).toLocaleLowerCase('zh-CN'));
+  }));
+  const column = consultantRoiColumns.find(item => item.key === consultantRoiView.sortKey) || consultantRoiColumns[6]; const direction = consultantRoiView.sortDirection === 'asc' ? 1 : -1;
+  return rows.sort((a, b) => {
+    const left = a[column.key]; const right = b[column.key];
+    const compared = column.type === 'number' ? (Number(left ?? -Infinity) - Number(right ?? -Infinity)) : String(left ?? '').localeCompare(String(right ?? ''), 'zh-CN', { numeric: true });
+    return compared * direction || String(a.name).localeCompare(String(b.name), 'zh-CN');
+  });
+};
+const consultantRoiFilterHtml = column => column.type === 'status'
+  ? `<select data-roi-filter="${column.key}" aria-label="筛选${column.label}"><option value="">全部</option>${['已匹配', '缺工资', '缺营收'].map(value => `<option value="${value}" ${consultantRoiView.filters[column.key] === value ? 'selected' : ''}>${value}</option>`).join('')}</select>`
+  : `<input data-roi-filter="${column.key}" value="${escapeHtml(consultantRoiView.filters[column.key] || '')}" aria-label="筛选${column.label}" placeholder="${column.type === 'number' ? '≥、≤、区间' : '筛选'}">`;
+const downloadConsultantRoiCsv = (rows, period) => {
+  if (!rows.length) return showNotice('当前筛选结果暂无可导出数据', true);
+  const selectedInputs = consultantRoiInputDefinitions.filter(item => consultantRoiView.inputs[item.key]); const selected = selectedInputs.map(item => item.label).join('＋') || '未选择投入项';
+  const headers = ['顾问', '业绩归属', ...selectedInputs.map(item => item.label), '投入口径', '投入合计', '预计营收', '投入产出比', '匹配状态'];
+  const values = rows.map(row => [row.name, row.region, ...selectedInputs.map(item => row[item.key]), selected, row.input, row.output, row.roi == null ? '' : row.roi.toFixed(2), row.matchLabel]);
+  const csvCell = value => `"${String(value ?? '').replaceAll('"', '""')}"`; const csv = `\ufeff${[headers, ...values].map(line => line.map(csvCell).join(',')).join('\r\n')}`;
+  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' })); const link = document.createElement('a'); link.href = url; link.download = `${period}-顾问投入产出比.csv`; link.click(); window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+};
+
+async function renderConsultantRoiAnalysis() {
+  const page = $('#consultant-roi-analysis-page');
+  try {
+    const data = await api(`/api/analysis/consultant-roi?company=${encodeURIComponent(state.company)}&period=${encodeURIComponent(state.period)}`); const rows = data.rows || []; const totals = data.totals || {};
+    const sourceState = data.missing?.length ? `<span class="consultant-roi-missing"><strong>来源待补齐</strong><span>${data.missing.map(escapeHtml).join('、')}</span></span>` : '<span class="consultant-roi-complete">三类数据来源已匹配</span>';
+    const detail = row => `<details class="consultant-roi-detail"><summary>查看来源</summary><div><strong>工资表</strong>${row.payrollDetails.map(item => `<span>${escapeHtml(item.sourceSheet)} · 第 ${item.row} 行 · 基本工资 ${money(item.baseSalary)} · 提成 ${money(item.commission)}</span>`).join('') || '<span>未匹配</span>'}<strong>预计营收</strong>${row.revenueDetails.map(item => `<span>${escapeHtml(item.sourceSheet)} · 第 ${item.row} 行 · ${escapeHtml(item.region || '待补充')} · ${money(item.expectedRevenue)}</span>`).join('') || '<span>未匹配</span>'}<strong>序时账费用</strong>${row.expenseDetails.map(item => `<span>${escapeHtml(item.companyName)} · ${escapeHtml(item.date)} · ${escapeHtml(item.voucher)} · ${escapeHtml(item.account)} · ${escapeHtml(item.summary)} · ${money(item.amount)}</span>`).join('') || '<span>无明确归属费用</span>'}</div></details>`;
+    page.innerHTML = `<div class="page-title"><div><h1>顾问投入产出比</h1><p>${escapeHtml(data.company)} · ${escapeHtml(data.period)} · 按顾问归集</p></div>${filterHtml()}</div><div class="analysis-layout-grid consultant-roi-layout"><section class="panel analysis-source" data-analysis-block="consultant_roi_source"><strong>数据来源</strong><span>工资：${escapeHtml(data.sources.payroll?.fileName || '未上传')} / ${escapeHtml(data.sources.payrollSheet || '—')}；产出：${escapeHtml(data.sources.revenue?.fileName || '未上传')} / ${escapeHtml(data.sources.revenueSheet || '—')}</span><small>投入＝基本工资＋提成＋明确归属于顾问的销售/管理费用；预计营收按签约顾问汇总，地区取业绩归属。${sourceState}</small></section><section class="card-grid consultant-roi-metrics" data-analysis-block="consultant_roi_metrics"><article class="card"><div class="metric-label">投入合计</div><div class="metric-value">${money(totals.input)}</div><div class="metric-note">工资、提成及人员费用</div></article><article class="card"><div class="metric-label">预计营收</div><div class="metric-value positive">${money(totals.output)}</div><div class="metric-note">总营收明细表汇总</div></article><article class="card"><div class="metric-label">整体投入产出比</div><div class="metric-value">${totals.roi == null ? '—' : `${totals.roi.toFixed(2)} 倍`}</div><div class="metric-note">预计营收 ÷ 投入</div></article><article class="card"><div class="metric-label">顾问人数</div><div class="metric-value">${rows.length}</div><div class="metric-note">含待匹配人员</div></article></section><section class="panel consultant-roi-table-panel" data-analysis-block="consultant_roi_table"><div class="toolbar"><div><h2>顾问投入产出明细</h2><div class="panel-sub">按预计营收从高到低排列；“待匹配”不隐藏</div></div></div><div class="table-wrap"><table class="data-table consultant-roi-table"><thead><tr><th>顾问</th><th>业绩归属</th><th>基本工资</th><th>提成</th><th>人员费用</th><th>投入合计</th><th>预计营收</th><th>投入产出比</th><th>匹配状态</th><th>来源</th></tr></thead><tbody>${rows.map(row => `<tr><td><strong>${escapeHtml(row.name)}</strong></td><td>${escapeHtml(row.region)}</td><td class="num">${money(row.baseSalary)}</td><td class="num">${money(row.commission)}</td><td class="num">${money(row.journalExpense)}</td><td class="num">${money(row.input)}</td><td class="num">${money(row.output)}</td><td class="num roi-value">${row.roi == null ? '—' : `${row.roi.toFixed(2)} 倍`}</td><td><span class="roi-match ${row.matchStatus}">${row.matchStatus === 'matched' ? '已匹配' : row.matchStatus === 'missing_payroll' ? '缺工资' : '缺营收'}</span></td><td>${detail(row)}</td></tr>`).join('') || '<tr><td colspan="10" class="empty">当前期间暂无可匹配的顾问数据</td></tr>'}</tbody></table></div></section></div>`;
+    bindCommonFilters(); applyAnalysisBlockLayout(page.querySelector('.consultant-roi-layout'), consultantRoiModuleKey);
+  } catch (error) { page.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`; }
+}
+
+async function renderConsultantRoiInteractive() {
+  const page = $('#consultant-roi-analysis-page');
+  try {
+    const data = await api(`/api/analysis/consultant-roi?company=${encodeURIComponent(state.company)}&period=${encodeURIComponent(state.period)}`); const rawRows = data.rows || [];
+    const sourceState = data.missing?.length ? `<span class="consultant-roi-missing"><strong>来源待补齐</strong><span>${data.missing.map(escapeHtml).join('、')}</span></span>` : '<span class="consultant-roi-complete">三类数据来源已匹配</span>';
+    const detail = row => `<details class="consultant-roi-detail"><summary>查看来源</summary><div><strong>工资表</strong>${row.payrollDetails.map(item => `<span>${escapeHtml(item.sourceSheet)} · 第 ${item.row} 行 · 基本工资 ${money(item.baseSalary)} · 提成 ${money(item.commission)}</span>`).join('') || '<span>未匹配</span>'}<strong>预计营收</strong>${row.revenueDetails.map(item => `<span>${escapeHtml(item.sourceSheet)} · 第 ${item.row} 行 · ${escapeHtml(item.region || '待补充')} · ${money(item.expectedRevenue)}</span>`).join('') || '<span>未匹配</span>'}<strong>序时账费用</strong>${row.expenseDetails.map(item => `<span>${escapeHtml(item.companyName)} · ${escapeHtml(item.date)} · ${escapeHtml(item.voucher)} · ${escapeHtml(item.account)} · ${escapeHtml(item.summary)} · ${money(item.amount)}</span>`).join('') || '<span>无明确归属费用</span>'}</div></details>`;
+    page.innerHTML = `<div class="page-title"><div><h1>顾问投入产出比</h1><p>${escapeHtml(data.company)} · ${escapeHtml(data.period)} · 按顾问归集</p></div>${filterHtml()}</div><div class="analysis-layout-grid consultant-roi-layout"><section class="panel analysis-source" data-analysis-block="consultant_roi_source"><strong>数据来源</strong><span>工资：${escapeHtml(data.sources.payroll?.fileName || '未上传')} / ${escapeHtml(data.sources.payrollSheet || '—')}；产出：${escapeHtml(data.sources.revenue?.fileName || '未上传')} / ${escapeHtml(data.sources.revenueSheet || '—')}</span><small>投入标签决定哪些费用计入投入合计和投入产出比；预计营收按签约顾问汇总，地区只取业绩归属。${sourceState}</small></section><section id="consultant-roi-metrics" class="card-grid consultant-roi-metrics" data-analysis-block="consultant_roi_metrics"></section><section class="panel consultant-roi-table-panel" data-analysis-block="consultant_roi_table"><div class="consultant-roi-table-toolbar"><div><h2>顾问投入产出明细</h2><div class="panel-sub"><span id="consultant-roi-count"></span> · 标签、筛选、排序与导出使用同一当前视图</div></div><div class="consultant-roi-actions"><div class="consultant-roi-tags" role="group" aria-label="选择计入投入合计的数据标签">${consultantRoiInputDefinitions.map(item => `<button type="button" data-roi-input="${item.key}"></button>`).join('')}</div><button type="button" class="button" id="consultant-roi-clear">清除筛选</button><button type="button" class="button primary" id="consultant-roi-export">导出当前视图</button></div></div><div class="table-wrap consultant-roi-table-wrap"><table class="data-table consultant-roi-table"><thead id="consultant-roi-head"></thead><tbody id="consultant-roi-body"></tbody></table></div></section></div>`;
+    const metricCards = document.createElement('div'); metricCards.className = 'consultant-roi-metric-cards'; $('#consultant-roi-metrics').appendChild(metricCards);
+    const renderView = () => {
+      const rows = consultantRoiRowsForView(rawRows); const totals = rows.reduce((sum, row) => ({ input: sum.input + row.input, output: sum.output + row.output }), { input: 0, output: 0 }); const roi = totals.input ? totals.output / totals.input : null;
+      const visibleColumns = consultantRoiColumns.filter(column => consultantRoiView.inputs[column.key] !== false);
+      metricCards.innerHTML = `<article class="card"><div class="metric-label">投入合计</div><div class="metric-value">${money(totals.input)}</div><div class="metric-note">当前标签与筛选范围</div></article><article class="card"><div class="metric-label">预计营收</div><div class="metric-value positive">${money(totals.output)}</div><div class="metric-note">当前筛选结果汇总</div></article><article class="card"><div class="metric-label">整体投入产出比</div><div class="metric-value">${roi == null ? '—' : `${roi.toFixed(2)} 倍`}</div><div class="metric-note">预计营收 ÷ 已选投入</div></article><article class="card"><div class="metric-label">顾问人数</div><div class="metric-value">${rows.length}</div><div class="metric-note">筛选后可见人数</div></article>`;
+      $('#consultant-roi-count').textContent = `共 ${rawRows.length} 人，当前显示 ${rows.length} 人`;
+      document.querySelectorAll('[data-roi-input]').forEach(button => { const selected = consultantRoiView.inputs[button.dataset.roiInput]; const label = consultantRoiInputDefinitions.find(item => item.key === button.dataset.roiInput)?.label || ''; button.className = `consultant-roi-tag ${selected ? 'selected' : ''}`; button.setAttribute('aria-pressed', String(selected)); button.innerHTML = `<span>${selected ? '✓' : '+'}</span>${label}`; button.onclick = () => { consultantRoiView.inputs[button.dataset.roiInput] = !selected; if (selected) { delete consultantRoiView.filters[button.dataset.roiInput]; if (consultantRoiView.sortKey === button.dataset.roiInput) { consultantRoiView.sortKey = 'input'; consultantRoiView.sortDirection = 'desc'; } } renderView(); }; });
+      $('#consultant-roi-head').innerHTML = `<tr>${visibleColumns.map(column => { const active = consultantRoiView.sortKey === column.key; return `<th><button type="button" class="roi-sort ${active ? 'active' : ''}" data-roi-sort="${column.key}">${column.label}<span>${active ? (consultantRoiView.sortDirection === 'asc' ? '↑' : '↓') : '↕'}</span></button></th>`; }).join('')}</tr><tr class="roi-filter-row">${visibleColumns.map(column => `<th>${consultantRoiFilterHtml(column)}</th>`).join('')}</tr>`;
+      const optionalAmountCell = (row, key) => consultantRoiView.inputs[key] ? `<td class="num">${money(row[key])}</td>` : '';
+      $('#consultant-roi-body').innerHTML = rows.map(row => `<tr><td><strong>${escapeHtml(row.name)}</strong></td><td>${escapeHtml(row.region)}</td>${optionalAmountCell(row, 'baseSalary')}${optionalAmountCell(row, 'commission')}${optionalAmountCell(row, 'journalExpense')}<td class="num">${money(row.input)}</td><td class="num">${money(row.output)}</td><td class="num roi-value">${row.roi == null ? '—' : `${row.roi.toFixed(2)} 倍`}</td><td><span class="roi-match ${row.matchStatus}">${row.matchLabel}</span></td></tr>`).join('') || `<tr><td colspan="${visibleColumns.length}" class="empty">当前标签或筛选条件下暂无顾问数据</td></tr>`;
+      document.querySelectorAll('[data-roi-sort]').forEach(button => button.onclick = () => { const key = button.dataset.roiSort; if (consultantRoiView.sortKey === key) consultantRoiView.sortDirection = consultantRoiView.sortDirection === 'asc' ? 'desc' : 'asc'; else { consultantRoiView.sortKey = key; consultantRoiView.sortDirection = consultantRoiColumns.find(column => column.key === key)?.type === 'number' ? 'desc' : 'asc'; } renderView(); });
+      document.querySelectorAll('[data-roi-filter]').forEach(control => control.onchange = () => { consultantRoiView.filters[control.dataset.roiFilter] = control.value.trim(); renderView(); });
+      $('#consultant-roi-clear').onclick = () => { consultantRoiView.filters = {}; renderView(); };
+      $('#consultant-roi-export').onclick = () => downloadConsultantRoiCsv(rows, data.period);
+    };
+    renderView(); bindCommonFilters(); applyAnalysisBlockLayout(page.querySelector('.consultant-roi-layout'), consultantRoiModuleKey);
+  } catch (error) { page.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`; }
+}
+
 async function renderExpenseAnalysis() {
   const page = $('#expense-analysis-page');
   try {
@@ -894,24 +1016,47 @@ async function renderRevenueStatistics() {
 }
 
 async function renderUploads() {
-  const page = $('#uploads-page'); let data; try { data = await api('/api/uploads'); } catch (error) { page.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`; return; }
+  const page = $('#uploads-page');
   state.uploadCompany ||= state.company;
   state.uploadPeriod ||= state.period;
-  const uploadTypes = [['bundle', '汇总财务报表（自动识别）'], ['consolidated_income_statement', '桉侨集团合并利润表'], [revenueProfitReportType, '（营收利润口径）合并利润表'], [revenueStatisticsReportType, '集团营收统计表'], ['journal', '序时账'], ['trial_balance', '科目余额表'], ['balance_sheet', '资产负债表'], ['income_statement', '利润表']];
+  state.uploadHistoryView ||= 'pending'; state.uploadHistoryPage ||= 1;
+  const historyFilters = state.uploadHistoryFilters || (state.uploadHistoryFilters = { company: state.uploadCompany, period: state.uploadPeriod, reportType: '', search: '' });
+  const historyParams = new URLSearchParams({ view: state.uploadHistoryView, page: String(state.uploadHistoryPage), pageSize: '10' });
+  Object.entries(historyFilters).forEach(([key, value]) => { if (value) historyParams.set(key, value); });
+  let data; try { data = await api(`/api/uploads?${historyParams}`); } catch (error) { page.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`; return; }
+  const uploadTypes = [['bundle', '汇总财务报表（自动识别）'], ['consolidated_income_statement', '桉侨集团合并利润表'], [revenueProfitReportType, '（营收利润口径）合并利润表'], [revenueStatisticsReportType, '集团营收统计表'], [payrollStatementReportType, '集团每月工资表'], ['journal', '序时账'], ['trial_balance', '科目余额表'], ['balance_sheet', '资产负债表'], ['income_statement', '利润表']];
   page.innerHTML = `<div class="page-title"><div><h1>上传报表</h1><p>统一导入入口；支持单独上传，也支持一份汇总财务报表自动拆分</p></div>${filterHtml()}</div><section class="panel"><div class="toolbar"><div><h2>导入报表文件</h2><div class="panel-sub">先选择公司和报表期间；系统会按文件名、工作表名称自动匹配报表类型</div></div></div><div class="upload-target-row"><label>上传公司<select id="upload-company-select">${state.bootstrap.companies.map(item => `<option value="${item.key}" ${item.key === state.company ? 'selected' : ''}>${escapeHtml(item.name)}</option>`).join('')}</select></label><label>报表期间<select id="upload-period-select">${['2026-05', '2026-06', '2026-07'].map(item => `<option value="${item}" ${item === state.period ? 'selected' : ''}>${item}</option>`).join('')}</select></label></div><div id="folder-drop" class="folder-drop"><input id="folder-picker" type="file" webkitdirectory directory multiple hidden><input id="bundle-picker" type="file" accept=".xlsx,.xls,.json" multiple hidden><div class="folder-icon">↓</div><strong>拖动归集文件夹或汇总财务报表到这里</strong><span>支持从资源管理器拖入文件夹或汇总 Excel；系统按文件名和工作表名称自动识别</span><div class="drop-actions"><button class="button" id="choose-folder">选择归集文件夹</button><button class="button" id="choose-bundle">选择汇总文件</button><button class="button clear-selected-files" id="clear-selected-files" disabled>清空已选</button></div><div id="folder-file-list" class="folder-file-list">尚未选择文件</div></div><div class="upload-slots">${uploadTypes.map(([type, name]) => `<div class="upload-slot" data-upload-slot="${type}" aria-label="将${name}文件拖到这里"><button type="button" class="upload-slot-clear hidden" data-slot-clear="${type}" aria-label="移除${name}" title="移除当前文件">× 移除</button><div class="slot-title">${name}</div><div class="slot-file" id="slot-${type}">未选择文件</div><input class="slot-input" data-report-type="${type}" type="file" accept=".xlsx,.xls,.json"><button type="button" class="button" data-slot-choose="${type}">选择文件</button></div>`).join('')}</div><div class="upload-submit-row"><input id="upload-notes" placeholder="批次备注（可选）"><button class="button primary" id="batch-upload">上传并校验已选择报表</button></div></section><section class="panel" style="margin-top:16px"><div class="toolbar"><div><h2>上传历史</h2><div class="panel-sub">旧批次不会被覆盖；汇总文件会按识别出的每张报表分别保留批次并独立发布</div></div></div><div class="upload-history">${(data.uploads || []).map(item => `<div class="upload-item"><div><strong>${escapeHtml(item.fileName)}</strong><small>${escapeHtml(reportNames[item.reportType] || item.reportType)} · ${item.period} · ${escapeHtml(item.status)} · ${new Date(item.createdAt).toLocaleString('zh-CN')}</small></div><div class="upload-actions">${item.status === 'validated' && state.bootstrap.canPublishReports ? `<button class="button primary" data-publish="${item.uploadKey}">发布为当前版本</button>` : ''}<button class="button" data-preview-upload="${item.uploadKey}" data-preview-type="${item.reportType}">预览</button></div></div>`).join('') || '<div class="empty">暂无上传历史</div>'}</div></section>`;
   bindCommonFilters();
   const uploadStatusNames = { uploaded: '已上传', parsed: '待校验', validated: '已校验', published: '当前发布', superseded: '历史版本', rejected: '校验未通过' };
   const uploadHistory = page.querySelector('.upload-history');
   const uploadHistoryToolbar = uploadHistory?.previousElementSibling;
-  const deletableUploads = (data.uploads || []).filter(item => item.canDelete);
-  if (uploadHistoryToolbar) uploadHistoryToolbar.innerHTML = `<div><h2>上传历史</h2><div class="panel-sub">未发布可直接删除；当前发布如有误可撤回删除并自动恢复上一版本，历史版本继续锁定</div></div><div class="upload-history-manage"><label class="upload-select-all"><input id="upload-select-all" type="checkbox" ${deletableUploads.length ? '' : 'disabled'}><span>全选可处理</span></label>${state.bootstrap.canPublishReports ? '<button type="button" class="button primary batch-publish" id="publish-selected-uploads" disabled><span>发布已选</span> <b id="upload-publish-count">0</b></button>' : ''}<button type="button" class="button danger" id="delete-selected-uploads" disabled><span id="upload-delete-label">删除/撤回已选</span> <b id="upload-selected-count">0</b></button></div>`;
-  if (uploadHistory) uploadHistory.innerHTML = (data.uploads || []).map(item => `<div class="upload-item ${item.canDelete ? 'is-selectable' : 'is-locked'} ${item.status === 'published' ? 'is-published' : ''}"><div class="upload-select-slot">${item.canDelete ? `<input class="upload-select-input" type="checkbox" value="${escapeHtml(item.uploadKey)}" data-upload-status="${escapeHtml(item.status)}" data-upload-publishable="${item.status === 'validated' && state.bootstrap.canPublishReports}" aria-label="选择 ${escapeHtml(item.fileName)} ${escapeHtml(reportNames[item.reportType] || item.reportType)}">` : `<span class="upload-history-lock" title="${item.status === 'superseded' ? '历史版本需保留用于追溯' : '当前账号无权处理此记录'}" aria-label="已锁定">◆</span>`}</div><div class="upload-item-info"><strong>${escapeHtml(item.fileName)}</strong><small>${escapeHtml(reportNames[item.reportType] || item.reportType)} · ${item.period} · ${escapeHtml(uploadStatusNames[item.status] || item.status)} · ${new Date(item.createdAt).toLocaleString('zh-CN')}</small></div><div class="upload-actions">${item.status === 'validated' && state.bootstrap.canPublishReports ? `<button class="button primary" data-publish="${item.uploadKey}">发布为当前版本</button>` : ''}<button class="button" data-preview-upload="${item.uploadKey}" data-preview-type="${item.reportType}">预览</button></div></div>`).join('') || '<div class="empty">暂无上传历史</div>';
+  const historyRows = data.uploads || []; const deletableUploads = historyRows.filter(item => item.canDelete);
+  const historyPeriods = [...new Set([historyFilters.period, ...(data.filterOptions?.periods || [])].filter(Boolean))].sort().reverse();
+  const historyReportTypes = [...new Set(data.filterOptions?.reportTypes || [])];
+  if (uploadHistoryToolbar) {
+    uploadHistoryToolbar.className = 'upload-history-shell';
+    uploadHistoryToolbar.innerHTML = `<div class="upload-history-heading"><div><h2>上传记录管理</h2><div class="panel-sub">按公司和月份筛选；待处理发布与已发布版本分开管理</div></div><span class="upload-history-total">筛选范围 ${data.summary?.total || 0} 条</span></div><div class="upload-history-filters"><label><span>公司</span><select id="upload-history-company"><option value="">全部公司</option>${state.bootstrap.companies.map(item => `<option value="${escapeHtml(item.key)}" ${item.key === historyFilters.company ? 'selected' : ''}>${escapeHtml(item.name)}</option>`).join('')}</select></label><label><span>月份</span><select id="upload-history-period"><option value="">全部月份</option>${historyPeriods.map(item => `<option value="${escapeHtml(item)}" ${item === historyFilters.period ? 'selected' : ''}>${escapeHtml(item)}</option>`).join('')}</select></label><label><span>报表</span><select id="upload-history-report"><option value="">全部报表</option>${historyReportTypes.map(type => `<option value="${escapeHtml(type)}" ${type === historyFilters.reportType ? 'selected' : ''}>${escapeHtml(reportNames[type] || type)}</option>`).join('')}</select></label><label class="upload-history-search"><span>文件名</span><input id="upload-history-search" value="${escapeHtml(historyFilters.search)}" placeholder="输入后回车"></label><button type="button" class="button upload-history-reset" id="upload-history-reset">重置</button></div><div class="upload-history-tabs" role="tablist" aria-label="上传记录分类"><button type="button" role="tab" data-upload-history-view="pending" aria-selected="${state.uploadHistoryView === 'pending'}" class="${state.uploadHistoryView === 'pending' ? 'active' : ''}"><span>待处理发布</span><b>${data.summary?.pending || 0}</b></button><button type="button" role="tab" data-upload-history-view="versions" aria-selected="${state.uploadHistoryView === 'versions'}" class="${state.uploadHistoryView === 'versions' ? 'active' : ''}"><span>发布版本</span><b>${Number(data.summary?.current || 0) + Number(data.summary?.history || 0)}</b></button></div><div class="upload-history-subhead"><div><strong>${state.uploadHistoryView === 'pending' ? '待处理与待发布' : '当前发布与历史版本'}</strong><small>${state.uploadHistoryView === 'pending' ? '只有已校验记录可批量发布；未发布记录可直接删除' : '当前发布可撤回并恢复上一版本；历史版本锁定保留'}</small></div><div class="upload-history-manage"><label class="upload-select-all"><input id="upload-select-all" type="checkbox" ${deletableUploads.length ? '' : 'disabled'}><span>全选本页可处理</span></label>${state.uploadHistoryView === 'pending' && state.bootstrap.canPublishReports ? '<button type="button" class="button primary batch-publish" id="publish-selected-uploads" disabled><span>发布已选</span> <b id="upload-publish-count">0</b></button>' : ''}<button type="button" class="button danger" id="delete-selected-uploads" disabled><span id="upload-delete-label">${state.uploadHistoryView === 'pending' ? '删除已选' : '撤回当前发布'}</span> <b id="upload-selected-count">0</b></button></div></div>`;
+  }
+  const historyItemHtml = item => `<div class="upload-item ${item.canDelete ? 'is-selectable' : 'is-locked'} ${item.status === 'published' ? 'is-published' : ''}"><div class="upload-select-slot">${item.canDelete ? `<input class="upload-select-input" type="checkbox" value="${escapeHtml(item.uploadKey)}" data-upload-status="${escapeHtml(item.status)}" data-upload-publishable="${item.status === 'validated' && state.bootstrap.canPublishReports}" aria-label="选择 ${escapeHtml(item.fileName)} ${escapeHtml(reportNames[item.reportType] || item.reportType)}">` : `<span class="upload-history-lock" title="${item.status === 'superseded' ? '历史版本需保留用于追溯' : '当前账号无权处理此记录'}" aria-label="已锁定">◆</span>`}</div><div class="upload-item-info"><strong>${escapeHtml(item.fileName)}</strong><small>${escapeHtml(reportNames[item.reportType] || item.reportType)} · ${escapeHtml(uploadStatusNames[item.status] || item.status)} · ${new Date(item.createdAt).toLocaleString('zh-CN')}</small></div><div class="upload-actions">${item.status === 'validated' && state.bootstrap.canPublishReports ? `<button class="button primary" data-publish="${item.uploadKey}">发布为当前版本</button>` : ''}<button class="button" data-preview-upload="${item.uploadKey}" data-preview-type="${item.reportType}">预览</button></div></div>`;
+  const historyGroups = new Map(); historyRows.forEach(item => { const key = `${item.companyKey}::${item.period}`; if (!historyGroups.has(key)) historyGroups.set(key, []); historyGroups.get(key).push(item); });
+  const historyGroupsHtml = [...historyGroups.values()].map(items => `<section class="upload-history-group"><header><div><strong>${escapeHtml(companyNameByKey(items[0].companyKey))}</strong><span>${escapeHtml(items[0].period)}</span></div><small>${items.length} 条</small></header><div class="upload-history-group-list">${items.map(historyItemHtml).join('')}</div></section>`).join('');
+  const totalPages = Math.max(1, Math.ceil(Number(data.total || 0) / Number(data.pageSize || 10)));
+  if (uploadHistory) uploadHistory.innerHTML = `${historyGroupsHtml || `<div class="empty">当前筛选条件下暂无${state.uploadHistoryView === 'pending' ? '待处理记录' : '发布版本'}</div>`}<div class="upload-history-pagination"><span>共 ${data.total || 0} 条 · 第 ${data.page || 1} / ${totalPages} 页</span><div><button type="button" class="button" id="upload-history-prev" ${Number(data.page || 1) <= 1 ? 'disabled' : ''}>上一页</button><button type="button" class="button" id="upload-history-next" ${Number(data.page || 1) >= totalPages ? 'disabled' : ''}>下一页</button></div></div>`;
+  const refreshUploadHistory = updates => { Object.assign(historyFilters, updates); state.uploadHistoryPage = 1; renderUploads(); };
+  $('#upload-history-company').onchange = event => refreshUploadHistory({ company: event.target.value });
+  $('#upload-history-period').onchange = event => refreshUploadHistory({ period: event.target.value });
+  $('#upload-history-report').onchange = event => refreshUploadHistory({ reportType: event.target.value });
+  $('#upload-history-search').onkeydown = event => { if (event.key === 'Enter') refreshUploadHistory({ search: event.target.value.trim() }); };
+  $('#upload-history-reset').onclick = () => { state.uploadHistoryFilters = { company: state.uploadCompany, period: state.uploadPeriod, reportType: '', search: '' }; state.uploadHistoryPage = 1; renderUploads(); };
+  page.querySelectorAll('[data-upload-history-view]').forEach(button => button.onclick = () => { state.uploadHistoryView = button.dataset.uploadHistoryView; state.uploadHistoryPage = 1; renderUploads(); });
+  $('#upload-history-prev').onclick = () => { state.uploadHistoryPage = Math.max(1, Number(data.page || 1) - 1); renderUploads(); };
+  $('#upload-history-next').onclick = () => { state.uploadHistoryPage = Math.min(totalPages, Number(data.page || 1) + 1); renderUploads(); };
   page.querySelector('.page-title .filter')?.remove();
   const uploadTargetRow = page.querySelector('.upload-target-row');
   uploadTargetRow.innerHTML = `<div class="upload-scope-field"><span class="upload-scope-label">上传公司</span><div class="upload-picker" id="upload-company-picker"><input id="upload-company-select" type="hidden" value="${escapeHtml(state.uploadCompany)}"><button type="button" class="upload-picker-trigger" aria-haspopup="listbox" aria-expanded="false"><span class="upload-picker-icon">企</span><span><small>目标公司</small><strong id="upload-company-value">${escapeHtml(companyNameByKey(state.uploadCompany))}</strong></span><b aria-hidden="true"></b></button><div class="upload-picker-menu hidden" role="listbox">${state.bootstrap.companies.map((item, index) => `<button type="button" class="upload-picker-option ${item.key === state.uploadCompany ? 'selected' : ''}" data-upload-company="${escapeHtml(item.key)}" role="option" aria-selected="${item.key === state.uploadCompany}"><i class="tone-${index % 3}">${escapeHtml(item.name.slice(0, 2))}</i><span>${escapeHtml(item.name)}</span><em>✓</em></button>`).join('')}</div></div></div><div class="upload-scope-field"><span class="upload-scope-label">报表期间</span><div class="upload-picker" id="upload-period-picker"><input id="upload-period-select" type="hidden" value="${escapeHtml(state.uploadPeriod)}"><button type="button" class="upload-picker-trigger" aria-haspopup="dialog" aria-expanded="false"><span class="upload-picker-icon calendar">月</span><span><small>会计期间</small><strong id="upload-period-value">${escapeHtml(state.uploadPeriod.replace('-', ' 年 '))} 月</strong></span><b aria-hidden="true"></b></button><div class="upload-period-menu hidden"><header><button type="button" id="upload-year-prev" aria-label="上一年">‹</button><strong id="upload-picker-year"></strong><button type="button" id="upload-year-next" aria-label="下一年">›</button></header><div id="upload-month-grid" class="upload-month-grid"></div></div></div></div><div class="upload-scope-hint"><span>独立上传范围</span><small>此处选择不会改变首页及其他报表的查看范围</small></div>`;
   const companyPicker = $('#upload-company-picker'); const periodPicker = $('#upload-period-picker');
-  const selected = {};
-  const guessType = fileName => { const name = String(fileName).toLowerCase(); if (name.includes('营收统计表') || name.includes('数据统计汇总表')) return revenueStatisticsReportType; if (name.includes('营收利润口径') || name.includes('营收口径')) return revenueProfitReportType; if (name.includes('合并利润表') || name.includes('集团利润表') || name.includes('consolidated income')) return 'consolidated_income_statement'; if (name.includes('财务报表') || name.includes('汇总报表') || name.includes('financial')) return 'bundle'; if (name.includes('序时账') || name.includes('journal')) return 'journal'; if (name.includes('科目余额') || name.includes('account')) return 'trial_balance'; if (name.includes('资产负债')) return 'balance_sheet'; if (name.includes('利润表') || name.includes('income')) return 'income_statement'; return ''; };
+  const selected = state.uploadSelectedFiles || (state.uploadSelectedFiles = {});
+  const guessType = fileName => { const name = String(fileName).toLowerCase(); if (name.includes('工资表') || name.includes('薪酬明细')) return payrollStatementReportType; if (name.includes('营收统计表') || name.includes('数据统计汇总表')) return revenueStatisticsReportType; if (name.includes('营收利润口径') || name.includes('营收口径')) return revenueProfitReportType; if (name.includes('合并利润表') || name.includes('集团利润表') || name.includes('consolidated income')) return 'consolidated_income_statement'; if (name.includes('财务报表') || name.includes('汇总报表') || name.includes('financial')) return 'bundle'; if (name.includes('序时账') || name.includes('journal')) return 'journal'; if (name.includes('科目余额') || name.includes('account')) return 'trial_balance'; if (name.includes('资产负债')) return 'balance_sheet'; if (name.includes('利润表') || name.includes('income')) return 'income_statement'; return ''; };
   const guessPeriod = fileName => { const match = String(fileName).match(/(20\d{2})[.\-_年]?\s*0?([1-9]|1[0-2])(?:月|[.\-_]|\b)/i); return match ? `${match[1]}-${String(match[2]).padStart(2, '0')}` : ''; };
   const normalizeCompanyText = value => String(value || '').replace(/桉桥/g, '桉侨').replace(/[\s市]/g, '');
   const companyAliases = name => { const full = normalizeCompanyText(name); if (full === '桉侨集团') return [full]; const brandEnd = full.indexOf('桉侨'); const short = brandEnd >= 0 ? full.slice(0, brandEnd + 2) : full.replace(/(?:有限责任公司|有限公司|公司)$/, ''); return [...new Set([full, short].filter(alias => alias.length >= 2))]; };
@@ -973,6 +1118,7 @@ async function renderUploads() {
     for (const [type] of uploadTypes) { const file = selected[type]; const slot = $(`#slot-${type}`); const clear = page.querySelector(`[data-slot-clear="${type}"]`); if (slot) slot.textContent = file ? (file.webkitRelativePath || file.name) : '未选择文件'; clear?.classList.toggle('hidden', !file); slot?.closest('.upload-slot')?.classList.toggle('has-file', Boolean(file)); }
     $('#clear-selected-files').disabled = Object.keys(selected).length === 0; showSelectedScope(Object.values(selected));
   };
+  syncSelectedFileControls();
   const setFile = (type, file) => { if (!type || !file) return; selected[type] = file; syncSelectedFileControls(); const scope = showSelectedScope(Object.values(selected)); if (scope.companyMismatch || scope.periodMismatch) showNotice('文件范围与当前选择不一致，请核对地区和期间后再上传', true); };
   const clearSelectedFile = type => { if (!selected[type]) return; delete selected[type]; const input = page.querySelector(`.slot-input[data-report-type="${type}"]`); if (input) input.value = ''; if (type === 'bundle') $('#bundle-picker').value = ''; $('#folder-picker').value = ''; syncSelectedFileControls(); showNotice('已从待上传列表移除文件'); };
   page.querySelectorAll('[data-slot-clear]').forEach(button => button.onclick = () => clearSelectedFile(button.dataset.slotClear));
@@ -995,17 +1141,32 @@ async function renderUploads() {
     };
   });
   page.ondragend = () => page.querySelectorAll('.upload-slot.dragging').forEach(slot => slot.classList.remove('dragging'));
-  $('#choose-folder').onclick = () => $('#folder-picker').click(); $('#folder-picker').onchange = event => handleFiles(event.target.files); $('#choose-bundle').onclick = () => $('#bundle-picker').click(); $('#bundle-picker').onchange = event => handleFiles(event.target.files);
-  const dropZone = $('#folder-drop'); dropZone.ondragenter = event => { event.preventDefault(); event.stopPropagation(); dropZone.classList.add('dragging'); if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'; }; dropZone.ondragover = event => { event.preventDefault(); event.stopPropagation(); dropZone.classList.add('dragging'); if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'; }; dropZone.ondragleave = event => { if (event.target === dropZone) dropZone.classList.remove('dragging'); }; dropZone.ondrop = async event => { event.preventDefault(); event.stopPropagation(); dropZone.classList.remove('dragging'); handleFiles(await droppedFiles(event.dataTransfer)); };
-  document.querySelectorAll('[data-slot-choose]').forEach(button => button.onclick = () => button.parentElement.querySelector('.slot-input').click()); document.querySelectorAll('.slot-input').forEach(input => input.onchange = event => setFile(input.dataset.reportType, event.target.files[0]));
-  const readBase64 = file => new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result).split(',')[1]); reader.onerror = reject; reader.readAsDataURL(file); });
-  $('#batch-upload').onclick = async () => {
+  const folderPicker = page.querySelector('#folder-picker'); const bundlePicker = page.querySelector('#bundle-picker');
+  page.querySelector('#choose-folder').onclick = () => folderPicker.click(); folderPicker.onchange = event => handleFiles(event.target.files); page.querySelector('#choose-bundle').onclick = () => bundlePicker.click(); bundlePicker.onchange = event => handleFiles(event.target.files);
+  const dropZone = page.querySelector('#folder-drop'); dropZone.ondragenter = event => { event.preventDefault(); event.stopPropagation(); dropZone.classList.add('dragging'); if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'; }; dropZone.ondragover = event => { event.preventDefault(); event.stopPropagation(); dropZone.classList.add('dragging'); if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'; }; dropZone.ondragleave = event => { if (event.target === dropZone) dropZone.classList.remove('dragging'); }; dropZone.ondrop = async event => { event.preventDefault(); event.stopPropagation(); dropZone.classList.remove('dragging'); handleFiles(await droppedFiles(event.dataTransfer)); };
+  page.querySelectorAll('[data-slot-choose]').forEach(button => button.onclick = () => button.closest('[data-upload-slot]')?.querySelector('.slot-input')?.click()); page.querySelectorAll('.slot-input').forEach(input => input.onchange = event => setFile(input.dataset.reportType, event.target.files?.[0]));
+  const readBase64 = file => new Promise((resolve, reject) => {
+    if (!file?.name) return reject(new Error('文件状态已失效，请重新选择文件'));
+    if (!Number.isFinite(file.size) || file.size <= 0) return reject(new Error('文件内容为空，请检查原文件后重新选择'));
+    const reader = new FileReader();
+    reader.onload = () => { const result = String(reader.result || ''); const separator = result.indexOf(','); const content = separator >= 0 ? result.slice(separator + 1) : ''; if (!content) reject(new Error('浏览器未能读取文件内容，请重新选择文件后再试')); else resolve(content); };
+    reader.onerror = () => reject(new Error('文件读取失败，请关闭占用该文件的程序后重新选择'));
+    reader.onabort = () => reject(new Error('文件读取已中止，请重新选择文件'));
+    reader.readAsDataURL(file);
+  });
+  const uploadButton = page.querySelector('#batch-upload');
+  uploadButton.onclick = async () => {
     const entries = Object.entries(selected); if (!entries.length) return showNotice('请先选择归集文件夹、汇总财务报表或至少一个报表文件', true);
-    let companyKey = $('#upload-company-select').value; let period = $('#upload-period-select').value; state.uploadCompany = companyKey; state.uploadPeriod = period; let success = 0; const trimmedSheets = [];
+    let companyKey = page.querySelector('#upload-company-select')?.value || ''; let period = page.querySelector('#upload-period-select')?.value || '';
+    if (!state.bootstrap.companies.some(company => company.key === companyKey)) return showNotice('上传公司未选择或已失效，请重新选择公司', true);
+    if (!/^\d{4}-\d{2}$/.test(period)) return showNotice('报表期间未选择或格式无效，请重新选择期间', true);
+    state.uploadCompany = companyKey; state.uploadPeriod = period; let success = 0; const trimmedSheets = []; uploadButton.disabled = true;
     for (const [reportType, file] of entries) {
       try {
+        if (!uploadTypes.some(([type]) => type === reportType)) throw new Error('报表位置已失效，请移除文件后重新选择');
+        if (!supportedUploadFile(file)) throw new Error('文件格式无效，仅支持 Excel（.xlsx/.xls）或 JSON 文件');
         const contentBase64 = await readBase64(file);
-        const submit = () => api('/api/uploads', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ companyKey, period, reportType: reportType === 'bundle' ? '' : reportType, fileName: file.name, fileType: file.type, contentBase64, notes: $('#upload-notes').value }) });
+        const submit = () => api('/api/uploads', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ companyKey, period, reportType: reportType === 'bundle' ? '' : reportType, fileName: file.name, fileType: file.type, contentBase64, notes: page.querySelector('#upload-notes')?.value || '' }) });
         let result; let retries = 0;
         while (!result && retries < 3) {
           try { result = await submit(); }
@@ -1027,9 +1188,10 @@ async function renderUploads() {
         success += result.uploads?.length || 1; trimmedSheets.push(...(result.trimmedSheets || []));
       } catch (error) { showNotice(`${reportType === 'bundle' ? '汇总财务报表' : reportNames[reportType]}：${error.message}`, true); }
     }
-    if (success) { showNotice(`已上传并校验 ${success} 个报表批次${trimmedSheets.length ? `；已自动裁剪 ${trimmedSheets.length} 个工作表的尾部空白范围` : ''}`); await renderUploads(); }
+    uploadButton.disabled = false;
+    if (success) { for (const key of Object.keys(selected)) delete selected[key]; showNotice(`已上传并校验 ${success} 个报表批次${trimmedSheets.length ? `；已自动裁剪 ${trimmedSheets.length} 个工作表的尾部空白范围` : ''}`); await renderUploads(); }
   };
-  document.querySelectorAll('[data-publish]').forEach(button => button.onclick = async () => { const item = (data.uploads || []).find(upload => upload.uploadKey === button.dataset.publish); if (!item) return showNotice('上传记录不存在，请刷新后重试', true); const confirmed = window.confirm(`即将发布为当前版本，请核对：\n\n文件：${item.fileName}\n地区：${companyNameByKey(item.companyKey)}\n期间：${item.period}\n报表：${reportNames[item.reportType] || item.reportType}\n\n发布后将替换同地区、同期间、同报表的当前版本，原版本保留为历史记录。确定发布？`); if (!confirmed) return; button.disabled = true; try { await api(`/api/uploads/${button.dataset.publish}/publish`, { method: 'POST' }); showNotice('已发布为当前版本'); await renderUploads(); } catch (error) { showNotice(error.message, true); button.disabled = false; } }); document.querySelectorAll('[data-preview-upload]').forEach(button => button.onclick = () => { state.company = button.dataset.previewCompany || state.company; state.period = button.dataset.previewPeriod || state.period; state.periodExplicit = true; state.page = button.dataset.previewType; state.reportType = button.dataset.previewType; state.version = null; state.consolidatedEntityReportType = ''; state.consolidatedEntitySheet = ''; state.consolidatedExpanded = false; state.uploadKey = button.dataset.previewUpload; refresh(); });
+  page.querySelectorAll('[data-publish]').forEach(button => button.onclick = async () => { const item = (data.uploads || []).find(upload => upload.uploadKey === button.dataset.publish); if (!item) return showNotice('上传记录不存在，请刷新后重试', true); const confirmed = window.confirm(`即将发布为当前版本，请核对：\n\n文件：${item.fileName}\n地区：${companyNameByKey(item.companyKey)}\n期间：${item.period}\n报表：${reportNames[item.reportType] || item.reportType}\n\n发布后将替换同地区、同期间、同报表的当前版本，原版本保留为历史记录。确定发布？`); if (!confirmed) return; button.disabled = true; try { await api(`/api/uploads/${button.dataset.publish}/publish`, { method: 'POST' }); showNotice('已发布为当前版本'); await renderUploads(); } catch (error) { showNotice(error.message, true); button.disabled = false; } }); page.querySelectorAll('[data-preview-upload]').forEach(button => button.onclick = () => { state.company = button.dataset.previewCompany || state.company; state.period = button.dataset.previewPeriod || state.period; state.periodExplicit = true; state.page = button.dataset.previewType === payrollStatementReportType ? consultantRoiModuleKey : button.dataset.previewType; state.reportType = button.dataset.previewType; state.version = null; state.consolidatedEntityReportType = ''; state.consolidatedEntitySheet = ''; state.consolidatedExpanded = false; state.uploadKey = button.dataset.previewUpload; refresh(); });
 }
 
 async function renderDatabaseAdmin() {
@@ -1076,7 +1238,15 @@ function renderReportShell(title, summary, detail, versions) {
   $('#export-detail').onclick = () => download(`/api/reports/${state.reportType}/export?level=detail&company=${state.company}&period=${state.period}&version=${summary.snapshot.version}${state.activeLine ? `&line=${encodeURIComponent(state.activeLine)}` : ''}`, '报表明细.csv');
 }
 
-function download(url, filename) { const headers = state.bootstrap?.authMode === 'wecom' ? {} : { 'x-demo-employee': state.employeeKey }; fetch(appUrl(url), { headers }).then(response => { if (response.status === 401) { window.location.assign(appUrl('/auth/wecom')); throw new Error('登录已过期，正在重新认证'); } if (!response.ok) throw new Error('没有导出权限'); return response.blob(); }).then(blob => { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = filename; a.click(); URL.revokeObjectURL(a.href); }).catch(error => showNotice(error.message, true)); }
+async function download(url, filename) {
+  const headers = state.bootstrap?.authMode === 'demo' ? { 'x-demo-employee': state.employeeKey } : {};
+  try {
+    let response = await fetch(appUrl(url), { headers });
+    if (response.status === 401 && state.bootstrap?.authMode === 'platform') { await ensurePlatformSession(); response = await fetch(appUrl(url), { headers }); }
+    if (!response.ok) throw new Error('没有导出权限');
+    const blob = await response.blob(); const anchor = document.createElement('a'); anchor.href = URL.createObjectURL(blob); anchor.download = filename; anchor.click(); URL.revokeObjectURL(anchor.href);
+  } catch (error) { showNotice(error.message, true); }
+}
 
 async function refreshReport() {
   const requestRevision = ++reportRequestRevision;
@@ -1152,13 +1322,13 @@ async function renderPermissions() {
   const page = $('#permissions-page');
   try {
     const data = await api('/api/admin/roles');
-    const context = { data, directory: data.employees.map(item => ({ ...item, source: data.directorySync?.status === 'demo' ? '本地演示通讯录' : '企微通讯录' })), draft: null };
+    const context = { data, directory: data.employees.map(item => ({ ...item, source: data.directorySync?.status === 'demo' ? '本地演示通讯录' : '小Q成员组' })), draft: null };
     permissionEditorEmployeeKey = permissionEditorEmployeeKey && data.profiles.some(item => item.employeeKey === permissionEditorEmployeeKey) ? permissionEditorEmployeeKey : (data.profiles.find(item => item.employeeKey === state.employeeKey)?.employeeKey || data.profiles[0]?.employeeKey);
     const syncStatus = data.directorySync?.status || 'never';
     const syncLabel = syncStatus === 'success' ? `已同步 ${data.directorySync.employeeCount || 0} 人` : syncStatus === 'demo' ? '演示数据' : syncStatus === 'failed' ? '同步失败' : '待同步';
-    const syncHint = syncStatus === 'failed' ? (data.directorySync.lastError || '点击重试通讯录同步') : syncStatus === 'success' ? '已同步企微应用可见范围，点击刷新' : '点击刷新企微通讯录';
+    const syncHint = syncStatus === 'failed' ? (data.directorySync.lastError || '点击重试小Q成员同步') : syncStatus === 'success' ? '已同步小Q三个授权组，点击刷新' : '点击同步小Q成员组';
     const watermarkEnabled = state.bootstrap.reportWatermarkEnabled === true;
-    page.innerHTML = `<div class="page-title permission-page-title"><div><h1>权限管理</h1><p>从企微通讯录选人，套用角色预设，再按员工微调完整权限树</p></div><span class="permission-mode-badge">角色预设 + 个人覆盖</span></div><section class="panel admin-display-settings"><div><span>管理员设置</span><h2>员工水印</h2><p>开启后，五张财务报表与序时账明细会重复显示当前员工、部门、公司和期间，仅影响页面展示。</p></div><label class="switch-control"><input id="report-watermark-toggle" type="checkbox" ${watermarkEnabled ? 'checked' : ''}><span aria-hidden="true"></span><strong>${watermarkEnabled ? '已开启' : '已关闭'}</strong></label></section><div class="permission-workflow"><span class="active">1 选择员工</span><i></i><span class="active">2 套用预设</span><i></i><span class="active">3 微调并保存</span></div><div class="permission-workbench"><aside class="panel permission-people-panel"><div class="permission-panel-heading"><div><h2>企微通讯录</h2><small>姓名或部门搜索</small></div><button id="permission-sync-button" class="sync-dot ${syncStatus === 'failed' ? 'failed' : ''}" title="${escapeHtml(syncHint)}">${escapeHtml(syncLabel)}</button></div><input id="permission-employee-search" class="permission-search" placeholder="搜索员工或部门"><div id="permission-employee-list" class="permission-employee-list"></div></aside><main id="permission-editor" class="panel permission-editor"></main><aside id="permission-summary" class="panel permission-summary"></aside></div>`;
+    page.innerHTML = `<div class="page-title permission-page-title"><div><h1>权限管理</h1><p>从小Q授权成员组中选人，套用角色预设，再按员工微调完整权限树</p></div><span class="permission-mode-badge">角色预设 + 个人覆盖</span></div><section class="panel admin-display-settings"><div><span>管理员设置</span><h2>员工水印</h2><p>开启后，五张财务报表与序时账明细会重复显示当前员工、成员组、公司和期间，仅影响页面展示。</p></div><label class="switch-control"><input id="report-watermark-toggle" type="checkbox" ${watermarkEnabled ? 'checked' : ''}><span aria-hidden="true"></span><strong>${watermarkEnabled ? '已开启' : '已关闭'}</strong></label></section><div class="permission-workflow"><span class="active">1 选择员工</span><i></i><span class="active">2 套用预设</span><i></i><span class="active">3 微调并保存</span></div><div class="permission-workbench"><aside class="panel permission-people-panel"><div class="permission-panel-heading"><div><h2>小Q授权成员</h2><small>姓名或成员组搜索</small></div><button id="permission-sync-button" class="sync-dot ${syncStatus === 'failed' ? 'failed' : ''}" title="${escapeHtml(syncHint)}">${escapeHtml(syncLabel)}</button></div><input id="permission-employee-search" class="permission-search" placeholder="搜索员工或成员组"><div id="permission-employee-list" class="permission-employee-list"></div></aside><main id="permission-editor" class="panel permission-editor"></main><aside id="permission-summary" class="panel permission-summary"></aside></div>`;
 
     $('#report-watermark-toggle').onchange = async event => {
       const input = event.target; input.disabled = true;
@@ -1171,7 +1341,7 @@ async function renderPermissions() {
 
     $('#permission-sync-button').onclick = async () => {
       const button = $('#permission-sync-button'); button.disabled = true; button.textContent = '同步中…';
-      try { const result = await api('/api/admin/directory-sync', { method: 'POST' }); showNotice(`企微通讯录已同步 ${result.sync.employeeCount || 0} 人`); await renderPermissions(); }
+      try { const result = await api('/api/admin/directory-sync', { method: 'POST' }); showNotice(`小Q授权成员已同步 ${result.sync.employeeCount || 0} 人`); await renderPermissions(); }
       catch (error) { button.disabled = false; button.textContent = '同步失败'; button.classList.add('failed'); button.title = error.message; showNotice(error.message, true); }
     };
 
@@ -1183,7 +1353,7 @@ async function renderPermissions() {
       list.innerHTML = context.directory.map(item => {
         const profile = data.profiles.find(profileItem => profileItem.employeeKey === item.employeeKey); const role = data.roles.find(roleItem => roleItem.key === profile?.presetRoleKey);
         return `<button class="permission-person ${item.employeeKey === permissionEditorEmployeeKey ? 'active' : ''}" data-employee-key="${escapeHtml(item.employeeKey)}"><span class="person-avatar">${escapeHtml(item.name.slice(0, 1))}</span><span><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.department)}</small></span><em>${escapeHtml(profile?.hasAssignment ? role?.name : '未配置')}</em></button>`;
-      }).join('') || '<div class="permission-no-result">没有匹配的通讯录员工<small>请确认该员工或所在部门已加入企微应用可见范围，然后点击上方同步状态刷新。</small></div>';
+      }).join('') || '<div class="permission-no-result">没有匹配的小Q授权员工<small>请确认该员工已加入管理员、总经理或财务组，然后点击上方同步状态刷新。</small></div>';
       list.querySelectorAll('.permission-person').forEach(button => button.onclick = () => { permissionEditorEmployeeKey = button.dataset.employeeKey; updateDraft(data.profiles.find(item => item.employeeKey === permissionEditorEmployeeKey)); renderPeople(); renderEditor(); renderSummary(); });
     };
 
@@ -1205,7 +1375,12 @@ async function renderPermissions() {
       const assignmentState = !draft.hasAssignment ? '尚未添加授权' : draft.isCustomized ? '个人权限已保存' : '当前沿用角色预设';
       $('#permission-editor').innerHTML = `<div class="permission-editor-head"><div><span class="person-avatar large">${escapeHtml(employee?.name.slice(0, 1))}</span><div><h2>${escapeHtml(employee?.name)}</h2><small>${escapeHtml(employee?.department)} · ${assignmentState}</small></div></div><span class="permission-save-state ${draft.isCustomized ? 'custom' : ''}">${!draft.hasAssignment ? '未授权' : draft.isCustomized ? '已个性化' : '未微调'}</span></div><section class="permission-config-section"><div class="permission-section-title"><div><h3>角色分组预设</h3><p>应用预设会重置权限树和明细偏好，之后仍可逐项调整</p></div></div><div class="permission-role-row"><select id="permission-role-select">${roleOptions}</select><button class="button" id="permission-apply-role">应用预设</button><span>${escapeHtml(preset?.description || '')}</span></div></section><section class="permission-config-section"><div class="permission-section-title"><div><h3>数据范围</h3><p>公司与会计期间对报表和分析接口统一生效</p></div></div><div class="permission-company-grid">${companyChecks}</div><div class="permission-period-row"><label>起始期间<input type="month" id="permission-from-period" value="${escapeHtml(draft.fromPeriod)}"></label><span>至</span><label>结束期间<input type="month" id="permission-to-period" value="${escapeHtml(draft.toPeriod)}"></label></div></section><section class="permission-config-section"><div class="permission-section-title"><div><h3>完整权限树</h3><p>“预设”是角色默认；“已追加/已移除”只影响当前员工</p></div><span>${selected.size} 项已选</span></div><div class="permission-tree">${permissionTreeHtml(data.permissionCatalog, selected, baseline)}</div></section><section class="permission-config-section"><div class="permission-section-title"><div><h3>明细展示偏好</h3><p>仅在员工拥有明细权限时生效</p></div></div><div class="permission-preference-grid"><label>科目名称<select id="permission-account-visibility"><option value="level1" ${draft.accountVisibility === 'level1' ? 'selected' : ''}>一级科目</option><option value="full" ${draft.accountVisibility === 'full' ? 'selected' : ''}>完整科目</option></select></label><label>借贷方向<select id="permission-show-direction"><option value="1" ${draft.showDirection ? 'selected' : ''}>显示</option><option value="0" ${draft.showDirection ? '' : 'selected'}>隐藏</option></select></label><label>完整分录<select id="permission-show-full-entry"><option value="1" ${draft.showFullEntry ? 'selected' : ''}>展示</option><option value="0" ${draft.showFullEntry ? '' : 'selected'}>隐藏</option></select></label></div></section><div class="permission-save-bar"><span>保存后立即影响该员工下一次接口请求，并写入审计日志。</span><button class="button primary" id="permission-save-button">保存员工权限</button></div>`;
       document.querySelectorAll('.permission-group-input').forEach(input => { const keys = input.dataset.permissionKeys.split(','); const count = keys.filter(key => selected.has(key)).length; input.indeterminate = count > 0 && count < keys.length; input.onchange = () => { keys.forEach(key => input.checked ? selected.add(key) : selected.delete(key)); draft.permissionKeys = [...selected].sort(); renderEditor(); renderSummary(); }; });
-      document.querySelectorAll('.permission-leaf-input').forEach(input => input.onchange = () => { input.checked ? selected.add(input.value) : selected.delete(input.value); draft.permissionKeys = [...selected].sort(); renderEditor(); renderSummary(); });
+      document.querySelectorAll('.permission-leaf-input').forEach(input => input.onchange = () => {
+        input.checked ? selected.add(input.value) : selected.delete(input.value);
+        if (input.value === 'module.cash_analysis.view' && !input.checked) selected.delete('module.cash_analysis.net_positions.view');
+        if (input.value === 'module.cash_analysis.net_positions.view' && input.checked) selected.add('module.cash_analysis.view');
+        draft.permissionKeys = [...selected].sort(); renderEditor(); renderSummary();
+      });
       document.querySelectorAll('.permission-company').forEach(input => input.onchange = () => { if (input.value === '*' && input.checked) draft.companyKeys = ['*']; else { const values = [...document.querySelectorAll('.permission-company:checked')].map(item => item.value).filter(value => value !== '*'); draft.companyKeys = values.length ? values : ['*']; } renderEditor(); renderSummary(); });
       $('#permission-apply-role').onclick = () => { const next = roleDefault($('#permission-role-select').value); if (!next) return; Object.assign(draft, { presetRoleKey: next.roleKey, permissionKeys: [...next.permissionKeys], accountVisibility: next.accountVisibility, showDirection: next.showDirection, showFullEntry: next.showFullEntry }); renderEditor(); renderSummary(); showNotice(`已应用“${next.name}”预设，可继续微调`); };
       $('#permission-from-period').onchange = event => { draft.fromPeriod = event.target.value; renderSummary(); }; $('#permission-to-period').onchange = event => { draft.toPeriod = event.target.value; renderSummary(); };
@@ -1246,6 +1421,7 @@ async function refresh({ reloadBootstrap = true } = {}) {
   else if (state.page === 'main_business_analysis') await renderMainBusinessAnalysis();
   else if (state.page === 'expense_analysis') await renderExpenseAnalysis();
   else if (state.page === 'group_profit_analysis') await renderGroupProfitAnalysis();
+  else if (state.page === consultantRoiModuleKey) await renderConsultantRoiInteractive();
   else if (state.page === revenueStatisticsReportType) await renderRevenueStatistics();
   else if (state.page === 'journal_detail') await renderJournalDetail();
   else { state.reportType = state.page; await refreshReport(); }

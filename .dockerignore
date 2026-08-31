@@ -1,0 +1,9 @@
+.git
+.gitignore
+artifacts
+data/*
+!data/raw-reports-demo.json
+node_modules
+npm-debug.log*
+deploy/*.env
+deploy/*.zip

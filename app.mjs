@@ -4,6 +4,13 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import XLSX from 'xlsx';
+import {
+  hasFinancePlatformAccess,
+  normalizePlatformIdentity,
+  parseBearerToken,
+  platformDirectoryMembers,
+  unwrapPlatformData,
+} from './platform-auth.mjs';
 let Database;
 try {
   ({ default: Database } = await import('better-sqlite3'));
@@ -17,34 +24,36 @@ try {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const dataDir = path.join(__dirname, 'data');
-const appVersion = '1.1.5';
+const appVersion = '1.1.12';
 const financialBriefModuleKey = 'financial_brief';
+const consultantRoiModuleKey = 'consultant_roi_analysis';
+const cashNetPositionsPermissionKey = 'module.cash_analysis.net_positions.view';
+const payrollStatementReportType = 'payroll_statement';
 const revenueProfitReportType = 'revenue_profit_consolidated_income_statement';
 const revenueStatisticsReportType = 'revenue_statistics';
 const groupStatementReportTypes = new Set(['consolidated_income_statement', revenueProfitReportType]);
-const groupOnlyReportTypes = new Set([...groupStatementReportTypes, revenueStatisticsReportType]);
-const authMode = String(process.env.AUTH_MODE || (process.env.NODE_ENV === 'production' ? 'wecom' : 'demo')).trim().toLowerCase();
+const groupOnlyReportTypes = new Set([...groupStatementReportTypes, revenueStatisticsReportType, payrollStatementReportType]);
+const authMode = String(process.env.AUTH_MODE || (process.env.NODE_ENV === 'production' ? 'platform' : 'demo')).trim().toLowerCase();
+const accessDeniedMessage = '当前账号不在财务模块授权范围内，请联系管理员加入总经理、管理员或财务组';
 const publicBaseUrl = String(process.env.PUBLIC_BASE_URL || '').trim().replace(/\/+$/, '');
 const rawBasePath = String(process.env.APP_BASE_PATH || '').trim();
 const appBasePath = rawBasePath && rawBasePath !== '/' ? `/${rawBasePath.replace(/^\/+|\/+$/g, '')}` : '';
 if (appBasePath && !/^\/[A-Za-z0-9._~-]+(?:\/[A-Za-z0-9._~-]+)*$/.test(appBasePath)) throw new Error('APP_BASE_PATH 必须是安全的绝对路径前缀，例如 /report');
+const portalHomeUrl = String(process.env.PORTAL_HOME_URL || '/platform/').trim();
+if (!/^\/[A-Za-z0-9._~/-]*$/.test(portalHomeUrl)) throw new Error('PORTAL_HOME_URL 必须是安全的站内绝对路径，例如 /platform/');
+const platformLoginUrl = String(process.env.PLATFORM_LOGIN_URL || '/platform/login').trim();
+if (!/^\/[A-Za-z0-9._~/-]*$/.test(platformLoginUrl)) throw new Error('PLATFORM_LOGIN_URL 必须是安全的站内绝对路径');
+const platformApiBrowserBasePath = String(process.env.PLATFORM_API_BROWSER_BASE_PATH || '/api').trim().replace(/\/+$/, '');
+if (!/^\/[A-Za-z0-9._~/-]*$/.test(platformApiBrowserBasePath)) throw new Error('PLATFORM_API_BROWSER_BASE_PATH 必须是安全的站内绝对路径');
+const platformApiBaseUrl = String(process.env.PLATFORM_API_BASE_URL || '').trim().replace(/\/+$/, '');
 const appPath = pathname => `${appBasePath}${pathname.startsWith('/') ? pathname : `/${pathname}`}`;
 const sessionSecret = String(process.env.SESSION_SECRET || (authMode === 'demo' ? 'local-demo-session-secret' : ''));
-const wecomConfig = {
-  corpId: String(process.env.WECOM_CORP_ID || '').trim(),
-  agentId: String(process.env.WECOM_AGENT_ID || '').trim(),
-  secret: String(process.env.WECOM_SECRET || '').trim(),
-  bootstrapAdminUserid: String(process.env.WECOM_BOOTSTRAP_ADMIN_USERID || '').trim()
-};
-const wecomApiBaseUrl = process.env.NODE_ENV === 'test' && process.env.WECOM_API_BASE_URL
-  ? String(process.env.WECOM_API_BASE_URL).trim().replace(/\/+$/, '')
-  : 'https://qyapi.weixin.qq.com';
-const wecomDirectorySyncEnabled = process.env.WECOM_DIRECTORY_SYNC_ENABLED === '1';
-if (!['demo', 'wecom'].includes(authMode)) throw new Error('AUTH_MODE 仅支持 demo 或 wecom');
-if (authMode === 'wecom') {
-  const missing = [['PUBLIC_BASE_URL', publicBaseUrl], ['SESSION_SECRET', sessionSecret], ['WECOM_CORP_ID', wecomConfig.corpId], ['WECOM_AGENT_ID', wecomConfig.agentId], ['WECOM_SECRET', wecomConfig.secret], ['WECOM_BOOTSTRAP_ADMIN_USERID', wecomConfig.bootstrapAdminUserid]].filter(([, value]) => !value).map(([name]) => name);
-  if (missing.length) throw new Error(`企微生产认证缺少环境变量：${missing.join(', ')}`);
-  if (!/^https:\/\//i.test(publicBaseUrl)) throw new Error('企微生产认证要求 PUBLIC_BASE_URL 使用 HTTPS');
+if (!['demo', 'platform'].includes(authMode)) throw new Error('AUTH_MODE 仅支持 demo 或 platform');
+if (authMode === 'platform') {
+  const missing = [['PUBLIC_BASE_URL', publicBaseUrl], ['SESSION_SECRET', sessionSecret], ['PLATFORM_API_BASE_URL', platformApiBaseUrl]].filter(([, value]) => !value).map(([name]) => name);
+  if (missing.length) throw new Error(`小Q统一认证缺少环境变量：${missing.join(', ')}`);
+  if (!/^https:\/\//i.test(publicBaseUrl) && process.env.NODE_ENV === 'production') throw new Error('小Q生产认证要求 PUBLIC_BASE_URL 使用 HTTPS');
+  if (!/^https:\/\//i.test(platformApiBaseUrl) && process.env.NODE_ENV === 'production') throw new Error('小Q生产认证要求 PLATFORM_API_BASE_URL 使用 HTTPS');
   if (new URL(publicBaseUrl).pathname.replace(/\/+$/, '') !== appBasePath) throw new Error('PUBLIC_BASE_URL 路径必须与 APP_BASE_PATH 一致');
   if (sessionSecret.length < 32) throw new Error('SESSION_SECRET 至少需要 32 个字符');
 }
@@ -258,12 +267,12 @@ const seed = db.transaction(() => {
   [
     ['report_summary', '报表汇总'], ['report_detail', '报表明细'], ['permission_admin', '权限管理'],
     ['database_admin', '数据库管理'], [financialBriefModuleKey, '财务数据简报'], ['main_business_analysis', '主营业务分析'], ['expense_analysis', '费用分析'],
-    ['group_profit_analysis', '集团合并利润趋势图']
+    ['group_profit_analysis', '集团合并利润趋势图'], [consultantRoiModuleKey, '顾问投入产出比']
   ].forEach(row => addModule.run(...row));
   const addCompany = db.prepare('INSERT INTO companies(company_key, company_name) VALUES (?, ?)');
   [['group', '桉侨集团'], ['gz', '广州桉侨'], ['sz', '深圳桉侨'], ['qd', '青岛桉侨']].forEach(row => addCompany.run(...row));
   const addType = db.prepare('INSERT INTO report_types(report_type, report_name) VALUES (?, ?)');
-  [['balance_sheet', '资产负债表'], ['income_statement', '利润表'], ['consolidated_income_statement', '桉侨集团合并利润表'], [revenueProfitReportType, '（营收利润口径）合并利润表'], [revenueStatisticsReportType, '营收统计表'], ['cash_flow', '现金流量表']].forEach(row => addType.run(...row));
+  [['balance_sheet', '资产负债表'], ['income_statement', '利润表'], ['consolidated_income_statement', '桉侨集团合并利润表'], [revenueProfitReportType, '（营收利润口径）合并利润表'], [revenueStatisticsReportType, '营收统计表'], [payrollStatementReportType, '每月工资表'], ['cash_flow', '现金流量表']].forEach(row => addType.run(...row));
   const addEmployeeRole = db.prepare('INSERT INTO employee_roles(employee_key, role_key) VALUES (?, ?)');
   if (authMode === 'demo') [['admin', 'admin'], ['manager', 'manager'], ['accountant', 'accountant'], ['viewer', 'viewer']].forEach(row => addEmployeeRole.run(...row));
   const addPermission = db.prepare('INSERT INTO role_permissions(role_key, module_key, action) VALUES (?, ?, ?)');
@@ -322,6 +331,7 @@ db.prepare("INSERT OR IGNORE INTO modules(module_key, module_name) VALUES ('data
 db.prepare("INSERT OR IGNORE INTO modules(module_key, module_name) VALUES ('main_business_analysis', '主营业务分析')").run();
 db.prepare("INSERT OR IGNORE INTO modules(module_key, module_name) VALUES ('expense_analysis', '费用分析')").run();
 db.prepare("INSERT OR IGNORE INTO modules(module_key, module_name) VALUES ('group_profit_analysis', '集团合并利润趋势图')").run();
+db.prepare('INSERT OR IGNORE INTO modules(module_key, module_name) VALUES (?, ?)').run(consultantRoiModuleKey, '顾问投入产出比');
 db.prepare('INSERT OR IGNORE INTO modules(module_key, module_name) VALUES (?, ?)').run(financialBriefModuleKey, '财务数据简报');
 db.prepare("INSERT OR IGNORE INTO companies(company_key, company_name) VALUES ('qd', '青岛桉侨')").run();
 db.prepare("INSERT OR IGNORE INTO companies(company_key, company_name) VALUES ('group', '桉侨集团')").run();
@@ -329,6 +339,7 @@ for (const row of [['admin', 'database_admin', 'view'], ['admin', 'database_admi
 for (const row of [['admin', 'main_business_analysis', 'view'], ['manager', 'main_business_analysis', 'view']]) db.prepare('INSERT OR IGNORE INTO role_permissions(role_key, module_key, action) VALUES (?, ?, ?)').run(...row);
 for (const row of [['admin', 'expense_analysis', 'view'], ['manager', 'expense_analysis', 'view']]) db.prepare('INSERT OR IGNORE INTO role_permissions(role_key, module_key, action) VALUES (?, ?, ?)').run(...row);
 for (const row of [['admin', 'group_profit_analysis', 'view'], ['manager', 'group_profit_analysis', 'view']]) db.prepare('INSERT OR IGNORE INTO role_permissions(role_key, module_key, action) VALUES (?, ?, ?)').run(...row);
+for (const row of [['admin', consultantRoiModuleKey, 'view'], ['manager', consultantRoiModuleKey, 'view']]) db.prepare('INSERT OR IGNORE INTO role_permissions(role_key, module_key, action) VALUES (?, ?, ?)').run(...row);
 for (const role of ['admin', 'manager', 'accountant', 'viewer']) db.prepare('INSERT OR IGNORE INTO role_permissions(role_key, module_key, action) VALUES (?, ?, ?)').run(role, financialBriefModuleKey, 'view');
 for (const row of [
   ['admin', 'report_import', 'upload'], ['admin', 'report_import', 'validate'], ['admin', 'report_import', 'publish']
@@ -344,6 +355,7 @@ for (const row of [['trial_balance', '科目余额表'], ['journal', '序时账'
 db.prepare("INSERT OR IGNORE INTO report_types(report_type, report_name) VALUES ('consolidated_income_statement', '桉侨集团合并利润表')").run();
 db.prepare('INSERT OR IGNORE INTO report_types(report_type, report_name) VALUES (?, ?)').run(revenueProfitReportType, '（营收利润口径）合并利润表');
 db.prepare('INSERT OR IGNORE INTO report_types(report_type, report_name) VALUES (?, ?)').run(revenueStatisticsReportType, '营收统计表');
+db.prepare('INSERT OR IGNORE INTO report_types(report_type, report_name) VALUES (?, ?)').run(payrollStatementReportType, '每月工资表');
 for (const role of ['admin', 'manager', 'viewer']) for (const type of groupOnlyReportTypes) {
   for (const action of role === 'viewer' ? ['view'] : ['view', 'export']) db.prepare('INSERT OR IGNORE INTO role_report_scopes(role_key, report_type, access_level, action, company_key, from_period, to_period) VALUES (?, ?, ?, ?, ?, ?, ?)').run(role, type, 'summary', action, 'group', '2020-01', '2099-12');
 }
@@ -387,7 +399,7 @@ const companyOrderFor = () => {
   return db.prepare('SELECT company_key AS key, sort_order AS sortOrder FROM company_display_order ORDER BY sort_order, company_key').all();
 };
 const moduleOrderDefaults = [
-  [financialBriefModuleKey, 10], ['balance_sheet', 20], ['income_statement', 30], ['consolidated_income_statement', 35], [revenueProfitReportType, 36], ['group_profit_analysis', 37], [revenueStatisticsReportType, 38], ['cash_flow', 40],
+  [financialBriefModuleKey, 10], ['balance_sheet', 20], ['income_statement', 30], ['consolidated_income_statement', 35], [revenueProfitReportType, 36], ['group_profit_analysis', 37], [revenueStatisticsReportType, 38], [consultantRoiModuleKey, 39], ['cash_flow', 40],
   ['trial_balance', 50], ['journal', 60], ['cash_analysis', 70], ['main_business_analysis', 80], ['expense_analysis', 90], ['uploads', 100], ['permissions', 110], ['database_admin', 120]
 ];
 for (const row of moduleOrderDefaults) db.prepare('INSERT OR IGNORE INTO dashboard_module_order(module_key, sort_order) VALUES (?, ?)').run(...row);
@@ -421,7 +433,8 @@ const analysisBlockDefaults = {
   cash_analysis: ['cash_metric', 'internal_metric', 'core_metric', 'receivables_metric', 'static_metric', 'liquidity_guide', 'cash_source', 'net_positions', 'cash_accounts', 'other_liquidity', 'core_liquidity_trend'],
   main_business_analysis: ['business_source', 'revenue_metric', 'cost_metric', 'gross_metric', 'project_count_metric', 'business_detail', 'project_change', 'gross_trend'],
   expense_analysis: ['expense_source', 'selling_table', 'selling_share', 'selling_trend', 'admin_table', 'admin_share', 'admin_trend', 'finance_table', 'finance_share', 'finance_methods'],
-  group_profit_analysis: ['group_profit_source', 'revenue_cost_trend', 'period_expense_trend', 'net_profit_trend']
+  group_profit_analysis: ['group_profit_source', 'revenue_cost_trend', 'period_expense_trend', 'net_profit_trend'],
+  [consultantRoiModuleKey]: ['consultant_roi_source', 'consultant_roi_metrics', 'consultant_roi_table']
 };
 for (const [pageKey, keys] of Object.entries(analysisBlockDefaults)) keys.forEach((blockKey, index) => db.prepare('INSERT OR IGNORE INTO analysis_block_order(page_key, block_key, sort_order) VALUES (?, ?, ?)').run(pageKey, blockKey, (index + 1) * 10));
 const analysisBlockOrderFor = pageKey => {
@@ -434,10 +447,10 @@ const allAnalysisBlockOrders = () => Object.fromEntries(Object.keys(analysisBloc
 const uploadsDir = process.env.UPLOADS_DIR || path.join(dataDir, 'uploads');
 fs.mkdirSync(uploadsDir, { recursive: true });
 
-const json = (res, status, value) => { const body = JSON.stringify(value); res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(body); };
+const json = (res, status, value, headers = {}) => { const body = JSON.stringify(value); res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...headers }); res.end(body); };
 const text = (res, status, value, contentType = 'text/plain; charset=utf-8') => { res.writeHead(status, { 'content-type': contentType, 'cache-control': 'no-store' }); res.end(value); };
 const redirect = (res, location, headers = {}) => { res.writeHead(302, { location, 'cache-control': 'no-store', ...headers }); res.end(); };
-const bad = (res, status, message) => json(res, status, { error: message });
+const bad = (res, status, message, details = {}) => json(res, status, { error: message, ...details });
 const sessionCookieName = 'wecom_finance_session';
 const parseCookies = req => Object.fromEntries(String(req.headers.cookie || '').split(';').map(item => item.trim()).filter(Boolean).map(item => { const index = item.indexOf('='); return index < 0 ? [item, ''] : [item.slice(0, index), decodeURIComponent(item.slice(index + 1))]; }));
 const signPayload = payload => { const encoded = Buffer.from(JSON.stringify(payload)).toString('base64url'); const signature = crypto.createHmac('sha256', sessionSecret).update(encoded).digest('base64url'); return `${encoded}.${signature}`; };
@@ -451,143 +464,56 @@ const verifyPayload = (token, expectedType = 'session') => {
   } catch { return null; }
 };
 const sessionCookiePath = appBasePath || '/';
-const sessionCookie = employeeKey => `${sessionCookieName}=${encodeURIComponent(signPayload({ type: 'session', sub: employeeKey, exp: Math.floor(Date.now() / 1000) + 8 * 60 * 60 }))}; Path=${sessionCookiePath}; HttpOnly; SameSite=Lax; Max-Age=28800${publicBaseUrl.startsWith('https://') ? '; Secure' : ''}`;
+const sessionCookie = employeeKey => `${sessionCookieName}=${encodeURIComponent(signPayload({ type: 'platform-session', sub: employeeKey, exp: Math.floor(Date.now() / 1000) + 15 * 60 }))}; Path=${sessionCookiePath}; HttpOnly; SameSite=Lax; Max-Age=900${publicBaseUrl.startsWith('https://') ? '; Secure' : ''}`;
 const clearSessionCookie = () => `${sessionCookieName}=; Path=${sessionCookiePath}; HttpOnly; SameSite=Lax; Max-Age=0${publicBaseUrl.startsWith('https://') ? '; Secure' : ''}`;
+const authenticatedEmployeeKeyFrom = req => authMode === 'demo'
+  ? (req.headers['x-demo-employee'] || process.env.DEV_EMPLOYEE || 'admin')
+  : verifyPayload(parseCookies(req)[sessionCookieName], 'platform-session')?.sub;
 const employeeFrom = req => {
-  const key = authMode === 'demo' ? (req.headers['x-demo-employee'] || process.env.DEV_EMPLOYEE || 'admin') : verifyPayload(parseCookies(req)[sessionCookieName])?.sub;
+  const key = authenticatedEmployeeKeyFrom(req);
   return key ? db.prepare('SELECT * FROM employees WHERE employee_key = ? AND active = 1').get(key) : null;
 };
-let wecomTokenCache = { value: '', expiresAt: 0 };
-const wecomTicketCache = new Map();
-const wecomJson = async url => { const response = await fetch(url, { signal: AbortSignal.timeout(10000) }); const payload = await response.json().catch(() => ({})); if (!response.ok || Number(payload.errcode || 0) !== 0) throw new Error(`企业微信接口失败：${payload.errmsg || response.status}`); return payload; };
-const wecomApiUrl = (pathname, parameters = {}) => `${wecomApiBaseUrl}${pathname}?${new URLSearchParams(parameters)}`;
-const wecomAccessToken = async () => {
-  if (wecomTokenCache.value && wecomTokenCache.expiresAt > Date.now() + 60_000) return wecomTokenCache.value;
-  const payload = await wecomJson(wecomApiUrl('/cgi-bin/gettoken', { corpid: wecomConfig.corpId, corpsecret: wecomConfig.secret }));
-  wecomTokenCache = { value: payload.access_token, expiresAt: Date.now() + Math.max(300, Number(payload.expires_in || 7200) - 120) * 1000 }; return wecomTokenCache.value;
-};
-const wecomJsApiTicket = async type => {
-  const cached = wecomTicketCache.get(type);
-  if (cached?.value && cached.expiresAt > Date.now() + 60_000) return cached.value;
-  const token = await wecomAccessToken();
-  const pathname = type === 'agent_config' ? '/cgi-bin/ticket/get' : '/cgi-bin/get_jsapi_ticket';
-  const parameters = type === 'agent_config' ? { access_token: token, type } : { access_token: token };
-  const payload = await wecomJson(wecomApiUrl(pathname, parameters));
-  const value = String(payload.ticket || '');
-  if (!value) throw new Error('企业微信接口未返回 JS-SDK ticket');
-  wecomTicketCache.set(type, { value, expiresAt: Date.now() + Math.max(300, Number(payload.expires_in || 7200) - 120) * 1000 });
-  return value;
-};
-const wecomJsSdkSignature = (ticket, nonceStr, timestamp, url) => crypto.createHash('sha1').update(`jsapi_ticket=${ticket}&noncestr=${nonceStr}&timestamp=${timestamp}&url=${url}`).digest('hex');
-const normalizeSharePageUrl = value => {
-  const candidate = new URL(String(value || '')); const base = new URL(publicBaseUrl);
-  const allowedPath = `${appBasePath || ''}/`.replace(/\/+/g, '/');
-  if (candidate.origin !== base.origin || ![appBasePath || '/', allowedPath].includes(candidate.pathname)) throw new Error('分享页面地址不属于当前应用');
-  candidate.hash = '';
-  return candidate.toString();
-};
-function directoryDepartmentPath(departmentId, departments) {
-  const names = []; const seen = new Set(); let current = String(departmentId || '');
-  while (current && departments.has(current) && !seen.has(current)) {
-    seen.add(current); const department = departments.get(current);
-    if (department.name) names.unshift(String(department.name));
-    current = String(department.parentid || department.parent_id || '');
-  }
-  return names.join(' / ') || '企业微信通讯录';
-}
-const wecomDepartmentPath = async (token, departmentId) => {
-  if (!departmentId) return '企业微信通讯录';
-  try {
-    const payload = await wecomJson(wecomApiUrl('/cgi-bin/department/list', { access_token: token, id: 1 }));
-    const departments = new Map((payload.department || []).map(item => [String(item.id), item]));
-    return directoryDepartmentPath(departmentId, departments);
-  } catch { return '企业微信通讯录'; }
-};
-const syncWecomEmployee = async userid => {
-  const token = await wecomAccessToken(); const profile = await wecomJson(wecomApiUrl('/cgi-bin/user/get', { access_token: token, userid }));
-  const employeeKey = String(profile.userid || userid); const displayName = String(profile.name || profile.alias || employeeKey).slice(0, 80); const departmentId = profile.main_department || (Array.isArray(profile.department) ? profile.department[0] : ''); const department = await wecomDepartmentPath(token, departmentId);
-  const existed = db.prepare('SELECT 1 FROM employees WHERE employee_key = ?').get(employeeKey);
-  db.prepare("INSERT INTO employees(employee_key, display_name, department, active, directory_source, directory_synced_at) VALUES (?, ?, ?, 1, 'wecom', ?) ON CONFLICT(employee_key) DO UPDATE SET display_name = excluded.display_name, department = excluded.department, active = 1, directory_source = 'wecom', directory_synced_at = excluded.directory_synced_at").run(employeeKey, displayName, department, now());
-  if (employeeKey === wecomConfig.bootstrapAdminUserid) db.prepare("INSERT OR IGNORE INTO employee_roles(employee_key, role_key) VALUES (?, 'admin')").run(employeeKey);
-  else if (!existed && !db.prepare('SELECT 1 FROM employee_permission_profiles WHERE employee_key = ?').get(employeeKey)) db.prepare("INSERT INTO employee_permission_profiles(employee_key, preset_role_key, permission_keys_json, company_keys_json, from_period, to_period, account_visibility, show_direction, show_full_entry, updated_by, updated_at) VALUES (?, 'viewer', '[]', '[]', '2020-01', '2099-12', 'level1', 0, 0, 'wecom_oauth', ?)").run(employeeKey, now());
-  return db.prepare('SELECT * FROM employees WHERE employee_key = ?').get(employeeKey);
-};
 const directorySyncState = () => {
-  const row = db.prepare('SELECT status, last_attempt_at AS lastAttemptAt, last_success_at AS lastSuccessAt, last_error AS lastError, employee_count AS employeeCount FROM directory_sync_state WHERE source = ?').get('wecom');
-  return row || { status: authMode === 'wecom' ? (wecomDirectorySyncEnabled ? 'never' : 'disabled') : 'demo', lastAttemptAt: null, lastSuccessAt: null, lastError: '', employeeCount: authMode === 'demo' ? db.prepare('SELECT COUNT(*) AS count FROM employees WHERE active = 1').get().count : 0 };
+  const source = authMode === 'platform' ? 'platform' : 'demo';
+  const row = db.prepare('SELECT status, last_attempt_at AS lastAttemptAt, last_success_at AS lastSuccessAt, last_error AS lastError, employee_count AS employeeCount FROM directory_sync_state WHERE source = ?').get(source);
+  return row || { status: authMode === 'platform' ? 'never' : 'demo', lastAttemptAt: null, lastSuccessAt: null, lastError: '', employeeCount: db.prepare('SELECT COUNT(*) AS count FROM employees WHERE active = 1').get().count };
 };
-const wecomVisibleDirectory = async token => {
-  const agent = await wecomJson(wecomApiUrl('/cgi-bin/agent/get', { access_token: token, agentid: wecomConfig.agentId }));
-  const departmentIds = new Set((agent.allow_partys?.partyid || []).map(String));
-  const directUserIds = new Set((agent.allow_userinfos?.user || []).map(item => String(item.userid || '')).filter(Boolean));
-  const tagIds = (agent.allow_tags?.tagid || []).map(String);
-  const departments = new Map(); const members = new Map();
-  try {
-    const payload = await wecomJson(wecomApiUrl('/cgi-bin/department/list', { access_token: token, id: 1 }));
-    for (const item of payload.department || []) departments.set(String(item.id), item);
-  } catch {}
-  for (const tagId of tagIds) {
-    const tag = await wecomJson(wecomApiUrl('/cgi-bin/tag/get', { access_token: token, tagid: tagId }));
-    for (const item of tag.userlist || []) {
-      if (!item.userid) continue;
-      directUserIds.add(String(item.userid));
-      if (item.name) members.set(String(item.userid), item);
+class PlatformApiError extends Error {
+  constructor(status, message) { super(message); this.status = status; }
+}
+const platformJson = async (pathname, accessToken) => {
+  const response = await fetch(`${platformApiBaseUrl}${pathname}`, {
+    headers: { authorization: `Bearer ${accessToken}`, accept: 'application/json' },
+    signal: AbortSignal.timeout(10000),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (response.status === 401) throw new PlatformApiError(401, '小Q登录状态已失效');
+  if (response.status === 403) throw new PlatformApiError(403, '小Q账号没有读取成员分组的权限');
+  if (!response.ok) throw new PlatformApiError(502, `小Q认证服务暂不可用（${response.status}）`);
+  return unwrapPlatformData(payload);
+};
+const upsertPlatformEmployee = identity => {
+  const existed = db.prepare('SELECT 1 FROM employees WHERE employee_key = ?').get(identity.employeeKey);
+  db.prepare("INSERT INTO employees(employee_key, display_name, department, active, directory_source, directory_synced_at) VALUES (?, ?, ?, 1, 'platform', ?) ON CONFLICT(employee_key) DO UPDATE SET display_name = excluded.display_name, department = excluded.department, active = 1, directory_source = 'platform', directory_synced_at = excluded.directory_synced_at").run(identity.employeeKey, identity.displayName, identity.department, now());
+  if (!existed && !db.prepare('SELECT 1 FROM employee_permission_profiles WHERE employee_key = ?').get(identity.employeeKey)) {
+    db.prepare("INSERT INTO employee_permission_profiles(employee_key, preset_role_key, permission_keys_json, company_keys_json, from_period, to_period, account_visibility, show_direction, show_full_entry, updated_by, updated_at) VALUES (?, 'viewer', '[]', '[]', '2020-01', '2099-12', 'level1', 0, 0, 'platform_auth', ?)").run(identity.employeeKey, now());
+  }
+  return db.prepare('SELECT * FROM employees WHERE employee_key = ?').get(identity.employeeKey);
+};
+const syncPlatformDirectory = (groups, actorKey) => {
+  const members = platformDirectoryMembers(groups);
+  const attemptedAt = now(); const syncedAt = now();
+  const save = db.transaction(() => {
+    const upsert = db.prepare("INSERT INTO employees(employee_key, display_name, department, active, directory_source, directory_synced_at) VALUES (?, ?, ?, 1, 'platform', ?) ON CONFLICT(employee_key) DO UPDATE SET display_name = excluded.display_name, department = excluded.department, active = 1, directory_source = 'platform', directory_synced_at = excluded.directory_synced_at");
+    for (const member of members) upsert.run(member.employeeKey, member.displayName, member.department, syncedAt);
+    const allowedKeys = new Set(members.map(member => member.employeeKey));
+    for (const row of db.prepare("SELECT employee_key AS employeeKey FROM employees WHERE directory_source IN ('platform', 'wecom')").all()) {
+      if (!allowedKeys.has(row.employeeKey)) db.prepare('UPDATE employees SET active = 0 WHERE employee_key = ?').run(row.employeeKey);
     }
-    for (const departmentId of tag.partylist || []) departmentIds.add(String(departmentId));
-  }
-  if (!departmentIds.size && !directUserIds.size) departmentIds.add('1');
-  for (const departmentId of departmentIds) {
-    try {
-      const payload = await wecomJson(wecomApiUrl('/cgi-bin/department/list', { access_token: token, id: departmentId }));
-      for (const item of payload.department || []) departments.set(String(item.id), item);
-    } catch {}
-    const payload = await wecomJson(wecomApiUrl('/cgi-bin/user/simplelist', { access_token: token, department_id: departmentId, fetch_child: 1 }));
-    for (const item of payload.userlist || []) if (item.userid && item.name) members.set(String(item.userid), item);
-  }
-  for (const userid of directUserIds) {
-    if (members.get(userid)?.name) continue;
-    const profile = await wecomJson(wecomApiUrl('/cgi-bin/user/get', { access_token: token, userid }));
-    if (profile.userid && profile.name) members.set(String(profile.userid), profile);
-  }
-  return { departments, members: [...members.values()] };
-};
-let wecomDirectorySyncPromise = null;
-const syncWecomDirectory = async ({ force = false } = {}) => {
-  if (authMode !== 'wecom') return directorySyncState();
-  if (!wecomDirectorySyncEnabled) return directorySyncState();
-  const previous = directorySyncState(); const lastSuccess = Date.parse(previous.lastSuccessAt || '');
-  if (!force && Number.isFinite(lastSuccess) && Date.now() - lastSuccess < 5 * 60 * 1000) return previous;
-  if (wecomDirectorySyncPromise) return wecomDirectorySyncPromise;
-  wecomDirectorySyncPromise = (async () => {
-    const attemptedAt = now();
-    db.prepare("INSERT INTO directory_sync_state(source, status, last_attempt_at, last_error, employee_count) VALUES ('wecom', 'syncing', ?, '', ?) ON CONFLICT(source) DO UPDATE SET status = 'syncing', last_attempt_at = excluded.last_attempt_at, last_error = ''").run(attemptedAt, Number(previous.employeeCount || 0));
-    try {
-      const token = await wecomAccessToken();
-      const { departments, members } = await wecomVisibleDirectory(token);
-      if (!members.length) throw new Error('企业微信接口未返回应用可见员工，请在企微后台配置应用可见范围');
-      const syncedAt = now();
-      const save = db.transaction(() => {
-        const upsert = db.prepare("INSERT INTO employees(employee_key, display_name, department, active, directory_source, directory_synced_at) VALUES (?, ?, ?, 1, 'wecom', ?) ON CONFLICT(employee_key) DO UPDATE SET display_name = excluded.display_name, department = excluded.department, active = 1, directory_source = 'wecom', directory_synced_at = excluded.directory_synced_at");
-        for (const member of members) {
-          const mainDepartment = member.main_department || (Array.isArray(member.department) ? member.department[0] : '');
-          upsert.run(String(member.userid), String(member.name).slice(0, 80), directoryDepartmentPath(mainDepartment, departments), syncedAt);
-        }
-        db.prepare("INSERT INTO directory_sync_state(source, status, last_attempt_at, last_success_at, last_error, employee_count) VALUES ('wecom', 'success', ?, ?, '', ?) ON CONFLICT(source) DO UPDATE SET status = 'success', last_attempt_at = excluded.last_attempt_at, last_success_at = excluded.last_success_at, last_error = '', employee_count = excluded.employee_count").run(attemptedAt, syncedAt, members.length);
-      });
-      save(); log(wecomConfig.bootstrapAdminUserid, 'sync_wecom_directory', 'wecom_directory', `employees=${members.length}`);
-      return directorySyncState();
-    } catch (error) {
-      const message = String(error?.message || '企业微信通讯录同步失败').slice(0, 300);
-      db.prepare("INSERT INTO directory_sync_state(source, status, last_attempt_at, last_error, employee_count) VALUES ('wecom', 'failed', ?, ?, ?) ON CONFLICT(source) DO UPDATE SET status = 'failed', last_attempt_at = excluded.last_attempt_at, last_error = excluded.last_error").run(attemptedAt, message, Number(previous.employeeCount || 0));
-      throw error;
-    } finally { wecomDirectorySyncPromise = null; }
-  })();
-  return wecomDirectorySyncPromise;
-};
-const syncWecomDirectorySafely = async options => { try { return await syncWecomDirectory(options); } catch { return directorySyncState(); } };
-const wecomLoginUrl = () => {
-  const state = signPayload({ type: 'oauth', exp: Math.floor(Date.now() / 1000) + 10 * 60 }); const redirectUri = `${publicBaseUrl}/auth/wecom/callback`;
-  return `https://open.weixin.qq.com/connect/oauth2/authorize?${new URLSearchParams({ appid: wecomConfig.corpId, redirect_uri: redirectUri, response_type: 'code', scope: 'snsapi_base', agentid: wecomConfig.agentId, state }).toString()}#wechat_redirect`;
+    db.prepare("INSERT INTO directory_sync_state(source, status, last_attempt_at, last_success_at, last_error, employee_count) VALUES ('platform', 'success', ?, ?, '', ?) ON CONFLICT(source) DO UPDATE SET status = 'success', last_attempt_at = excluded.last_attempt_at, last_success_at = excluded.last_success_at, last_error = '', employee_count = excluded.employee_count").run(attemptedAt, syncedAt, members.length);
+  });
+  save(); log(actorKey, 'sync_platform_directory', 'platform_directory', `employees=${members.length}`);
+  return directorySyncState();
 };
 const rolesFor = employeeKey => db.prepare('SELECT r.* FROM roles r JOIN employee_roles er ON er.role_key = r.role_key WHERE er.employee_key = ?').all(employeeKey);
 const reportPermissionNode = (id, name) => ({ id, name, children: [
@@ -606,10 +532,14 @@ const permissionCatalog = [
   ] },
   { id: 'analysis', name: '经营分析', description: '分析页只开放聚合结果，不自动开放底层序时账', children: [
     { key: 'module.financial_brief.view', name: '财务数据简报 · 浏览' },
-    { key: 'module.cash_analysis.view', name: '资产净额分析 · 浏览' },
+    { id: 'cash_analysis_permissions', name: '资产净额分析', description: '页面浏览和敏感构成板块分别授权', children: [
+      { key: 'module.cash_analysis.view', name: '浏览资产净额分析' },
+      { key: cashNetPositionsPermissionKey, name: '查看应收应付净额构成' }
+    ] },
     { key: 'module.main_business_analysis.view', name: '主营业务分析 · 浏览' },
     { key: 'module.expense_analysis.view', name: '费用分析 · 浏览' },
-    { key: 'module.group_profit_analysis.view', name: '集团合并利润趋势图 · 浏览' }
+    { key: 'module.group_profit_analysis.view', name: '集团合并利润趋势图 · 浏览' },
+    { key: 'module.consultant_roi_analysis.view', name: '顾问投入产出比 · 浏览' }
   ] },
   { id: 'uploads', name: '报表上传', description: '上传、校验和发布逐级授权', children: [
     { key: 'module.uploads.upload', name: '上传文件' }, { key: 'module.uploads.validate', name: '校验批次' }, { key: 'module.uploads.publish', name: '发布版本' }
@@ -620,6 +550,16 @@ const permissionCatalog = [
 ];
 const permissionLeaves = nodes => nodes.flatMap(node => node.key ? [node] : permissionLeaves(node.children || []));
 const validPermissionKeys = new Set(permissionLeaves(permissionCatalog).map(item => item.key));
+const cashNetPositionsPermissionMigrationKey = 'cash_analysis_net_positions_permission_v1';
+if (appSetting(cashNetPositionsPermissionMigrationKey, '0') !== '1') {
+  for (const row of db.prepare('SELECT employee_key AS employeeKey, permission_keys_json AS permissionKeysJson FROM employee_permission_profiles').all()) {
+    let keys = []; try { keys = JSON.parse(row.permissionKeysJson); } catch {}
+    if (!Array.isArray(keys) || !keys.includes('module.cash_analysis.view')) continue;
+    keys = [...new Set([...keys, cashNetPositionsPermissionKey])].sort();
+    db.prepare('UPDATE employee_permission_profiles SET permission_keys_json = ? WHERE employee_key = ?').run(JSON.stringify(keys), row.employeeKey);
+  }
+  saveAppSetting(cashNetPositionsPermissionMigrationKey, '1', 'system');
+}
 const financialBriefPermissionMigrationKey = 'financial_brief_permission_v1';
 if (appSetting(financialBriefPermissionMigrationKey, '0') !== '1') {
   for (const row of db.prepare('SELECT employee_key AS employeeKey, permission_keys_json AS permissionKeysJson FROM employee_permission_profiles').all()) {
@@ -686,6 +626,16 @@ if (appSetting(groupProfitPermissionMigrationKey, '0') !== '1') {
   }
   saveAppSetting(groupProfitPermissionMigrationKey, '1', 'system');
 }
+const consultantRoiPermissionMigrationKey = 'consultant_roi_analysis_permission_v1';
+if (appSetting(consultantRoiPermissionMigrationKey, '0') !== '1') {
+  for (const row of db.prepare('SELECT employee_key AS employeeKey, permission_keys_json AS permissionKeysJson FROM employee_permission_profiles').all()) {
+    let keys = []; try { keys = JSON.parse(row.permissionKeysJson); } catch {}
+    if (!Array.isArray(keys) || !keys.some(key => ['module.permissions.manage', 'module.group_profit_analysis.view'].includes(key))) continue;
+    keys = [...new Set([...keys, 'module.consultant_roi_analysis.view'])].sort();
+    db.prepare('UPDATE employee_permission_profiles SET permission_keys_json = ? WHERE employee_key = ?').run(JSON.stringify(keys), row.employeeKey);
+  }
+  saveAppSetting(consultantRoiPermissionMigrationKey, '1', 'system');
+}
 const modulePermissionKey = (moduleKey, action) => ({
   report_import: `module.uploads.${action}`,
   permission_admin: `module.permissions.${action}`,
@@ -694,7 +644,8 @@ const modulePermissionKey = (moduleKey, action) => ({
   main_business_analysis: `module.main_business_analysis.${action}`,
   expense_analysis: `module.expense_analysis.${action}`,
   [financialBriefModuleKey]: `module.financial_brief.${action}`,
-  group_profit_analysis: `module.group_profit_analysis.${action}`
+  group_profit_analysis: `module.group_profit_analysis.${action}`,
+  [consultantRoiModuleKey]: `module.consultant_roi_analysis.${action}`
 }[moduleKey]);
 const permissionKeysForRole = roleKey => {
   const keys = new Set();
@@ -705,6 +656,7 @@ const permissionKeysForRole = roleKey => {
     const key = `report.${row.reportType}.${row.level}.${row.action}`; if (validPermissionKeys.has(key)) keys.add(key);
   }
   if (keys.has('report.cash_flow.summary.view')) keys.add('module.cash_analysis.view');
+  if (keys.has('module.cash_analysis.view')) keys.add(cashNetPositionsPermissionKey);
   return [...keys].sort();
 };
 const roleDefaultFor = roleKey => {
@@ -743,8 +695,13 @@ const detailPreferenceFor = employeeKey => {
 const matchesPeriod = (period, from, to) => period >= from && period <= to;
 const hasReport = (employeeKey, reportType, level, action, companyKey, period) => hasPermissionKey(employeeKey, `report.${reportType}.${level}.${action}`, companyKey, period);
 const hasAnalysis = (employeeKey, analysisKey, companyKey, period) => hasPermissionKey(employeeKey, `module.${analysisKey}.view`, companyKey, period);
+const analysisBlockAccessFor = (employeeKey, companyKey, period) => ({
+  cash_analysis: {
+    net_positions: hasAnalysis(employeeKey, 'cash_analysis', companyKey, period) && hasPermissionKey(employeeKey, cashNetPositionsPermissionKey, companyKey, period)
+  }
+});
 const moduleNames = new Map([
-  ['home', '首页'], [financialBriefModuleKey, '财务数据简报'], ['uploads', '上传报表'], ['cash_analysis', '资产净额分析'], ['main_business_analysis', '主营业务分析'], ['expense_analysis', '费用分析'], ['group_profit_analysis', '集团合并利润趋势图'], ['permissions', '权限管理'], ['database_admin', '数据库管理']
+  ['home', '首页'], [financialBriefModuleKey, '财务数据简报'], ['uploads', '上传报表'], ['cash_analysis', '资产净额分析'], ['main_business_analysis', '主营业务分析'], ['expense_analysis', '费用分析'], ['group_profit_analysis', '集团合并利润趋势图'], [consultantRoiModuleKey, '顾问投入产出比'], ['permissions', '权限管理'], ['database_admin', '数据库管理']
 ]);
 const visibleModulesFor = (employeeKey, companyKey, period) => {
   const reportNames = new Map(db.prepare('SELECT report_type AS key, report_name AS name FROM report_types').all().map(row => [row.key, row.name]));
@@ -762,6 +719,7 @@ const visibleModulesFor = (employeeKey, companyKey, period) => {
   if (companyKey !== 'group' && hasAnalysis(employeeKey, 'main_business_analysis', companyKey, period)) visible.add('main_business_analysis');
   if (companyKey !== 'group' && hasAnalysis(employeeKey, 'expense_analysis', companyKey, period)) visible.add('expense_analysis');
   if (companyKey === 'group' && hasAnalysis(employeeKey, 'group_profit_analysis', companyKey, period) && hasReport(employeeKey, 'consolidated_income_statement', 'summary', 'view', companyKey, period)) visible.add('group_profit_analysis');
+  if (companyKey === 'group' && hasAnalysis(employeeKey, consultantRoiModuleKey, companyKey, period)) visible.add(consultantRoiModuleKey);
   if (canManage) visible.add('permissions');
   if (canManageReportData) visible.add('database_admin');
   const ordered = moduleOrderFor().map(row => ({ key: row.key, name: reportNames.get(row.key) || moduleNames.get(row.key) || row.key, visible: visible.has(row.key) })).filter(row => row.visible);
@@ -779,7 +737,7 @@ const availablePeriodsByCompanyFor = employeeKey => {
   }
   return result;
 };
-const requireEmployee = (req, res) => { const employee = employeeFrom(req); if (!employee) { json(res, 401, { error: '请先通过企业微信身份认证', loginUrl: authMode === 'wecom' ? appPath('/auth/wecom') : '' }); return null; } return employee; };
+const requireEmployee = (req, res) => { const employee = employeeFrom(req); if (!employee) { json(res, 401, { error: '请先通过小Q企业微信登录', loginUrl: authMode === 'platform' ? platformLoginUrl : '' }); return null; } return employee; };
 const requireReport = (req, res, reportType, level, action, companyKey, period) => { const employee = requireEmployee(req, res); if (!employee) return null; const moduleKey = level === 'summary' ? 'report_summary' : 'report_detail'; if (!hasModule(employee.employee_key, moduleKey, action) || !hasReport(employee.employee_key, reportType, level, action, companyKey, period)) { bad(res, 403, '当前员工没有该报表层级或数据范围权限'); return null; } return employee; };
 const log = (employeeKey, action, target, detail) => db.prepare('INSERT INTO audit_logs(employee_key, action, target, detail, created_at) VALUES (?, ?, ?, ?, ?)').run(employeeKey, action, target, detail, now());
 
@@ -1261,6 +1219,40 @@ const consolidatedEntitiesFromWorkbook = (workbook, mainSheetNames, range) => wo
   return { sourceSheet: name, companyName: consolidatedEntityName(name, companyCell), rows: rows.map((cells, index) => ({ row: index + 1, cells })) };
 }).filter(Boolean);
 const revenueCellHasValue = value => value !== null && value !== undefined && String(value).trim() !== '';
+const normalizedHeader = value => String(value || '').replace(/[\s\n【】\[\]（）()]/g, '').trim();
+const amountCell = value => { const parsed = Number(String(value ?? '').replace(/[,，￥¥元\s]/g, '')); return Number.isFinite(parsed) ? parsed : 0; };
+const consultantCanonicalName = value => {
+  const text = String(value || '').trim().replace(/\s+/g, '');
+  const chinese = text.match(/[\u4e00-\u9fa5]{2,6}/g)?.at(-1) || '';
+  return chinese || text.replace(/[^A-Za-z0-9]/g, '').toLowerCase();
+};
+const findHeaderIndex = (headers, patterns) => headers.findIndex(header => patterns.some(pattern => pattern.test(normalizedHeader(header))));
+const parsePayrollSheet = (workbook, sheetName) => {
+  const sheetRows = uploadSheetRows(workbook.Sheets[sheetName], sheetName); const rows = sheetRows.rows;
+  const headerRowIndex = rows.slice(0, 40).findIndex(row => findHeaderIndex(row || [], [/^(?:姓名|员工姓名|职员姓名)$/]) >= 0 && findHeaderIndex(row || [], [/基本工资/]) >= 0 && findHeaderIndex(row || [], [/提成/]) >= 0);
+  if (headerRowIndex < 0) throw new Error('工资表缺少“姓名、基本工资、提成”表头');
+  const headers = rows[headerRowIndex] || [];
+  const nameIndex = findHeaderIndex(headers, [/^(?:姓名|员工姓名|职员姓名)$/]); const salaryIndex = findHeaderIndex(headers, [/基本工资/]); const commissionIndex = findHeaderIndex(headers, [/提成/]); const regionIndex = findHeaderIndex(headers, [/^(?:地区|所属地区|分公司|业绩归属)$/]);
+  const payrollRows = rows.slice(headerRowIndex + 1).map((cells, offset) => {
+    const name = String(cells?.[nameIndex] || '').trim(); if (!name || /合计|总计/.test(name)) return null;
+    return { row: headerRowIndex + offset + 2, name, canonicalName: consultantCanonicalName(name), region: regionIndex >= 0 ? String(cells?.[regionIndex] || '').trim() : '', baseSalary: amountCell(cells?.[salaryIndex]), commission: amountCell(cells?.[commissionIndex]) };
+  }).filter(row => row?.canonicalName && (row.baseSalary || row.commission));
+  if (!payrollRows.length) throw new Error('工资表未识别到包含基本工资或提成的人员数据');
+  const sheetMeta = workbook.Workbook?.Sheets?.find(item => item.name === sheetName);
+  return { sourceSheet: sheetName, hidden: Boolean(sheetMeta?.Hidden), maxRow: rows.length, maxCol: sheetRows.maxCol, declaredRange: sheetRows.declaredRange, effectiveRange: sheetRows.effectiveRange, rangeTrimmed: sheetRows.rangeTrimmed, headerRow: headerRowIndex + 1, payrollRows, rows: payrollRows.map(item => ({ row: item.row, cells: [item.name, item.region, item.baseSalary, item.commission] })) };
+};
+const parseConsultantRevenueDetail = workbook => {
+  for (const sheetName of workbook.SheetNames) {
+    const compactName = String(sheetName).replace(/\s+/g, ''); if (!/总营收明细|营收总明细/.test(compactName)) continue;
+    const sheetRows = uploadSheetRows(workbook.Sheets[sheetName], sheetName); const rows = sheetRows.rows;
+    const headerRowIndex = rows.slice(0, 60).findIndex(row => findHeaderIndex(row || [], [/签约顾问(?:\/渠道)?/, /签约顾问渠道/]) >= 0 && findHeaderIndex(row || [], [/预计营收/]) >= 0 && findHeaderIndex(row || [], [/业绩归属/, /归属地区/]) >= 0);
+    if (headerRowIndex < 0) continue;
+    const headers = rows[headerRowIndex] || []; const consultantIndex = findHeaderIndex(headers, [/签约顾问(?:\/渠道)?/, /签约顾问渠道/]); const revenueIndex = findHeaderIndex(headers, [/预计营收/]); const regionIndex = findHeaderIndex(headers, [/业绩归属/, /归属地区/]);
+    const detailRows = rows.slice(headerRowIndex + 1).map((cells, offset) => { const consultant = String(cells?.[consultantIndex] || '').trim(); const expectedRevenue = amountCell(cells?.[revenueIndex]); if (!consultant || !expectedRevenue) return null; return { row: headerRowIndex + offset + 2, consultant, canonicalName: consultantCanonicalName(consultant), region: String(cells?.[regionIndex] || '').trim(), expectedRevenue }; }).filter(Boolean);
+    return { sourceSheet: sheetName, headerRow: headerRowIndex + 1, rows: detailRows };
+  }
+  return { sourceSheet: '', headerRow: 0, rows: [] };
+};
 const revenueDimensionDefinitions = [
   { key: 'group', name: '集团维度', titlePattern: /集团维度/, tableKeys: ['B1', 'B2', 'B3'] },
   { key: 'direct', name: '单独直客维度', titlePattern: /单独直客维度/, tableKeys: ['B4', 'B5', 'B6'] },
@@ -1305,12 +1297,13 @@ const parseRevenueStatisticsSheet = (workbook, sheetName) => {
   const periodMatch = tables.map(table => table.title).join(' ').match(/(20\d{2})年(1[0-2]|0?[1-9])月/);
   const note = rows.flat().map(value => String(value || '').trim()).find(value => /^注[：:]/.test(value)) || '';
   const sheetMeta = workbook.Workbook?.Sheets?.find(item => item.name === sheetName);
-  return { sourceSheet: sheetName, sourcePeriod: periodMatch ? `${periodMatch[1]}-${String(periodMatch[2]).padStart(2, '0')}` : '', hidden: Boolean(sheetMeta?.Hidden), maxRow: rows.length, maxCol: sheetRows.maxCol, declaredRange: sheetRows.declaredRange, effectiveRange: sheetRows.effectiveRange, rangeTrimmed: sheetRows.rangeTrimmed, note, dimensions };
+  const consultantRevenue = parseConsultantRevenueDetail(workbook);
+  return { sourceSheet: sheetName, sourcePeriod: periodMatch ? `${periodMatch[1]}-${String(periodMatch[2]).padStart(2, '0')}` : '', hidden: Boolean(sheetMeta?.Hidden), maxRow: rows.length, maxCol: sheetRows.maxCol, declaredRange: sheetRows.declaredRange, effectiveRange: sheetRows.effectiveRange, rangeTrimmed: sheetRows.rangeTrimmed, note, dimensions, consultantRevenue };
 };
 const parseUploadedFile = (buffer, fileName, fileType) => {
   if (fileType === 'application/json' || fileName.toLowerCase().endsWith('.json')) {
     const parsed = JSON.parse(buffer.toString('utf8'));
-    return ['balance_sheet', 'income_statement', 'consolidated_income_statement', revenueProfitReportType, revenueStatisticsReportType, 'cash_flow', 'trial_balance', 'journal'].some(type => parsed[type]) ? parsed : { uploaded: parsed };
+    return ['balance_sheet', 'income_statement', 'consolidated_income_statement', revenueProfitReportType, revenueStatisticsReportType, payrollStatementReportType, 'cash_flow', 'trial_balance', 'journal'].some(type => parsed[type]) ? parsed : { uploaded: parsed };
   }
   const workbook = XLSX.read(buffer, { type: 'buffer', cellDates: false });
   const reports = {};
@@ -1320,6 +1313,7 @@ const parseUploadedFile = (buffer, fileName, fileType) => {
     consolidated_income_statement: /^(?:桉侨)?集团(?:合并)?利润表$/,
     [revenueProfitReportType]: /^(?:营收利润口径|营收口径)集团(?:合并)?利润表$/,
     [revenueStatisticsReportType]: /^(?:20\d{2}年)?数据统计汇总表[（(]?mia[）)]?$/i,
+    [payrollStatementReportType]: /工资|薪酬明细/,
     cash_flow: /^(?:(?:20\d{2}年)?\d{1,2}月)?现金流量表(?:-钱去向)?$/,
     trial_balance: /^(?:(?:20\d{2}年)?\d{1,2}月)?科目余额表$/,
     journal: /^(?:(?:20\d{2}年)?\d{1,2}月)?序时账$/
@@ -1328,6 +1322,7 @@ const parseUploadedFile = (buffer, fileName, fileType) => {
     const sheetName = workbook.SheetNames.find(name => pattern.test(String(name).replace(/\s+/g, '')));
     if (!sheetName) continue;
     if (type === revenueStatisticsReportType) { reports[type] = parseRevenueStatisticsSheet(workbook, sheetName); continue; }
+    if (type === payrollStatementReportType) { reports[type] = parsePayrollSheet(workbook, sheetName); continue; }
     const sheetRows = uploadSheetRows(workbook.Sheets[sheetName], sheetName); let rows = sheetRows.rows;
     if (['balance_sheet', 'income_statement', 'cash_flow'].includes(type)) rows = normalizeStatementDate(rows);
     if (groupStatementReportTypes.has(type)) rows = statementRowsFromSheet(workbook, sheetName, type === revenueProfitReportType ? 'B1:H50' : 'B1:E50');
@@ -1360,7 +1355,7 @@ const parseUploadedFile = (buffer, fileName, fileType) => {
     const sheetMeta = workbook.Workbook?.Sheets?.find(item => item.name === cashFlowWorkpaperName);
     reports.cash_flow_workpaper = { sourceSheet: cashFlowWorkpaperName, hidden: Boolean(sheetMeta?.Hidden), maxRow: rows.length, maxCol, declaredRange: sheetRows.declaredRange, effectiveRange: sheetRows.effectiveRange, rangeTrimmed: sheetRows.rangeTrimmed, rows: rows.map((cells, index) => ({ row: index + 1, cells })) };
   }
-  if (!Object.keys(reports).length) throw new Error('未找到可识别的资产负债表、利润表、集团合并利润表、营收利润口径合并利润表、营收统计汇总表、现金流量表、科目余额表或序时账工作表');
+  if (!Object.keys(reports).length) throw new Error('未找到可识别的资产负债表、利润表、集团合并利润表、营收利润口径合并利润表、营收统计汇总表、工资表、现金流量表、科目余额表或序时账工作表');
   return reports;
 };
 const uploadPeriodHint = (fileName, reports, selectedPeriod) => {
@@ -1486,6 +1481,32 @@ const groupProfitAnalysisFor = (period, year) => {
     source: monthly.length ? { noData: false, reportType: 'consolidated_income_statement', reportName: '桉侨集团合并利润表', periods: monthly.map(item => item.period), files: [...new Set(monthly.map(item => item.sourceName))] } : { noData: true, reportType: 'consolidated_income_statement', reportName: '桉侨集团合并利润表', periods: [], files: [] }
   };
 };
+const consultantRoiAnalysisFor = (employeeKey, period) => {
+  const payroll = rawReportFor(payrollStatementReportType, 'group', period); const revenue = rawReportFor(revenueStatisticsReportType, 'group', period);
+  const payrollRows = payroll.raw?.payrollRows || []; const revenueRows = revenue.raw?.consultantRevenue?.rows || [];
+  const consultants = new Map();
+  const ensure = (canonicalName, displayName) => { if (!consultants.has(canonicalName)) consultants.set(canonicalName, { canonicalName, name: displayName || canonicalName, regions: new Set(), baseSalary: 0, commission: 0, journalExpense: 0, expectedRevenue: 0, payrollDetails: [], revenueDetails: [], expenseDetails: [] }); return consultants.get(canonicalName); };
+  for (const item of payrollRows) { const row = ensure(item.canonicalName || consultantCanonicalName(item.name), item.name); row.baseSalary += Number(item.baseSalary || 0); row.commission += Number(item.commission || 0); row.payrollDetails.push({ sourceSheet: payroll.raw.sourceSheet, row: item.row, baseSalary: item.baseSalary, commission: item.commission }); }
+  for (const item of revenueRows) { const row = ensure(item.canonicalName || consultantCanonicalName(item.consultant), item.consultant); row.expectedRevenue += Number(item.expectedRevenue || 0); if (item.region) row.regions.add(item.region); row.revenueDetails.push({ sourceSheet: revenue.raw.consultantRevenue?.sourceSheet, row: item.row, expectedRevenue: item.expectedRevenue, region: item.region }); }
+  const profile = permissionProfileFor(employeeKey); const sourceCompanies = authorizedCompaniesFor(employeeKey).filter(company => company.key !== 'group' && profileScopeAllows(profile, company.key, period)); const journalSources = [];
+  for (const company of sourceCompanies) {
+    const journal = rawReportFor('journal', company.key, period); journalSources.push({ companyKey: company.key, companyName: company.name, ...journal.meta }); if (journal.meta.noData) continue;
+    const raw = journal.raw; const summaryIndex = journalColumnIndex(raw, '摘要', 2); const accountIndex = journalColumnIndex(raw, '科目名称', 4); const debitIndex = journalColumnIndex(raw, '借方金额', 5); const creditIndex = journalColumnIndex(raw, '贷方金额', 6); const voucherIndex = journalColumnIndex(raw, '凭证号', 1);
+    const rows = withoutProfitClosingEntries(raw.rows || [], row => row.cells?.[summaryIndex], row => row.cells?.[voucherIndex]);
+    for (const sourceRow of rows) {
+      const cells = sourceRow.cells || []; const account = String(cells[accountIndex] || '').trim(); const summary = String(cells[summaryIndex] || '').trim();
+      if (!/^(?:销售费用|管理费用)(?:[-—－]|$)/.test(account) || /工资|薪酬|提成/.test(`${account}${summary}`)) continue;
+      const searchable = `${summary}${account}`.replace(/\s+/g, '').toLowerCase(); const matched = [...consultants.values()].filter(item => item.canonicalName.length >= 2 && searchable.includes(item.canonicalName.toLowerCase()));
+      if (matched.length !== 1) continue;
+      const amount = Number(cells[debitIndex] || 0) - Number(cells[creditIndex] || 0); if (Math.abs(amount) < 0.000001) continue;
+      matched[0].journalExpense += amount; matched[0].expenseDetails.push({ companyKey: company.key, companyName: company.name, row: sourceRow.row, date: journalDateFor(sourceRow), voucher: String(cells[voucherIndex] || ''), summary, account, amount: roundedAmount(amount) });
+    }
+  }
+  const rows = [...consultants.values()].map(item => { const input = roundedAmount(item.baseSalary + item.commission + item.journalExpense); const output = roundedAmount(item.expectedRevenue); return { name: item.name, canonicalName: item.canonicalName, region: [...item.regions].join('、') || '待补充', baseSalary: roundedAmount(item.baseSalary), commission: roundedAmount(item.commission), journalExpense: roundedAmount(item.journalExpense), input, output, roi: input ? output / input : null, matchStatus: item.payrollDetails.length && item.revenueDetails.length ? 'matched' : item.payrollDetails.length ? 'missing_revenue' : 'missing_payroll', payrollDetails: item.payrollDetails, revenueDetails: item.revenueDetails, expenseDetails: item.expenseDetails }; }).sort((a, b) => b.output - a.output || b.input - a.input);
+  const totals = rows.reduce((sum, row) => ({ input: sum.input + row.input, output: sum.output + row.output, baseSalary: sum.baseSalary + row.baseSalary, commission: sum.commission + row.commission, journalExpense: sum.journalExpense + row.journalExpense }), { input: 0, output: 0, baseSalary: 0, commission: 0, journalExpense: 0 });
+  Object.keys(totals).forEach(key => { totals[key] = roundedAmount(totals[key]); }); totals.roi = totals.input ? totals.output / totals.input : null;
+  return { company: '桉侨集团', period, rows, totals, sources: { payroll: payroll.meta, payrollSheet: payroll.raw?.sourceSheet || '', revenue: revenue.meta, revenueSheet: revenue.raw?.consultantRevenue?.sourceSheet || '', journals: journalSources }, missing: [payroll.meta.noData ? '每月工资表' : '', revenue.meta.noData || !revenueRows.length ? '营收统计表·总营收明细表' : '', ...journalSources.filter(item => item.noData).map(item => `${item.companyName}序时账`)].filter(Boolean) };
+};
 const briefLineName = value => String(value || '')
   .replace(/\s+/g, '')
   .replace(/^[一二三四五六七八九十]+、/, '')
@@ -1549,48 +1570,23 @@ const briefEntityForCompany = (raw, company) => {
 };
 const briefAdvertisingForCompany = (companyKey, period) => {
   const trial = rawReportFor('trial_balance', companyKey, period);
-  if (!trial.meta.noData) {
-    const header = (trial.raw.rows || []).find(row => (row.cells || []).some(value => String(value || '').trim() === '本期发生额'));
-    const currentDebitIndex = (header?.cells || []).findIndex(value => String(value || '').trim() === '本期发生额');
-    if (currentDebitIndex >= 0) {
-      const matched = (trial.raw.rows || []).map(row => ({ row, code: String(row.cells?.[0] || '').trim(), name: String(row.cells?.[1] || '').trim() }))
-        .filter(item => /广宣费|广告费|业务宣传费|宣传费/.test(item.name));
-      const leaves = matched.filter(item => !matched.some(other => other !== item && item.code && other.code.startsWith(item.code) && other.code.length > item.code.length));
-      const debitAmount = roundedAmount(leaves.reduce((sum, item) => sum + Number(item.row.cells?.[currentDebitIndex] || 0), 0));
-      const creditAmount = roundedAmount(leaves.reduce((sum, item) => sum + Number(item.row.cells?.[currentDebitIndex + 1] || 0), 0));
-      return { available: true, amount: roundedAmount(debitAmount - creditAmount), debitAmount, creditAmount, basis: '本期发生额（借方－贷方）', source: trial.meta.fileName, sourceSheet: trial.raw.sourceSheet || '科目余额表', report: '科目余额表' };
-    }
-  }
-  const journal = rawReportFor('journal', companyKey, period);
-  if (journal.meta.noData) return { available: false, amount: null, source: '', sourceSheet: '', report: '科目余额表/序时账' };
-  const rows = withoutProfitClosingEntries(journal.raw.rows || [], row => row.cells?.[2], row => row.cells?.[1]);
-  const accountIndex = journalColumnIndex(journal.raw, '科目名称', 4);
-  const debitIndex = journalColumnIndex(journal.raw, '借方金额', 5);
-  const creditIndex = journalColumnIndex(journal.raw, '贷方金额', 6);
-  const matchedRows = rows.filter(row => /销售费用/.test(String(row.cells?.[accountIndex] || '')) && /广宣费|广告费|业务宣传费|宣传费/.test(String(row.cells?.[accountIndex] || '')));
-  const debitAmount = roundedAmount(matchedRows.reduce((sum, row) => sum + Number(row.cells?.[debitIndex] || 0), 0));
-  const creditAmount = roundedAmount(matchedRows.reduce((sum, row) => sum + Number(row.cells?.[creditIndex] || 0), 0));
-  return { available: true, amount: roundedAmount(debitAmount - creditAmount), debitAmount, creditAmount, basis: '序时账发生额（借方－贷方）', source: journal.meta.fileName, sourceSheet: journal.raw.sourceSheet || '序时账', report: '序时账' };
+  if (trial.meta.noData) return { available: false, amount: null, source: '', sourceSheet: '', report: '科目余额表' };
+  const header = (trial.raw.rows || []).find(row => (row.cells || []).some(value => String(value || '').trim() === '本期发生额'));
+  const currentDebitIndex = (header?.cells || []).findIndex(value => String(value || '').trim() === '本期发生额');
+  if (currentDebitIndex < 0) return { available: false, amount: null, source: trial.meta.fileName, sourceSheet: trial.raw.sourceSheet || '科目余额表', report: '科目余额表' };
+  const matched = (trial.raw.rows || []).map(row => ({ row, code: String(row.cells?.[0] || '').trim(), name: String(row.cells?.[1] || '').trim() }))
+    .filter(item => /广宣费|广告费|业务宣传费|宣传费/.test(item.name));
+  const leaves = matched.filter(item => !matched.some(other => other !== item && item.code && other.code.startsWith(item.code) && other.code.length > item.code.length));
+  const debitAmount = roundedAmount(leaves.reduce((sum, item) => sum + (briefNumericAmount(item.row.cells?.[currentDebitIndex]) ?? 0), 0));
+  return { available: true, amount: debitAmount, source: trial.meta.fileName, sourceSheet: trial.raw.sourceSheet || '科目余额表', report: '科目余额表' };
 };
 const financialBriefFor = (companyKey, period) => {
   const company = companyRow(companyKey);
   const groupRevenue = rawReportFor(revenueProfitReportType, 'group', period);
   const revenueRaw = companyKey === 'group' ? groupRevenue.raw : briefEntityForCompany(groupRevenue.raw, company);
   const standard = rawReportFor(companyKey === 'group' ? 'consolidated_income_statement' : 'income_statement', companyKey, period);
-  const sources = []; const missing = []; const advertisingSources = [];
+  const sources = []; const missing = [];
   const addSource = (report, fileName, scope = '', category = 'general') => { if (fileName && !sources.some(item => item.report === report && item.fileName === fileName && item.scope === scope && item.category === category)) sources.push({ report, fileName, scope, category }); };
-  const addAdvertisingSource = (item, advertising) => advertisingSources.push({
-    companyKey: item.company_key,
-    companyName: item.company_name,
-    available: advertising.available,
-    amount: advertising.available ? advertising.amount : null,
-    debitAmount: advertising.available ? advertising.debitAmount : null,
-    creditAmount: advertising.available ? advertising.creditAmount : null,
-    basis: advertising.basis || '',
-    report: advertising.report,
-    fileName: advertising.source,
-    sourceSheet: advertising.sourceSheet || ''
-  });
   if (!groupRevenue.meta.noData && revenueRaw) addSource('（营收利润口径）合并利润表', groupRevenue.meta.fileName, companyKey === 'group' ? '集团' : company.company_name);
   else if (groupRevenue.meta.noData) missing.push('（营收利润口径）合并利润表');
   else missing.push(`（营收利润口径）合并利润表未找到${company.company_name}对应工作表`);
@@ -1602,9 +1598,8 @@ const financialBriefFor = (companyKey, period) => {
     const advertising = briefAdvertisingForCompany(companyKey, period);
     if (!balance.meta.noData) { accountBalance = briefStatementAmount(balance.raw, '货币资金'); addSource('资产负债表', balance.meta.fileName, company.company_name); }
     else missing.push(`账户余额来源缺少：${company.company_name}（资产负债表）`);
-    addAdvertisingSource({ company_key: companyKey, company_name: company.company_name }, advertising);
-    if (advertising.available) { advertisingExpense = advertising.amount; addSource(advertising.report, advertising.source, company.company_name, 'advertising'); }
-    else missing.push(`广宣费来源缺少：${company.company_name}（科目余额表或序时账）`);
+    if (advertising.available) advertisingExpense = advertising.amount;
+    else missing.push(`广宣费来源缺少：${company.company_name}（科目余额表）`);
   } else {
     const entities = (groupRevenue.raw?.entities || []).map(entity => ({ entity, alias: briefCompanyAlias(entity.companyName || entity.sourceSheet) }));
     companyOrderFor();
@@ -1616,12 +1611,11 @@ const financialBriefFor = (companyKey, period) => {
       const balance = rawReportFor('balance_sheet', item.company_key, period); const advertising = briefAdvertisingForCompany(item.company_key, period);
       if (balance.meta.noData) { balanceComplete = false; balanceMissingCompanies.push(item.company_name); }
       else { const amount = briefStatementAmount(balance.raw, '货币资金'); if (amount === null) { balanceComplete = false; balanceMissingCompanies.push(item.company_name); } else balanceTotal += amount; addSource('资产负债表', balance.meta.fileName, item.company_name); }
-      addAdvertisingSource(item, advertising);
       if (!advertising.available) { advertisingComplete = false; advertisingMissingCompanies.push(item.company_name); }
-      else { advertisingTotal += advertising.amount; addSource(advertising.report, advertising.source, item.company_name, 'advertising'); }
+      else advertisingTotal += advertising.amount;
     }
     if (balanceComplete) accountBalance = roundedAmount(balanceTotal); else missing.push(`账户余额来源缺少：${balanceMissingCompanies.join('、') || '尚未识别集团子公司'}（资产负债表）`);
-    if (advertisingComplete) advertisingExpense = roundedAmount(advertisingTotal); else missing.push(`广宣费来源缺少：${advertisingMissingCompanies.join('、') || '尚未识别集团子公司'}（科目余额表或序时账）`);
+    if (advertisingComplete) advertisingExpense = roundedAmount(advertisingTotal); else missing.push(`广宣费来源缺少：${advertisingMissingCompanies.join('、') || '尚未识别集团子公司'}（科目余额表）`);
   }
   const valueOrNull = (raw, name) => raw ? briefStatementAmount(raw, name) : null;
   const metrics = {
@@ -1637,7 +1631,7 @@ const financialBriefFor = (companyKey, period) => {
     comprehensiveRevenueProfit: revenueRaw ? valueOrNull(revenueRaw, '净利润') : null
   };
   for (const [key, label] of Object.entries({ expectedRevenue: '预计营收', accountBalance: '账户余额', operatingRevenue: '营业收入', operatingCost: '营业成本', sellingExpense: '销售费用', advertisingExpense: '广宣费', managementExpense: '管理费用', financeExpense: '财务费用', netProfit: '净利润', comprehensiveRevenueProfit: '营收综合利润' })) if (metrics[key] === null && !missing.some(item => item === label || item.startsWith(`${label}来源`))) missing.push(label);
-  return { company: company.company_name, companyKey, period, scopeLabel: companyKey === 'group' ? '集团方面' : `${company.company_name}方面`, metrics, sources, advertisingSources, missing: [...new Set(missing)], complete: missing.length === 0 };
+  return { company: company.company_name, companyKey, period, scopeLabel: companyKey === 'group' ? '集团方面' : `${company.company_name}方面`, metrics, sources, missing: [...new Set(missing)], complete: missing.length === 0 };
 };
 const sendStatic = (req, res, pathname) => {
   const safe = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, ''); const file = path.resolve(publicDir, safe);
@@ -1646,7 +1640,7 @@ const sendStatic = (req, res, pathname) => {
   const type = file.endsWith('.html') ? 'text/html; charset=utf-8' : file.endsWith('.js') ? 'text/javascript; charset=utf-8' : file.endsWith('.css') ? 'text/css; charset=utf-8' : 'application/octet-stream';
   const sharePageUrl = publicBaseUrl ? `${publicBaseUrl}/` : `${appBasePath || ''}/`;
   const shareImageUrl = publicBaseUrl ? `${publicBaseUrl}/anqiao-logo.png` : `${appBasePath || ''}/anqiao-logo.png`;
-  const body = file.endsWith('.html') ? fs.readFileSync(file, 'utf8').replaceAll('__APP_BASE_PATH__', appBasePath).replaceAll('__SHARE_PAGE_URL__', sharePageUrl).replaceAll('__SHARE_IMAGE_URL__', shareImageUrl) : fs.readFileSync(file);
+  const body = file.endsWith('.html') ? fs.readFileSync(file, 'utf8').replaceAll('__APP_BASE_PATH__', appBasePath).replaceAll('__PORTAL_HOME_URL__', portalHomeUrl).replaceAll('__PLATFORM_LOGIN_URL__', platformLoginUrl).replaceAll('__PLATFORM_API_BROWSER_BASE_PATH__', platformApiBrowserBasePath).replaceAll('__SHARE_PAGE_URL__', sharePageUrl).replaceAll('__SHARE_IMAGE_URL__', shareImageUrl) : fs.readFileSync(file);
   text(res, 200, body, type);
 };
 
@@ -1654,54 +1648,51 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`);
   try {
     if (url.pathname === '/api/health') return json(res, 200, { ok: true, version: appVersion, authMode, name: '桉侨集团财务报表看板' });
-    if (url.pathname === '/auth/wecom') {
-      if (authMode !== 'wecom') return redirect(res, appPath('/'));
-      return redirect(res, wecomLoginUrl());
+    if (url.pathname === '/auth/wecom' || url.pathname === '/auth/wecom/callback') return redirect(res, authMode === 'platform' ? platformLoginUrl : appPath('/'));
+    if (url.pathname === '/auth/logout') return redirect(res, authMode === 'platform' ? platformLoginUrl : appPath('/'), { 'set-cookie': clearSessionCookie() });
+    if (url.pathname === '/api/auth/platform-session' && req.method === 'POST') {
+      if (authMode !== 'platform') return bad(res, 404, '当前环境未启用小Q统一认证');
+      const accessToken = parseBearerToken(req.headers.authorization);
+      if (!accessToken) return json(res, 401, { error: '缺少小Q登录凭证', loginUrl: platformLoginUrl });
+      try {
+        const [profile, rolePayload] = await Promise.all([
+          platformJson('/auth/me', accessToken),
+          platformJson('/data-dist/my-roles', accessToken),
+        ]);
+        const platformRoles = Array.isArray(rolePayload) ? rolePayload : rolePayload?.roles;
+        const identity = normalizePlatformIdentity(profile, platformRoles);
+        if (!identity || !hasFinancePlatformAccess(identity.roles)) return bad(res, 403, accessDeniedMessage);
+        if (identity.roles.includes('admin')) {
+          try {
+            const groups = await platformJson('/data-dist/user-groups', accessToken);
+            syncPlatformDirectory(groups, identity.employeeKey);
+          } catch (error) {
+            const message = String(error?.message || '小Q成员目录同步失败').slice(0, 300);
+            const previous = directorySyncState();
+            db.prepare("INSERT INTO directory_sync_state(source, status, last_attempt_at, last_error, employee_count) VALUES ('platform', 'failed', ?, ?, ?) ON CONFLICT(source) DO UPDATE SET status = 'failed', last_attempt_at = excluded.last_attempt_at, last_error = excluded.last_error").run(now(), message, Number(previous.employeeCount || 0));
+          }
+        }
+        const employee = upsertPlatformEmployee(identity);
+        log(employee.employee_key, 'platform_login', employee.employee_key, `小Q统一登录：${identity.roles.join(',')}`);
+        return json(res, 200, { ok: true, employee: { key: employee.employee_key, name: employee.display_name }, roles: identity.roles }, { 'set-cookie': sessionCookie(employee.employee_key) });
+      } catch (error) {
+        if (error instanceof PlatformApiError && error.status === 401) return json(res, 401, { error: error.message, loginUrl: platformLoginUrl });
+        if (error instanceof PlatformApiError && error.status === 403) return bad(res, 403, accessDeniedMessage);
+        return bad(res, 502, '暂时无法连接小Q认证服务，请稍后重试');
+      }
     }
-    if (url.pathname === '/auth/wecom/callback') {
-      if (authMode !== 'wecom') return redirect(res, appPath('/'));
-      const code = url.searchParams.get('code'); const state = verifyPayload(url.searchParams.get('state'), 'oauth');
-      if (!code || !state) return bad(res, 400, '企业微信登录参数无效或已过期，请重新进入应用');
-      const token = await wecomAccessToken(); const identity = await wecomJson(wecomApiUrl('/cgi-bin/user/getuserinfo', { access_token: token, code }));
-      if (!identity.UserId) return bad(res, 403, '当前身份不是应用可见范围内的企业成员');
-      const employee = await syncWecomEmployee(identity.UserId); log(employee.employee_key, 'wecom_login', employee.employee_key, '企业微信 OAuth 登录');
-      return redirect(res, appPath('/'), { 'set-cookie': sessionCookie(employee.employee_key) });
-    }
-    if (url.pathname === '/auth/logout') return redirect(res, authMode === 'wecom' ? appPath('/auth/wecom') : appPath('/'), { 'set-cookie': clearSessionCookie() });
     if (!url.pathname.startsWith('/api/')) {
-      if (authMode === 'wecom' && !employeeFrom(req)) return redirect(res, appPath('/auth/wecom'));
       return sendStatic(req, res, url.pathname);
-    }
-    if (url.pathname === '/api/wecom/js-sdk-config' && req.method === 'GET') {
-      const employee = requireEmployee(req, res); if (!employee) return;
-      if (authMode !== 'wecom') return json(res, 200, { enabled: false, authMode });
-      let pageUrl;
-      try { pageUrl = normalizeSharePageUrl(url.searchParams.get('url')); }
-      catch { return bad(res, 400, '分享页面地址无效'); }
-      const timestamp = Math.floor(Date.now() / 1000); const nonceStr = crypto.randomBytes(16).toString('hex');
-      const [corpTicket, agentTicket] = await Promise.all([wecomJsApiTicket('corp'), wecomJsApiTicket('agent_config')]);
-      return json(res, 200, {
-        enabled: true,
-        corpId: wecomConfig.corpId,
-        agentId: wecomConfig.agentId,
-        timestamp,
-        nonceStr,
-        signature: wecomJsSdkSignature(corpTicket, nonceStr, timestamp, pageUrl),
-        agentSignature: wecomJsSdkSignature(agentTicket, nonceStr, timestamp, pageUrl)
-      });
     }
     if (url.pathname === '/api/bootstrap' && req.method === 'GET') {
       const employee = requireEmployee(req, res); if (!employee) return;
-      if (authMode === 'wecom' && /^企微部门\s+\d+$/.test(employee.department)) {
-        try { Object.assign(employee, await syncWecomEmployee(employee.employee_key)); } catch {}
-      }
       const companyKey = url.searchParams.get('company') || 'gz'; const period = url.searchParams.get('period') || '2026-06';
       const roleNames = rolesFor(employee.employee_key).map(r => r.role_name);
       const reportTypes = db.prepare('SELECT report_type AS key, report_name AS name FROM report_types ORDER BY rowid').all();
       const canViewDetails = hasModule(employee.employee_key, 'report_detail', 'view');
       const reportDetailAccess = Object.fromEntries(reportTypes.map(item => [item.key, canViewDetails && hasReport(employee.employee_key, item.key, 'detail', 'view', companyKey, period)]));
       const consolidatedEntitiesByReport = Object.fromEntries([...groupStatementReportTypes].map(type => [type, consolidatedEntitiesFor(type, companyKey, period, employee.employee_key)]));
-      return json(res, 200, { authMode, employee: { key: employee.employee_key, name: employee.display_name, department: employee.department }, roles: roleNames, reportWatermarkEnabled: reportWatermarkEnabled(), reportDetailAccess, canManagePermissions: hasModule(employee.employee_key, 'permission_admin', 'manage'), canManageReportData: hasModule(employee.employee_key, 'database_admin', 'view'), canCreateCompanies: hasModule(employee.employee_key, 'permission_admin', 'manage') && permissionProfileFor(employee.employee_key).companyKeys.includes('*'), canReorderCompanies: hasModule(employee.employee_key, 'permission_admin', 'manage') && permissionProfileFor(employee.employee_key).companyKeys.includes('*'), canUploadReports: hasModule(employee.employee_key, 'report_import', 'upload'), canPublishReports: hasModule(employee.employee_key, 'report_import', 'publish'), availablePeriodsByCompany: availablePeriodsByCompanyFor(employee.employee_key), employees: authMode === 'demo' ? db.prepare('SELECT employee_key AS key, display_name AS name, department FROM employees WHERE active = 1 ORDER BY employee_key').all() : [{ key: employee.employee_key, name: employee.display_name, department: employee.department }], companies: authorizedCompaniesFor(employee.employee_key), reportTypes, modules: visibleModulesFor(employee.employee_key, companyKey, period), consolidatedEntities: consolidatedEntitiesByReport.consolidated_income_statement, consolidatedEntitiesByReport, moduleOrder: moduleOrderFor(), analysisBlockOrder: allAnalysisBlockOrders() });
+      return json(res, 200, { authMode, employee: { key: employee.employee_key, name: employee.display_name, department: employee.department }, roles: roleNames, reportWatermarkEnabled: reportWatermarkEnabled(), reportDetailAccess, canManagePermissions: hasModule(employee.employee_key, 'permission_admin', 'manage'), canManageReportData: hasModule(employee.employee_key, 'database_admin', 'view'), canCreateCompanies: hasModule(employee.employee_key, 'permission_admin', 'manage') && permissionProfileFor(employee.employee_key).companyKeys.includes('*'), canReorderCompanies: hasModule(employee.employee_key, 'permission_admin', 'manage') && permissionProfileFor(employee.employee_key).companyKeys.includes('*'), canUploadReports: hasModule(employee.employee_key, 'report_import', 'upload'), canPublishReports: hasModule(employee.employee_key, 'report_import', 'publish'), availablePeriodsByCompany: availablePeriodsByCompanyFor(employee.employee_key), employees: authMode === 'demo' ? db.prepare('SELECT employee_key AS key, display_name AS name, department FROM employees WHERE active = 1 ORDER BY employee_key').all() : [{ key: employee.employee_key, name: employee.display_name, department: employee.department }], companies: authorizedCompaniesFor(employee.employee_key), reportTypes, modules: visibleModulesFor(employee.employee_key, companyKey, period), consolidatedEntities: consolidatedEntitiesByReport.consolidated_income_statement, consolidatedEntitiesByReport, moduleOrder: moduleOrderFor(), analysisBlockOrder: allAnalysisBlockOrders(), analysisBlockAccess: analysisBlockAccessFor(employee.employee_key, companyKey, period) });
     }
     if (url.pathname === '/api/admin/report-watermark' && req.method === 'POST') {
       const employee = requireEmployee(req, res); if (!employee || !hasModule(employee.employee_key, 'permission_admin', 'manage')) { if (employee) bad(res, 403, '没有权限修改员工水印设置'); return; }
@@ -1725,15 +1716,47 @@ const server = http.createServer(async (req, res) => {
     }
     if (url.pathname === '/api/uploads' && req.method === 'GET') {
       const employee = requireImport(req, res, 'upload'); if (!employee) return;
-      const companyKey = url.searchParams.get('company') || ''; const period = url.searchParams.get('period') || '';
-      let query = 'SELECT upload_key AS uploadKey, employee_key AS employeeKey, company_key AS companyKey, period, report_type AS reportType, file_name AS fileName, file_type AS fileType, content_hash AS contentHash, status, validation_message AS validationMessage, created_at AS createdAt, published_at AS publishedAt, notes FROM upload_batches WHERE 1=1'; const args = [];
-      if (companyKey) { query += ' AND company_key = ?'; args.push(companyKey); } if (period) { query += ' AND period = ?'; args.push(period); }
-      query += ' ORDER BY created_at DESC'; const uploads = db.prepare(query).all(...args).map(item => ({ ...item, canDelete: canDeleteUpload(employee.employee_key, item) })); return json(res, 200, { uploads });
+      const companyKey = String(url.searchParams.get('company') || '').trim(); const period = String(url.searchParams.get('period') || '').trim();
+      const reportType = String(url.searchParams.get('reportType') || '').trim(); const search = String(url.searchParams.get('search') || '').trim().slice(0, 80);
+      const view = String(url.searchParams.get('view') || 'all').trim(); const page = Math.max(1, Number(url.searchParams.get('page') || 1) || 1);
+      const pageSize = url.searchParams.has('pageSize') ? Math.min(50, Math.max(5, Number(url.searchParams.get('pageSize')) || 10)) : 200;
+      if (period && !/^\d{4}-\d{2}$/.test(period)) return bad(res, 400, '上传历史期间格式无效');
+      if (reportType && !reportTypeRow(reportType)) return bad(res, 400, '上传历史报表类型无效');
+      if (!['all', 'pending', 'versions'].includes(view)) return bad(res, 400, '上传历史视图无效');
+      const profile = permissionProfileFor(employee.employee_key); const scopeConditions = ['period >= ?', 'period <= ?']; const scopeArgs = [profile.fromPeriod, profile.toPeriod];
+      if (!profile.companyKeys.includes('*')) {
+        const companyKeys = profile.companyKeys.filter(key => companyRow(key));
+        if (companyKeys.length) { scopeConditions.push(`company_key IN (${companyKeys.map(() => '?').join(',')})`); scopeArgs.push(...companyKeys); }
+        else scopeConditions.push('0=1');
+      }
+      const scopeWhere = `WHERE ${scopeConditions.join(' AND ')}`;
+      const conditions = [...scopeConditions]; const args = [...scopeArgs];
+      if (companyKey) { conditions.push('company_key = ?'); args.push(companyKey); }
+      if (period) { conditions.push('period = ?'); args.push(period); }
+      if (reportType) { conditions.push('report_type = ?'); args.push(reportType); }
+      if (search) { conditions.push('(file_name LIKE ? OR upload_key LIKE ?)'); args.push(`%${search}%`, `%${search}%`); }
+      const baseWhere = `WHERE ${conditions.join(' AND ')}`;
+      const counts = db.prepare(`SELECT COUNT(*) AS total, SUM(CASE WHEN status NOT IN ('published','superseded') THEN 1 ELSE 0 END) AS pending, SUM(CASE WHEN status = 'published' THEN 1 ELSE 0 END) AS current, SUM(CASE WHEN status = 'superseded' THEN 1 ELSE 0 END) AS history FROM upload_batches ${baseWhere}`).get(...args);
+      const viewCondition = view === 'pending' ? "status NOT IN ('published','superseded')" : view === 'versions' ? "status IN ('published','superseded')" : '';
+      const viewWhere = viewCondition ? `${baseWhere} AND ${viewCondition}` : baseWhere;
+      const total = Number(db.prepare(`SELECT COUNT(*) AS count FROM upload_batches ${viewWhere}`).get(...args).count || 0);
+      const totalPages = Math.max(1, Math.ceil(total / pageSize)); const effectivePage = Math.min(page, totalPages);
+      const query = `SELECT upload_key AS uploadKey, employee_key AS employeeKey, company_key AS companyKey, period, report_type AS reportType, file_name AS fileName, file_type AS fileType, content_hash AS contentHash, status, validation_message AS validationMessage, created_at AS createdAt, published_at AS publishedAt, notes FROM upload_batches ${viewWhere} ORDER BY period DESC, company_key, created_at DESC LIMIT ? OFFSET ?`;
+      const uploads = db.prepare(query).all(...args, pageSize, (effectivePage - 1) * pageSize).map(item => ({ ...item, canDelete: canDeleteUpload(employee.employee_key, item) }));
+      const filterOptions = { periods: db.prepare(`SELECT DISTINCT period FROM upload_batches ${scopeWhere} ORDER BY period DESC`).all(...scopeArgs).map(item => item.period), reportTypes: db.prepare(`SELECT DISTINCT report_type AS reportType FROM upload_batches ${scopeWhere} ORDER BY report_type`).all(...scopeArgs).map(item => item.reportType) };
+      return json(res, 200, { uploads, total, page: effectivePage, pageSize, summary: { total: Number(counts.total || 0), pending: Number(counts.pending || 0), current: Number(counts.current || 0), history: Number(counts.history || 0) }, filterOptions });
     }
     if (url.pathname === '/api/uploads' && req.method === 'POST') {
       const employee = requireImport(req, res, 'upload'); if (!employee) return;
       const body = await parseBody(req); const { companyKey, period, reportType = '', fileName, fileType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', contentBase64, notes = '' } = body;
-      if (!companyRow(companyKey) || (reportType && !reportTypeRow(reportType)) || !/^\d{4}-\d{2}$/.test(String(period || '')) || !fileName || !contentBase64) return bad(res, 400, '公司、期间和文件均为必填；如为单报表上传可指定报表类型');
+      const uploadIssues = []; const uploadIssueFields = [];
+      if (!companyKey) { uploadIssues.push('未选择上传公司'); uploadIssueFields.push('companyKey'); }
+      else if (!companyRow(companyKey)) { uploadIssues.push('上传公司不存在或已失效'); uploadIssueFields.push('companyKey'); }
+      if (!/^\d{4}-\d{2}$/.test(String(period || ''))) { uploadIssues.push(period ? '报表期间格式无效' : '未选择报表期间'); uploadIssueFields.push('period'); }
+      if (reportType && !reportTypeRow(reportType)) { uploadIssues.push('报表类型不存在或已失效'); uploadIssueFields.push('reportType'); }
+      if (!fileName) { uploadIssues.push('未传入文件名称'); uploadIssueFields.push('fileName'); }
+      if (!contentBase64) { uploadIssues.push('未传入文件内容，请重新选择文件'); uploadIssueFields.push('contentBase64'); }
+      if (uploadIssues.length) return bad(res, 400, `上传信息不完整：${uploadIssues.join('；')}`, { code: 'UPLOAD_REQUEST_INVALID', fields: [...new Set(uploadIssueFields)] });
       const buffer = Buffer.from(String(contentBase64).replace(/^data:[^;]+;base64,/, ''), 'base64'); if (!buffer.length) return bad(res, 400, '文件内容为空');
       const bundleKey = `upl-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`; const safeName = path.basename(String(fileName)).replace(/[^\w.\-\u4e00-\u9fa5]/g, '_'); const storagePath = path.join(uploadsDir, `${bundleKey}-${safeName}`); const rawPath = path.join(uploadsDir, `${bundleKey}.json`);
       let reports; try { reports = parseUploadedFile(buffer, safeName, fileType); } catch (error) { return bad(res, 400, `文件解析失败：${error.message}`); }
@@ -1746,7 +1769,7 @@ const server = http.createServer(async (req, res) => {
       const recognizedTypes = Object.keys(reports).filter(type => reportTypeRow(type)); const selectedTypes = recognizedTypes.length > 1 || !reportType ? recognizedTypes : recognizedTypes.filter(type => type === reportType);
       if (!selectedTypes.length) return bad(res, 400, reportType ? '文件中没有找到指定报表工作表' : '文件中没有找到可识别的报表工作表');
       if (selectedTypes.some(type => groupOnlyReportTypes.has(type)) && companyKey !== 'group') return json(res, 409, { error: '集团报表只能归属“桉侨集团”，请切换上传公司后重试', code: 'GROUP_COMPANY_REQUIRED', selectedCompanyKey: companyKey, requiredCompanyKey: 'group' });
-      if (companyKey === 'group' && selectedTypes.some(type => !groupOnlyReportTypes.has(type))) return json(res, 409, { error: '“桉侨集团”只接收集团合并利润表和营收统计表，请重新选择报表或公司', code: 'GROUP_REPORT_TYPE_REQUIRED' });
+      if (companyKey === 'group' && selectedTypes.some(type => !groupOnlyReportTypes.has(type))) return json(res, 409, { error: '“桉侨集团”只接收集团合并利润表、营收统计表和每月工资表，请重新选择报表或公司', code: 'GROUP_REPORT_TYPE_REQUIRED' });
       if (reports.consolidated_income_statement?.reconciliationPassed === false) return bad(res, 400, '合并利润表与公司分表加总不一致，请检查源文件公式和保存结果');
       fs.writeFileSync(storagePath, buffer); fs.writeFileSync(rawPath, JSON.stringify(reports, null, 2), 'utf8');
       const hash = crypto.createHash('sha256').update(buffer).digest('hex');
@@ -1898,13 +1921,22 @@ const server = http.createServer(async (req, res) => {
       const analysis = groupProfitAnalysisFor(period, year); log(employee.employee_key, 'view_group_profit_analysis', 'group_profit_analysis', `${companyKey}/${period}`);
       return json(res, 200, { company: companyRow(companyKey).company_name, period, ...analysis });
     }
+    if (url.pathname === '/api/analysis/consultant-roi' && req.method === 'GET') {
+      const companyKey = url.searchParams.get('company') || 'group'; const period = url.searchParams.get('period') || '2026-07';
+      if (companyKey !== 'group') return bad(res, 400, '顾问投入产出比仅适用于桉侨集团');
+      const employee = requireEmployee(req, res); if (!employee) return;
+      if (!hasAnalysis(employee.employee_key, consultantRoiModuleKey, companyKey, period)) return bad(res, 403, '当前员工没有顾问投入产出比权限');
+      const analysis = consultantRoiAnalysisFor(employee.employee_key, period); log(employee.employee_key, 'view_consultant_roi_analysis', consultantRoiModuleKey, `${companyKey}/${period}`);
+      return json(res, 200, analysis);
+    }
     if (url.pathname === '/api/analysis/cash-flow' && req.method === 'GET') {
       const companyKey = url.searchParams.get('company') || 'gz'; const period = url.searchParams.get('period') || '2026-06'; const year = url.searchParams.get('year') || period.slice(0, 4);
       if (!companyRow(companyKey)) return bad(res, 404, '公司不存在');
       const employee = requireEmployee(req, res); if (!employee) return;
       if (!hasAnalysis(employee.employee_key, 'cash_analysis', companyKey, period)) { bad(res, 403, '当前员工没有资产净额分析权限'); return; }
       const analysis = cashFlowAnalysisFor(companyKey, period, year); log(employee.employee_key, 'view_cash_flow_analysis', 'cash_flow_analysis', `${companyKey}/${period}`);
-      return json(res, 200, { company: companyRow(companyKey).company_name, period, ...analysis });
+      const canViewNetPositions = analysisBlockAccessFor(employee.employee_key, companyKey, period).cash_analysis.net_positions;
+      return json(res, 200, { company: companyRow(companyKey).company_name, period, ...analysis, internalPositions: canViewNetPositions ? analysis.internalPositions : [] });
     }
     if (url.pathname === '/api/analysis/main-business' && req.method === 'GET') {
       const companyKey = url.searchParams.get('company') || 'gz'; const period = url.searchParams.get('period') || '2026-06'; const year = url.searchParams.get('year') || period.slice(0, 4);
@@ -2001,28 +2033,35 @@ const server = http.createServer(async (req, res) => {
     }
     if (url.pathname === '/api/admin/directory-sync' && req.method === 'POST') {
       const employee = requireEmployee(req, res); if (!employee || !hasModule(employee.employee_key, 'permission_admin', 'manage')) { if (employee) bad(res, 403, '没有权限同步通讯录'); return; }
-      if (!wecomDirectorySyncEnabled) return json(res, 409, { error: '企业微信通讯录同步尚未授权启用', sync: directorySyncState() });
-      const sync = await syncWecomDirectorySafely({ force: true });
-      if (sync.status === 'failed') return json(res, 502, { error: sync.lastError || '企业微信通讯录同步失败', sync });
-      return json(res, 200, { ok: true, sync });
+      const accessToken = parseBearerToken(req.headers.authorization);
+      if (!accessToken) return json(res, 401, { error: '缺少小Q登录凭证', loginUrl: platformLoginUrl });
+      try {
+        const rolePayload = await platformJson('/data-dist/my-roles', accessToken); const platformRoles = Array.isArray(rolePayload) ? rolePayload : rolePayload?.roles;
+        if (!Array.isArray(platformRoles) || !platformRoles.includes('admin')) return bad(res, 403, '只有小Q管理员组可以同步成员目录');
+        const groups = await platformJson('/data-dist/user-groups', accessToken); const sync = syncPlatformDirectory(groups, employee.employee_key);
+        return json(res, 200, { ok: true, sync });
+      } catch (error) {
+        if (error instanceof PlatformApiError && error.status === 401) return json(res, 401, { error: error.message, loginUrl: platformLoginUrl });
+        return json(res, 502, { error: '小Q成员目录同步失败', sync: directorySyncState() });
+      }
     }
     if (url.pathname === '/api/admin/directory-employees' && req.method === 'GET') {
       const employee = requireEmployee(req, res); if (!employee || !hasModule(employee.employee_key, 'permission_admin', 'manage')) { if (employee) bad(res, 403, '没有权限查看通讯录'); return; }
-      const sync = await syncWecomDirectorySafely();
+      const sync = directorySyncState();
       const search = String(url.searchParams.get('search') || '').trim(); const like = `%${search}%`;
-      const sourceClause = authMode === 'wecom' ? " AND directory_source = 'wecom'" : '';
-      const employees = db.prepare(`SELECT employee_key AS employeeKey, display_name AS name, department FROM employees WHERE active = 1${sourceClause} AND (? = '' OR display_name LIKE ? OR department LIKE ?) ORDER BY display_name LIMIT 50`).all(search, like, like).map(item => ({ ...item, source: authMode === 'wecom' ? '企微通讯录' : '本地演示通讯录' }));
-      return json(res, 200, { employees, source: authMode === 'wecom' ? 'wecom' : 'demo', sync });
+      const sourceClause = authMode === 'platform' ? " AND directory_source = 'platform'" : '';
+      const employees = db.prepare(`SELECT employee_key AS employeeKey, display_name AS name, department FROM employees WHERE active = 1${sourceClause} AND (? = '' OR display_name LIKE ? OR department LIKE ?) ORDER BY display_name LIMIT 50`).all(search, like, like).map(item => ({ ...item, source: authMode === 'platform' ? '小Q成员组' : '本地演示通讯录' }));
+      return json(res, 200, { employees, source: authMode, sync });
     }
     if (url.pathname === '/api/admin/roles' && req.method === 'GET') {
       const employee = requireEmployee(req, res); if (!employee || !hasModule(employee.employee_key, 'permission_admin', 'manage')) { if (employee) bad(res, 403, '没有权限管理授权'); return; }
-      const directorySync = await syncWecomDirectorySafely();
+      const directorySync = directorySyncState();
       const roles = db.prepare('SELECT role_key AS key, role_name AS name, description FROM roles ORDER BY role_key').all();
       const assignments = db.prepare('SELECT er.employee_key AS employeeKey, e.display_name AS employeeName, er.role_key AS roleKey, r.role_name AS roleName FROM employee_roles er JOIN employees e ON e.employee_key = er.employee_key JOIN roles r ON r.role_key = er.role_key ORDER BY e.display_name').all();
       const scopes = db.prepare('SELECT role_key AS roleKey, report_type AS reportType, access_level AS level, action, company_key AS companyKey, from_period AS fromPeriod, to_period AS toPeriod FROM role_report_scopes ORDER BY role_key, report_type, access_level, action').all();
       const accountVisibility = db.prepare('SELECT role_key AS roleKey, visibility FROM role_account_visibility ORDER BY role_key').all();
       const detailPreferences = db.prepare('SELECT role_key AS roleKey, show_direction AS showDirection, show_full_entry AS showFullEntry FROM role_detail_preferences ORDER BY role_key').all().map(item => ({ ...item, showDirection: Number(item.showDirection) === 1, showFullEntry: Number(item.showFullEntry) === 1 }));
-      const employees = db.prepare(`SELECT employee_key AS employeeKey, display_name AS name, department FROM employees WHERE active = 1${authMode === 'wecom' ? " AND directory_source = 'wecom'" : ''} ORDER BY display_name`).all();
+      const employees = db.prepare(`SELECT employee_key AS employeeKey, display_name AS name, department FROM employees WHERE active = 1${authMode === 'platform' ? " AND directory_source = 'platform'" : ''} ORDER BY display_name`).all();
       const profiles = employees.map(item => ({ ...permissionProfileFor(item.employeeKey), name: item.name, department: item.department }));
       const roleDefaults = roles.map(role => ({ ...roleDefaultFor(role.key), name: role.name, description: role.description }));
       return json(res, 200, { roles, assignments, scopes, accountVisibility, detailPreferences, employees, profiles, roleDefaults, permissionCatalog, moduleOrder: moduleOrderFor(), directorySync });
@@ -2050,6 +2089,7 @@ const server = http.createServer(async (req, res) => {
       const fromPeriod = String(body.fromPeriod || ''); const toPeriod = String(body.toPeriod || '');
       if (!target || !role) return bad(res, 400, '员工或角色预设不存在');
       if (permissionKeys.some(key => !validPermissionKeys.has(key))) return bad(res, 400, '权限树包含无效权限');
+      if (permissionKeys.includes(cashNetPositionsPermissionKey) && !permissionKeys.includes('module.cash_analysis.view')) return bad(res, 400, '查看应收应付净额构成前，需先开启资产净额分析浏览权限');
       if (!companyKeys.length || companyKeys.some(key => key !== '*' && !db.prepare('SELECT 1 FROM companies WHERE company_key = ?').get(key))) return bad(res, 400, '请选择有效的公司范围');
       if (!/^\d{4}-\d{2}$/.test(fromPeriod) || !/^\d{4}-\d{2}$/.test(toPeriod) || fromPeriod > toPeriod) return bad(res, 400, '期间范围无效');
       if (!['level1', 'full'].includes(body.accountVisibility)) return bad(res, 400, '科目名称显示级别无效');
@@ -2109,6 +2149,8 @@ const server = http.createServer(async (req, res) => {
 });
 
 const port = Number(process.env.PORT || 3180);
-server.listen(port, '127.0.0.1', () => console.log(`桉侨集团财务报表看板 v${appVersion} (${authMode}) listening on http://127.0.0.1:${port}`));
+const host = String(process.env.HOST || '127.0.0.1').trim();
+if (!['127.0.0.1', '0.0.0.0'].includes(host)) throw new Error('HOST 仅支持 127.0.0.1 或 0.0.0.0');
+server.listen(port, host, () => console.log(`桉侨集团财务报表看板 v${appVersion} (${authMode}) listening on http://${host}:${port}`));
 
 export { db, server, hasReport };

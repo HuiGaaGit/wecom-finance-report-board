@@ -7,8 +7,10 @@ New-Item -ItemType Directory -Force -Path $absoluteOutput | Out-Null
 $staging = Join-Path ([System.IO.Path]::GetTempPath()) ("wecom-finance-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $staging | Out-Null
 try {
-  foreach ($name in @("app.mjs", "package.json", "package-lock.json", "README.md")) { Copy-Item -LiteralPath (Join-Path $projectDirectory $name) -Destination $staging }
-  foreach ($name in @("public", "deploy")) { Copy-Item -Recurse -LiteralPath (Join-Path $projectDirectory $name) -Destination $staging }
+  foreach ($name in @(".dockerignore", "Dockerfile", "app.mjs", "app.test.mjs", "platform-auth.mjs", "platform-auth.test.mjs", "package.json", "package-lock.json", "README.md")) { Copy-Item -LiteralPath (Join-Path $projectDirectory $name) -Destination $staging }
+  foreach ($name in @("public", "deploy", "docs")) { Copy-Item -Recurse -LiteralPath (Join-Path $projectDirectory $name) -Destination $staging }
+  New-Item -ItemType Directory -Path (Join-Path $staging "data") | Out-Null
+  Copy-Item -LiteralPath (Join-Path $projectDirectory "data\raw-reports-demo.json") -Destination (Join-Path $staging "data")
   $artifact = Join-Path $absoluteOutput ("wecom-finance-report-board-" + $package.version + ".zip")
   if (Test-Path -LiteralPath $artifact) { throw "产物已存在，请先确认旧版本或更换输出目录：$artifact" }
   Compress-Archive -Path (Join-Path $staging "*") -DestinationPath $artifact -CompressionLevel Optimal
