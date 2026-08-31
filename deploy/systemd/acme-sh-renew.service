@@ -1,0 +1,14 @@
+[Unit]
+Description=Renew and deploy the project 17 TLS certificate with acme.sh
+Wants=network-online.target
+After=network-online.target nginx.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/acme.sh/acme.sh --cron --home /opt/acme.sh --config-home /etc/acme-sh --cert-home /etc/acme-sh/certs
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/etc/acme-sh /etc/nginx/ssl /var/www/acme

@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="app-base-path" content="__APP_BASE_PATH__">
+  <meta name="description" content="桉侨集团财务报表与经营分析安全工作台">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="桉侨集团财务报表看板">
+  <meta property="og:description" content="通过企业微信身份认证，按接收人的数据权限安全查看。">
+  <meta property="og:url" content="__SHARE_PAGE_URL__">
+  <meta property="og:image" content="__SHARE_IMAGE_URL__">
+  <title>桉侨集团财务报表看板 · 企业微信应用</title>
+  <link rel="stylesheet" href="__APP_BASE_PATH__/styles.css">
+  <style>
+    .statement-table{min-width:820px}.statement-table th,.statement-table td{height:44px}.statement-table th{background:#eaf1f9;color:#364d68;text-align:right}.statement-table th:first-child{text-align:left}.statement-group td{background:#f5f8fc;color:#49617d;font-weight:750;border-top:1px solid #dbe5f0;border-bottom:1px solid #dbe5f0}.statement-row.clickable{cursor:pointer}.statement-row.clickable:hover td{background:#eef6ff}.statement-name{font-weight:560;color:#2d425d;padding-left:22px!important}.statement-total td{font-weight:750;background:#fffdf0}.statement-total.clickable:hover td{background:#fff7d6}.drilldown-row.clickable{cursor:pointer}.drilldown-row.clickable:hover .bar-label,.drilldown-row.clickable:hover .bar-value{color:#1f68d2}.standard-hint{margin-top:12px;color:#8291a4;font-size:12px}.raw-table{table-layout:fixed;min-width:0;width:100%;font-size:11px}.raw-table th,.raw-table td{padding:5px 6px;white-space:normal;overflow-wrap:anywhere;line-height:1.25}.raw-table th:first-child,.raw-table td:first-child{width:42px}.raw-table th{font-size:11px}.journal-detail-table{width:100%;min-width:0;table-layout:fixed}.journal-detail-table .journal-voucher{width:13%}.journal-detail-table .journal-account{width:25%}.journal-detail-table .journal-summary{width:39%}.journal-detail-table .journal-direction{width:12%;white-space:nowrap;text-align:center}.journal-detail-table .journal-amount{width:11%}.journal-detail-table.no-direction .journal-summary{width:47%}.journal-detail-table.no-direction .journal-amount{width:15%}.journal-detail-table th,.journal-detail-table td{white-space:normal;overflow-wrap:anywhere;word-break:break-word;vertical-align:top}.journal-detail-table .summary-cell{text-align:left;line-height:1.45}.journal-detail-table .direction-cell{text-align:center;font-weight:700;color:#49617d;white-space:nowrap}.journal-detail-table .amount-cell{white-space:nowrap}.setting-divider{width:1px;height:28px;background:#e0e8f2;margin:0 8px}.copy-permission-form{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap}.copy-permission-form label{display:grid;gap:6px;color:#6d7d91;font-size:13px;min-width:240px}.copy-permission-form select{border:1px solid #ccd9e8;background:#fff;border-radius:9px;padding:9px 28px 9px 10px;color:#23344b;font:inherit}.copy-arrow{color:#7c8da3;font-size:20px;padding-bottom:8px}@media(max-width:900px){.copy-permission-form label{min-width:100%}.copy-arrow{display:none}}.journal-layout{width:100%;min-width:0;table-layout:fixed}.journal-layout .journal-date{width:11%}.journal-layout .journal-voucher{width:9%}.journal-layout .journal-summary{width:30%}.journal-layout .journal-code{width:12%}.journal-layout .journal-account{width:22%}.journal-layout .journal-amount{width:8%}.journal-layout td{white-space:normal;overflow-wrap:anywhere;word-break:break-word;vertical-align:top}.journal-summary-text,.journal-account-text{line-height:1.4;text-align:left}.original-upload,#go-upload{display:none!important}.folder-drop{border:1px dashed #9eb7d4;border-radius:12px;background:#f8fbff;min-height:150px;padding:22px;text-align:center;display:grid;place-items:center;gap:5px;color:#566f8d}.folder-drop.dragging{border-color:#2676e9;background:#eaf4ff}.folder-drop strong{font-size:16px;color:#213a5a}.folder-drop span{font-size:12px}.folder-icon{width:34px;height:34px;border-radius:10px;background:#e7f1ff;color:#2676e9;display:grid;place-items:center;font-size:22px}.folder-file-list{width:100%;max-height:55px;overflow:auto;text-align:left;font-size:11px;color:#7a8ca1}.upload-slots{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;margin-top:14px}.upload-slot{border:1px solid #e0e8f2;border-radius:10px;padding:12px;background:#fff;display:grid;gap:8px}.slot-title{font-weight:700;color:#2f4b6b}.slot-file{font-size:11px;color:#8796a8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.slot-input{display:none}.upload-submit-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:14px}.upload-submit-row label{font-size:13px;color:#6c7d92}.upload-submit-row input{padding:9px;border:1px solid #ccd9e8;border-radius:9px}.upload-submit-row input#upload-notes{flex:1;min-width:190px}@media(max-width:900px){.upload-slots{grid-template-columns:repeat(2,minmax(0,1fr))}}
+    .original-report{background:transparent;color:#111;font-family:"SimSun","宋体","Microsoft YaHei",serif;border:1px solid #d8d8d8;padding:0;overflow:hidden}.original-heading{position:relative;padding:8px 10px 5px;background:transparent}.original-title{text-align:center;font-size:20px;font-weight:700;line-height:1.3;margin-bottom:4px}.original-meta{display:flex;justify-content:space-between;align-items:center;font-size:13px;line-height:1.5}.original-meta strong{font-size:13px}.original-source{font-family:Inter,"Microsoft YaHei",sans-serif;color:#7c8a9b;font-size:11px;margin-top:5px}.consolidated-scope{display:flex;align-items:flex-start;gap:7px;margin-top:5px;font-family:Inter,"Microsoft YaHei",sans-serif;font-size:11px;color:#52657b}.consolidated-scope strong{white-space:nowrap;color:#263d59}.consolidated-scope span{flex:1;line-height:1.45}.consolidated-scope b{white-space:nowrap;color:#177a64;font-weight:700}.original-upload{position:absolute;right:10px;top:8px}.original-table{width:100%;border-collapse:collapse;table-layout:fixed;font-size:13px;background:transparent}.original-table th,.original-table td{border:1px solid #202020;height:22px;padding:2px 5px;line-height:1.2;vertical-align:middle;background:transparent}.original-table th{font-weight:700;text-align:center}.original-table td:first-child,.original-table td.account-name{text-align:left}.original-table td.amount{text-align:right;font-variant-numeric:tabular-nums}.original-table .line-no{text-align:center}.original-table .account-code{white-space:pre;text-align:left}.original-table .account-name{white-space:pre-wrap}.original-table .original-section td{background:#c4c4c4;font-weight:700}.original-table .original-total td{background:#ffe69b;font-weight:700}.balance-name{width:24%}.balance-amount{width:13%}.balance-right-name{width:24%}.income-name{width:43%}.income-line{width:10%}.income-amount{width:23.5%}.cash-name{width:48%}.cash-amount{width:17.33%}.trial-code{width:12%}.trial-name{width:21%}.trial-amount{width:8.375%}.raw-number{border:0;background:transparent;color:inherit;font:inherit;font-variant-numeric:tabular-nums;cursor:pointer;padding:0;text-align:inherit;width:100%}.raw-number:hover{background:#f1d33d;color:#111}.statement-number{display:block}.original-hint{font-family:Inter,"Microsoft YaHei",sans-serif;font-size:11px;color:#7c8a9b;padding:7px 10px}.original-detail{margin-top:12px}
+    .liquidity-card-grid{display:grid;grid-template-columns:repeat(5,minmax(170px,1fr));gap:12px}.core-liquidity-card{border-color:#80b9a2;background:linear-gradient(145deg,#f1fff9,#fff)}.core-liquidity-card .metric-label{color:#147354;font-weight:700}.metric-value.negative,.bar-value.negative,.analysis-table td.negative{color:#bd4b3c}.metric-value.positive,.bar-value.positive,.analysis-table td.positive{color:#17365d}.analysis-source{margin-top:14px;display:grid;grid-template-columns:auto 1fr;gap:4px 12px;align-items:start;background:transparent}.panel.analysis-source{background:rgba(255,255,255,.92)}.analysis-source strong{color:#17365d}.analysis-source span{font-size:13px;color:#53677e}.analysis-source small{grid-column:2;color:#8594a6}.analysis-table{min-width:720px}.analysis-table .analysis-note{white-space:normal;line-height:1.4}.analysis-total td{background:#eaf3f8;font-weight:700;border-top:2px solid #8fa8c2}.position-badge{display:inline-flex;padding:3px 8px;border-radius:12px;font-size:11px;font-weight:700}.position-badge.receivable{background:#e2f0d9;color:#307a31}.position-badge.payable{background:#fce4d6;color:#a23f31}.analysis-drill{border:0;background:transparent;padding:0;color:#236dd0;font:inherit;font-weight:650;text-align:left;cursor:pointer}.analysis-drill:hover{text-decoration:underline}.negative-bar{background:linear-gradient(90deg,#e78b70,#c65548)}@media(max-width:1200px){.liquidity-card-grid{grid-template-columns:repeat(3,minmax(170px,1fr))}}@media(max-width:700px){.liquidity-card-grid{grid-template-columns:1fr 1fr}.analysis-source{grid-template-columns:1fr}.analysis-source small{grid-column:1}}
+    .folder-drop{transition:border-color .15s,background .15s}.folder-drop.dragging{border:2px dashed #2676e9;background:#eaf4ff;box-shadow:0 0 0 3px #2676e91a}.drop-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:center}
+  </style>
+  <style>.filter-locked{display:inline-flex;align-items:center;gap:4px;min-height:36px;padding:8px 10px;border:1px solid #d8e2ef;border-radius:9px;background:#f5f8fc;color:#60748d;font-weight:600;white-space:nowrap}</style>
+  <style>
+    .original-table-scroll{width:100%;max-width:100%;overflow-x:auto;overscroll-behavior-inline:contain;-webkit-overflow-scrolling:touch;background:transparent}
+    .original-table-scroll:focus-visible{outline:3px solid rgba(38,118,233,.22);outline-offset:-3px}
+    .original-scroll-cue{display:none}
+    .original-table td.amount,.original-table .statement-number{white-space:nowrap}
+    .original-report{container-type:inline-size}
+    @media(min-width:701px){
+      .original-title{font-size:clamp(17px,1.45cqw,20px)}
+      .original-meta,.original-meta strong{font-size:clamp(11px,.9cqw,13px)}
+      .original-source{font-size:clamp(9px,.75cqw,11px)}
+      .original-table{font-size:clamp(10px,1cqw,13px)}
+      .original-table th,.original-table td{padding-inline:clamp(2px,.28cqw,5px)}
+      .trial-layout{min-width:960px}
+    }
+    @media(max-width:700px){
+      .original-heading{padding:12px 14px 10px}
+      .original-title{font-size:22px;margin-bottom:8px}
+      .original-meta{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:start;gap:3px 12px;font-size:12px;line-height:1.55}
+      .original-meta>span:first-child{grid-column:1/-1}
+      .original-meta>span:last-child{text-align:right;white-space:nowrap}
+      .original-source{margin-top:7px;line-height:1.55;overflow-wrap:anywhere;word-break:break-word}
+      .consolidated-scope{display:grid;grid-template-columns:auto 1fr;gap:3px 8px}.consolidated-scope span{grid-column:1/-1}.consolidated-scope b{white-space:normal}
+      .original-scroll-cue{display:flex;align-items:center;justify-content:center;min-height:34px;padding:6px 12px;border-top:1px solid #dbe6f2;background:linear-gradient(90deg,#f4f9ff,#eaf4ff,#f4f9ff);color:#4f7097;font-family:Inter,"Microsoft YaHei",sans-serif;font-size:11px;font-weight:700;letter-spacing:.2px}
+      .original-table{font-size:12px}
+      .original-table th,.original-table td{height:30px;padding:5px 7px;line-height:1.35}
+      .balance-layout{min-width:780px}
+      .income-layout,.cash-layout{min-width:660px}
+      .trial-layout{min-width:1180px}
+      .journal-layout{min-width:980px}
+      .original-hint{padding:9px 12px;line-height:1.55}
+    }
+  </style>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <img class="brand-logo" src="__APP_BASE_PATH__/anqiao-logo.png" alt="桉侨移民">
+        <div class="brand-divider" aria-hidden="true"></div>
+        <div class="brand-copy"><strong>集团财务报表看板</strong></div>
+      </div>
+      <div class="topbar-actions">
+        <div class="session"><label class="session-field"><span>当前员工</span><select id="employee-select"></select><span id="employee-display" class="session-employee-display hidden"></span></label></div>
+        <button id="share-entry" class="share-entry" type="button" aria-label="分享应用" title="分享应用">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12.6 4.4 18.2 10l-5.6 5.6M18 10H9.3a4.8 4.8 0 0 0-4.8 4.8v3"/></svg>
+        </button>
+      </div>
+    </header>
+    <div id="notice" class="notice hidden"></div>
+    <main class="layout">
+      <aside class="sidebar">
+        <div id="nav-container"></div>
+        <div class="sidebar-footer">
+          <div>v1.1.5 · 财务数据</div>
+          <a class="icp-link" href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">粤ICP备2022138475号-5</a>
+        </div>
+      </aside>
+      <section class="content">
+        <div id="home-page" class="page"></div>
+        <div id="financial-brief-page" class="page hidden"></div>
+        <div id="report-page" class="page hidden"></div>
+        <div id="revenue-statistics-page" class="page hidden"></div>
+        <div id="detail-page" class="page hidden"></div>
+        <div id="uploads-page" class="page hidden"></div>
+        <div id="database-admin-page" class="page hidden"></div>
+        <div id="analysis-page" class="page hidden"></div>
+        <div id="business-analysis-page" class="page hidden"></div>
+        <div id="expense-analysis-page" class="page hidden"></div>
+        <div id="group-profit-analysis-page" class="page hidden"></div>
+        <div id="permissions-page" class="page hidden"></div>
+      </section>
+    </main>
+    <footer class="mobile-site-footer">
+      <a class="icp-link" href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">粤ICP备2022138475号-5</a>
+    </footer>
+  </div>
+  <div id="share-modal" class="share-modal hidden" role="dialog" aria-modal="true" aria-labelledby="share-modal-title">
+    <section class="share-dialog">
+      <button id="share-close" class="share-close" type="button" aria-label="关闭分享卡片">×</button>
+      <div class="share-dialog-heading"><span>企微分享预览</span><strong id="share-modal-title">发送应用卡片</strong></div>
+      <article class="share-card-preview">
+        <img src="__APP_BASE_PATH__/anqiao-logo.png" alt="桉侨移民">
+        <div><strong id="share-card-title">桉侨集团财务报表看板</strong><p id="share-card-description">通过企业微信安全查看财务报表与经营分析</p><small>qiandianxiaoq.com</small></div>
+      </article>
+      <p class="share-security-note"><span class="share-security-check" aria-hidden="true">✓</span><span id="share-environment-note">链接不携带登录凭证；接收人打开后按自己的企微身份和数据权限显示。</span></p>
+      <div class="share-actions"><button id="share-copy" class="button" type="button">复制链接</button><button id="share-send" class="button primary" type="button">发送到企微聊天</button></div>
+    </section>
+  </div>
+  <script src="__APP_BASE_PATH__/app.js" type="module"></script>
+</body>
+</html>
+

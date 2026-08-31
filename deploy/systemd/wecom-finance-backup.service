@@ -1,0 +1,15 @@
+[Unit]
+Description=Backup WeCom Finance Report Board SQLite database
+After=wecom-finance-report-board.service
+
+[Service]
+Type=oneshot
+User=wecom-finance
+Group=wecom-finance
+EnvironmentFile=/etc/wecom-finance/report-board.env
+ExecStart=/usr/bin/bash /opt/wecom-finance/current/deploy/backup-sqlite.sh
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/wecom-finance

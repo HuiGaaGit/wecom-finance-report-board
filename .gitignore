@@ -1,0 +1,11 @@
+node_modules/
+artifacts/
+output/
+.env
+.env.*
+!deploy/.env.production.example
+data/*.db
+data/*.db-*
+data/test-*/
+data/uploads/
+data/qa-directory-uploads/

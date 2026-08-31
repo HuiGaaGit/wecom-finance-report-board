@@ -1,0 +1,25 @@
+[Unit]
+Description=WeCom Finance Report Board
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wecom-finance
+Group=wecom-finance
+WorkingDirectory=/opt/wecom-finance/current
+EnvironmentFile=/etc/wecom-finance/report-board.env
+ExecStart=/usr/bin/node /opt/wecom-finance/current/app.mjs
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGTERM
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/wecom-finance
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

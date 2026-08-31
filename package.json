@@ -1,0 +1,18 @@
+{
+  "name": "wecom-finance-report-board",
+  "version": "1.1.5",
+  "private": true,
+  "type": "module",
+  "description": "企业微信工作台财务报表及明细展示应用",
+  "scripts": {
+    "start": "node app.mjs",
+    "test": "node --test",
+    "check": "node --check app.mjs",
+    "check:deploy": "node deploy/check-readiness.mjs --env deploy/.env.production.example --allow-placeholders",
+    "build:release": "powershell -NoProfile -ExecutionPolicy Bypass -File deploy\\build-release.ps1"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.8.1",
+    "xlsx": "^0.18.5"
+  }
+}
