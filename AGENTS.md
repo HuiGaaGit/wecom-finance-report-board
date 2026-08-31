@@ -1,5 +1,10 @@
 # 项目 17 运维约定
 
+## 适用范围
+
+- 本文件及 `deploy/ssh_config` 只适用于 `17企微财务报表看板` 目录及其相关 Codex 对话。
+- 其他项目或工作区级对话不得使用 `wecom-finance-prod`，也不得连接 `8.163.36.95`；除非用户针对该项目另行明确授权并提供对应事实源。
+
 ## 生产服务器
 
 - 本项目唯一正式生产服务器使用项目内 `deploy/ssh_config` 的 SSH 别名 `wecom-finance-prod`，标准入口为 `ssh -F deploy/ssh_config wecom-finance-prod`。
