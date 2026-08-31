@@ -46,6 +46,13 @@
 
 服务器：`8.163.36.95`
 
+项目内免密 SSH 配置：`deploy/ssh_config`，主机别名为 `wecom-finance-prod`。标准登录与预检命令：
+
+```powershell
+ssh -F deploy/ssh_config wecom-finance-prod
+ssh -F deploy/ssh_config wecom-finance-prod "hostname && whoami"
+```
+
 | 用途 | 生产路径 |
 | --- | --- |
 | 财务源码 | `/data/repos/wecom-finance-report-board` |

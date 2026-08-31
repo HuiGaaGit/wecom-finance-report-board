@@ -1,0 +1,10 @@
+Host wecom-finance-prod
+  HostName 8.163.36.95
+  User root
+  IdentityFile C:/Users/ASUS/.ssh/hermes_aliyun_ed25519
+  IdentitiesOnly yes
+  BatchMode yes
+  StrictHostKeyChecking yes
+  UserKnownHostsFile C:/Users/ASUS/.ssh/known_hosts
+  ServerAliveInterval 30
+  ServerAliveCountMax 3
