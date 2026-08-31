@@ -172,3 +172,16 @@ nginx -t
 - Nginx 配置检查：通过
 - 发布前数据库备份：`/data/data/wecom-finance-report-board/backups/report-board-pre-platform-auth-1.1.11.db`
 - 发布前源码、编排及密钥配置备份：`/data/backups/wecom-finance-report-board/platform-auth-before-1.1.11-20260831T074500Z`
+
+## 10. 业务合并发布验收（1.1.12）
+
+- GitHub、部署服务器和本地源码提交：`84fccd84756fa16d4f0bb1a8d90338652462206d`。
+- 正式镜像：`aqllm/finance-report-board:1.1.12`；镜像 ID：`sha256:bcebf8ac51937ba5d227e5a4d01954cb110c7a58d99fd5cd66733e4d79636015`。
+- 本地与服务器 Node 20 容器回归：69 项全部通过。
+- 回环及公网健康接口均返回 `version=1.1.12`、`authMode=platform`；容器状态为 `healthy`，Nginx 配置检查通过。
+- SQLite 完整性检查：`ok`；核心数据仍为 8 家公司、68 个上传批次、68 份报表快照、3,431 条报表行。
+- 发布前数据库备份：`/data/data/wecom-finance-report-board/backups/report-board-20260831T091901Z.db`。
+- 发布后数据库备份：`/data/data/wecom-finance-report-board/backups/report-board-20260831T092326Z.db`。
+- 发布前 Compose 备份：`/data/opt/wecom-finance-report-board/compose.yml.pre-1.1.12-20260831T1718`。
+- 生产源码原有平台化改动已保存到 Git stash `pre-v1.1.12-platform-source-20260831`，用于审计与回退比对。
+- 部署后备份核对到“财务数据简报”排序 10、“资产负债表”排序 20，两项模块排序迁移标记均为 1；管理员后续保存的完整全局顺序继续持久化。
