@@ -131,12 +131,19 @@ function revenueStatisticsWorkbookBuffer(period = '2026-07') {
 function payrollWorkbookBuffer() {
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([
-    ['集团顾问月度工资表'],
-    ['姓名', '地区', '基本工资', '提成'],
-    ['詹志坚', '集团薪酬口径', 10000, 2000],
-    ['张莎莎', '集团薪酬口径', 9000, 1500],
-    ['合计', '', 19000, 3500]
-  ]), '3月工资表');
+    ['历史工资表'],
+    ['序号', '中文姓名', '基本工资', '提成'],
+    [1, '历史人员', 8000, 1000]
+  ]), '202406月工资表');
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([
+    ['桉侨集团2027年3月工资表'],
+    ['序号', '公司', '部门', '中文姓名', '入职日期', '底薪', '基本工资', '本月提成', '往期提成'],
+    [1, '广州桉侨', '广州顾问部', '詹志坚', '2026-01-01', 12000, 10000, 2000, 9000],
+    [2, '深圳桉侨', '深圳顾问部', '张莎莎', '2026-02-01', 11000, 9000, 1500, 8000],
+    ['', '', '', '合计', '', '', 19000, 3500, 17000],
+    ['', '', '', '当月计薪日', '', '', 24, '', ''],
+    ['', '', '', 147, '', '', 13.5, '', '']
+  ]), '202703工资表');
   return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
 }
 
@@ -668,6 +675,9 @@ test('上传页使用独立公司期间选择器且移除全局范围锁定', ()
   assert.match(uploadSource, /地区不一致可能导致报表归属错误/);
   assert.match(uploadSource, /即将发布为当前版本，请核对/);
   assert.match(uploadSource, /setUploadPeriod\(period/);
+  assert.match(uploadSource, /const successfulScopes = \[\]/);
+  assert.match(uploadSource, /state\.uploadHistoryView = 'pending'; state\.uploadHistoryPage = 1/);
+  assert.match(uploadSource, /state\.uploadHistoryFilters = \{ company: successfulCompanies\.length === 1 \? successfulCompanies\[0\] : '', period: successfulPeriods\.length === 1 \? successfulPeriods\[0\] : '', reportType: '', search: '' \}/);
   assert.match(stylesheet, /\.upload-history-filters/);
   assert.match(stylesheet, /\.upload-history-tabs/);
   assert.match(stylesheet, /\.upload-history-group/);
@@ -1505,6 +1515,14 @@ test('集团顾问投入产出比联合工资表、营收明细和各公司序�
     return batches;
   };
 
+  const wrongMonthPayroll = await post('/api/uploads', {
+    companyKey: 'group', period: '2027-04', reportType: 'payroll_statement', fileName: '2027年4月桉侨集团工资表.xlsx',
+    contentBase64: payrollWorkbookBuffer().toString('base64')
+  });
+  assert.equal(wrongMonthPayroll.response.status, 400);
+  assert.match(wrongMonthPayroll.payload.error, /未找到与所选期间 2027-04 对应的工资工作表/);
+  assert.match(wrongMonthPayroll.payload.error, /202703工资表/);
+
   const payroll = await uploadAndPublish({
     companyKey: 'group', reportType: 'payroll_statement', fileName: '2027年3月桉侨集团工资表.xlsx',
     contentBase64: payrollWorkbookBuffer().toString('base64')
@@ -1542,6 +1560,7 @@ test('集团顾问投入产出比联合工资表、营收明细和各公司序�
   const result = await request(`/api/analysis/consultant-roi?company=group&period=${period}`);
   assert.equal(result.response.status, 200, JSON.stringify(result.payload));
   const byName = Object.fromEntries(result.payload.rows.map(item => [item.canonicalName, item]));
+  assert.equal(result.payload.rows.some(item => ['当月计薪日', '147'].includes(item.name)), false);
   assert.deepEqual({ baseSalary: byName['詹志坚'].baseSalary, commission: byName['詹志坚'].commission, journalExpense: byName['詹志坚'].journalExpense, input: byName['詹志坚'].input, output: byName['詹志坚'].output, region: byName['詹志坚'].region, matchStatus: byName['詹志坚'].matchStatus }, { baseSalary: 10000, commission: 2000, journalExpense: 3000, input: 15000, output: 120000, region: '广州', matchStatus: 'matched' });
   assert.equal(byName['詹志坚'].roi, 8);
   assert.deepEqual({ baseSalary: byName['张莎莎'].baseSalary, commission: byName['张莎莎'].commission, journalExpense: byName['张莎莎'].journalExpense, input: byName['张莎莎'].input, output: byName['张莎莎'].output, region: byName['张莎莎'].region }, { baseSalary: 9000, commission: 1500, journalExpense: 1200, input: 11700, output: 80000, region: '深圳' });
@@ -1551,9 +1570,12 @@ test('集团顾问投入产出比联合工资表、营收明细和各公司序�
   assert.equal(byName['詹志坚'].expenseDetails.length, 1);
   assert.match(byName['詹志坚'].expenseDetails[0].summary, /客户拜访/);
   assert.equal(byName['张莎莎'].expenseDetails.length, 1);
-  assert.equal(byName['詹志坚'].payrollDetails[0].sourceSheet, '3月工资表');
+  assert.equal(byName['詹志坚'].payrollDetails[0].sourceSheet, '202703工资表');
+  assert.deepEqual({ company: byName['詹志坚'].payrollDetails[0].company, department: byName['詹志坚'].payrollDetails[0].department }, { company: '广州桉侨', department: '广州顾问部' });
   assert.equal(byName['詹志坚'].revenueDetails.length, 2);
   assert.equal(result.payload.sources.payroll.fileName, '2027年3月桉侨集团工资表.xlsx');
+  assert.equal(result.payload.sources.payrollSheet, '202703工资表');
+  assert.deepEqual(result.payload.sources.payrollFields, { company: '公司', department: '部门', name: '中文姓名', baseSalary: ['基本工资'], commission: '本月提成' });
   assert.equal(result.payload.sources.revenueSheet, '总营收明细表');
 
   assert.equal((await request(`/api/analysis/consultant-roi?company=gz&period=${period}`)).response.status, 400);
@@ -1568,6 +1590,7 @@ test('集团顾问投入产出比联合工资表、营收明细和各公司序�
   const stylesheet = fs.readFileSync(path.join(projectDir, 'public', 'styles.css'), 'utf8');
   assert.match(frontend, /data-roi-input/); assert.match(frontend, /data-roi-filter/); assert.match(frontend, /data-roi-sort/);
   assert.match(frontend, /consultant-roi-export/); assert.match(frontend, /顾问投入产出比\.csv/);
+  assert.match(frontend, /工资取数字段/); assert.match(frontend, /payrollFields/);
   assert.match(frontend, /visibleColumns = consultantRoiColumns\.filter/); assert.match(frontend, /selectedInputs\.map\(item => item\.label\)/);
   assert.match(stylesheet, /\.consultant-roi-layout>\[data-analysis-block\]\{grid-column:span 12\}/);
   assert.match(stylesheet, /analysis-layout-editable>\.consultant-roi-table-panel \.consultant-roi-table-toolbar\{padding-right:78px\}/);
