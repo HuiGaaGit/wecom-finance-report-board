@@ -1,0 +1,11 @@
+[Unit]
+Description=Run project 17 offsite backup every 8 hours
+
+[Timer]
+OnCalendar=*-*-* 00,08,16:15:00 Asia/Shanghai
+Persistent=true
+AccuracySec=1min
+Unit=wecom-finance-offsite-backup.service
+
+[Install]
+WantedBy=timers.target

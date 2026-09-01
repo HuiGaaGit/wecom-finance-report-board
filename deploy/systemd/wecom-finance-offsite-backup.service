@@ -1,0 +1,20 @@
+[Unit]
+Description=Project 17 encrypted-transport offsite backup to legacy ECS
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+EnvironmentFile=/etc/wecom-finance-offsite-backup.env
+ExecStart=/usr/local/sbin/wecom-finance-offsite-backup
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/data/data/wecom-finance-report-board/backups /run/lock
+ReadOnlyPaths=/data/data/wecom-finance-report-board/uploads /data/opt/wecom-finance-report-board/compose.yml /data/secrets/wecom-finance-report-board/report-board.env /etc/nginx/snippets/wecom-finance-report-board.conf
+
+[Install]
+WantedBy=multi-user.target

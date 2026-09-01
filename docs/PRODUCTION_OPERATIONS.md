@@ -203,3 +203,24 @@ nginx -t
 - SQLite 完整性检查为 `ok`；部署前后核心数据保持 8 家公司、88 个上传批次、88 份报表快照、4,635 条报表行。
 - 发布前数据库备份：`/data/data/wecom-finance-report-board/backups/report-board-20260901T010509Z.db`；发布后数据库备份：`/data/data/wecom-finance-report-board/backups/report-board-20260901T010616Z.db`。
 - 发布前 Compose 备份：`/data/opt/wecom-finance-report-board/compose.yml.pre-1.1.14-20260901T090509`；回滚时恢复该文件并重新执行 Compose `up -d --no-build`。
+
+## 12. 旧服务器异机备份
+
+- 备份源：新生产服务器 `8.163.36.95`；备份目标：旧服务器 `8.163.95.203`。旧服务器不运行当前项目，只保存恢复数据。
+- 新服务器 timer：`wecom-finance-offsite-backup.timer`，每天北京时间 `00:15、08:15、16:15` 固定执行，`Persistent=true`；service 为 `wecom-finance-offsite-backup.service`。
+- 每次任务先在当前容器中运行 `deploy/backup-database.mjs` 生成 SQLite 一致性快照，再用 rsync 经 SSH 22 端口增量推送；不启用 rsync daemon、不开放新端口、不使用 `--delete`。
+- 旧服务器账号：`wecom-finance-backup`；备份根目录：`/var/backups/wecom-finance-report-board`，包含 `database/`、`uploads/`、`config/` 和 `manifests/`。目录权限为 0700，文件权限为 0600。
+- 专用 SSH 公钥只接受来自 `8.163.36.95` 的连接，并由 `rrsync -wo` 限制为备份根目录的只写 rsync；交互式 shell、PTY 和端口转发均不可用。
+- `uploads/` 长期保留且不自动删除；旧服务器 `wecom-finance-offsite-retention.timer` 每天执行，数据库、配置和清单保留 90 天。旧服务器原有 `wecom-finance-backup.timer` 保持独立运行，不得覆盖。
+- 首次全量备份于 `2026-09-01 09:42 CST` 完成：55 个上传文件、约 29MB；数据库快照 SHA256 在两台服务器一致。隔离恢复的 SQLite `integrity_check` 为 `ok`，恢复副本包含 8 家公司、88 个上传批次、88 份报表快照和 4,635 条报表行。
+
+常用检查：
+
+```bash
+systemctl status wecom-finance-offsite-backup.timer
+systemctl start wecom-finance-offsite-backup.service
+journalctl -u wecom-finance-offsite-backup.service -n 100 --no-pager
+cat /data/data/wecom-finance-report-board/backups/offsite-last-success.meta
+```
+
+恢复时只从旧服务器复制所需快照到隔离目录，先核对 `manifests/` 中的 SHA256 并执行 SQLite `PRAGMA integrity_check`；未经单独确认不得直接覆盖新服务器生产数据库或上传目录。

@@ -11,6 +11,8 @@
 - 本机端口：`127.0.0.1:3180`
 - 正式地址：`https://anqiaoyiminxq.com/platform/finance/`
 
+异机备份使用 `offsite-backup.sh` 和 `systemd/wecom-finance-offsite-backup.*`，由新服务器每 8 小时推送到旧服务器；旧服务器的 90 天保留策略使用 `offsite-retention.sh` 和 `systemd/wecom-finance-offsite-retention.*`。这组单元与旧服务器原有 `wecom-finance-backup.timer` 完全独立。
+
 财务模块通过小Q的 `/api/auth/me` 和 `/api/data-dist/my-roles` 校验登录身份及管理员、总经理、财务组三个成员组。生产环境不保存企微应用 Secret。
 
 部署前执行：

@@ -1,0 +1,11 @@
+[Unit]
+Description=Apply project 17 offsite backup retention daily
+
+[Timer]
+OnCalendar=*-*-* 03:45:00 Asia/Shanghai
+Persistent=true
+RandomizedDelaySec=300
+Unit=wecom-finance-offsite-retention.service
+
+[Install]
+WantedBy=timers.target
