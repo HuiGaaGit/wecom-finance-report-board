@@ -1,7 +1,7 @@
 # 桉侨财务模块生产说明
 
-更新日期：2026-08-31
-当前版本：1.1.12
+更新日期：2026-09-01
+当前版本：1.1.14
 正式地址：<https://anqiaoyiminxq.com/platform/finance/>
 
 ## 1. 系统归属与隔离
@@ -73,7 +73,7 @@ ssh -F deploy/ssh_config wecom-finance-prod "hostname && whoami"
 
 - Compose 项目：`wecom-finance-report-board`
 - 容器：`wecom-finance-report-board`
-- 镜像：`aqllm/finance-report-board:1.1.12`
+- 镜像：`aqllm/finance-report-board:1.1.14`
 - 容器端口：`3180`
 - 主机监听：`127.0.0.1:3180`
 - Docker 网络：`wecom-finance-report-board`
@@ -147,7 +147,7 @@ SQLite 运行时可能同时存在 `report-board.db-wal` 和 `report-board.db-sh
 cd /data/repos/wecom-finance-report-board
 node deploy/check-readiness.mjs --env /data/secrets/wecom-finance-report-board/report-board.env
 docker build --target tests -t aqllm/finance-report-board:test .
-docker build -t aqllm/finance-report-board:1.1.12 .
+docker build -t aqllm/finance-report-board:1.1.14 .
 ```
 
 发布：
@@ -192,3 +192,14 @@ nginx -t
 - 发布前 Compose 备份：`/data/opt/wecom-finance-report-board/compose.yml.pre-1.1.12-20260831T1718`。
 - 生产源码原有平台化改动已保存到 Git stash `pre-v1.1.12-platform-source-20260831`，用于审计与回退比对。
 - 部署后备份核对到“财务数据简报”排序 10、“资产负债表”排序 20，两项模块排序迁移标记均为 1；管理员后续保存的完整全局顺序继续持久化。
+
+## 11. 上传记录与工资来源修复发布验收（1.1.14）
+
+- GitHub、部署服务器和本地源码提交：`b8af9f40498f74b7ab6a8044594e6457678df7c3`。
+- 发布包：`artifacts/wecom-finance-report-board-1.1.14.zip`；SHA256：`9D92D4D67CAAA0DBF359DCF8411F583CEAB5E20358E57DA85690AAA60AF3A4BA`，服务器传输副本核验一致后已清理。
+- 正式镜像：`aqllm/finance-report-board:1.1.14`；镜像 ID：`sha256:bd5c4074e4e58a182e469e57d02f37777ddc58edb5929d2a05628d72ad567546`。
+- 本地与服务器 Node 20 容器回归均为 69 项全部通过；上传成功后会自动切到本次实际公司和月份的“待处理发布”，工资来源按所选期间定位工作表并保留实际字段映射。
+- 回环及公网健康接口均返回 `version=1.1.14`、`authMode=platform`；容器状态为 `healthy`，正式首页返回 HTTP 200，Nginx 配置检查通过。
+- SQLite 完整性检查为 `ok`；部署前后核心数据保持 8 家公司、88 个上传批次、88 份报表快照、4,635 条报表行。
+- 发布前数据库备份：`/data/data/wecom-finance-report-board/backups/report-board-20260901T010509Z.db`；发布后数据库备份：`/data/data/wecom-finance-report-board/backups/report-board-20260901T010616Z.db`。
+- 发布前 Compose 备份：`/data/opt/wecom-finance-report-board/compose.yml.pre-1.1.14-20260901T090509`；回滚时恢复该文件并重新执行 Compose `up -d --no-build`。
