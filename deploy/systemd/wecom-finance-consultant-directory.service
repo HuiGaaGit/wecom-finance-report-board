@@ -1,0 +1,22 @@
+[Unit]
+Description=Sync sanitized consultant directory metadata from WeCom
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/data/repos/wecom-finance-report-board
+Environment=DB_FILE=/data/data/wecom-finance-report-board/report-board.db
+Environment=FINANCE_DATA_DIR=/data/data/wecom-finance-report-board
+Environment=CONSULTANT_DIRECTORY_FILE=/data/data/wecom-finance-report-board/consultant-directory.json
+Environment=CONSULTANT_DIRECTORY_STATUS_FILE=/data/data/wecom-finance-report-board/consultant-directory-status.json
+Environment=CONSULTANT_DIRECTORY_REFRESH_REQUEST_FILE=/data/data/wecom-finance-report-board/consultant-directory-refresh-request.json
+Environment=FINANCE_APP_UID=20117
+Environment=FINANCE_APP_GID=20117
+ExecStart=/usr/bin/node /data/repos/wecom-finance-report-board/deploy/sync-consultant-directory.mjs
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/data/data/wecom-finance-report-board

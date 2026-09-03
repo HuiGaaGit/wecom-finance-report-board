@@ -21,6 +21,9 @@ const base = `http://127.0.0.1:${testPort}`;
 const projectDir = path.dirname(fileURLToPath(import.meta.url));
 const testDbPath = path.join(projectDir, 'data', `test-report-board-${process.pid}-${Date.now()}.db`);
 const testUploadsDir = path.join(projectDir, 'data', `test-uploads-${process.pid}-${Date.now()}`);
+const testConsultantDirectoryFile = path.join(projectDir, 'data', `test-consultant-directory-${process.pid}-${Date.now()}.json`);
+const testConsultantDirectoryStatusFile = path.join(projectDir, 'data', `test-consultant-directory-status-${process.pid}-${Date.now()}.json`);
+const testConsultantDirectoryRefreshRequestFile = path.join(projectDir, 'data', `test-consultant-directory-refresh-${process.pid}-${Date.now()}.json`);
 let child;
 
 async function request(pathname, employee = 'admin') {
@@ -54,6 +57,31 @@ async function publishFixture(companyKey, period, reportTypes) {
   for (const batch of batches) assert.equal((await post(`/api/uploads/${batch.uploadKey}/publish`, {})).response.status, 200);
 }
 
+function quotationLedgerWorkbookBuffer(records = []) {
+  const workbook = XLSX.utils.book_new();
+  const rows = [
+    [null, null, null, null, null, null, null, null, null, null, 0],
+    ['序号', '合同类型', '合同编号', '报价日期', '项目负责人', '项目', '来源（一级）', '来源（二级）', '签约顾问', '客户姓名', '合同金额\n【应收金额】'],
+    ...records.map((item, index) => [index + 1, '国内销售', item.contractNo, '2026-07-01', '测试顾问', item.projectName, '', '', '', item.customerName, 10000])
+  ];
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(rows), '报价单');
+  return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+}
+
+async function publishIntercompanyCompany(company, region, period, items) {
+  const trialRows = [
+    { row: 1, cells: ['科目余额表'] }, { row: 2, cells: [`编制单位：${company.name}`, null, null, null, `${period.slice(0, 4)}年${Number(period.slice(5))}月`] },
+    { row: 3, cells: ['科目编码', '科目名称', '期初余额', null, '本期发生额', null, '本年累计发生额', null, '期末余额', null] }, { row: 4, cells: [null, null, '借方', '贷方', '借方', '贷方', '借方', '贷方', '借方', '贷方'] },
+    ...items.map((item, index) => ({ row: index + 5, cells: [item.code, item.name, 0, 0, item.debit, item.credit, item.debit, item.credit, item.debit, item.credit] }))
+  ];
+  const journalRows = [{ row: 1, cells: ['日期', '凭证号', '摘要', '科目编码', '科目名称', '借方金额', '贷方金额'] }, ...items.map((item, index) => ({ row: index + 2, cells: [`${period}-08`, `记-${region}-${index + 1}`, `${region}往来测试`, item.code, item.name, item.debit, item.credit] }))];
+  const month = Number(period.slice(5));
+  const reports = { trial_balance: { sourceSheet: `${month}月科目余额表`, rows: trialRows, maxRow: trialRows.length, maxCol: 10 }, journal: { sourceSheet: `${month}月序时账`, rows: journalRows, maxRow: journalRows.length, maxCol: 7 } };
+  const uploaded = await post('/api/uploads', { companyKey: company.key, period, fileName: `${period}-${company.name}-往来校验.json`, fileType: 'application/json', contentBase64: Buffer.from(JSON.stringify(reports)).toString('base64') });
+  assert.equal(uploaded.response.status, 201, JSON.stringify(uploaded.payload));
+  for (const batch of uploaded.payload.uploads) assert.equal((await post(`/api/uploads/${batch.uploadKey}/publish`, {})).response.status, 200);
+}
+
 async function publishIntercompanyFixture(period = '2027-04') {
   const wanted = [['广州', '广州桉侨'], ['深圳', '深圳桉侨'], ['成都', '成都桉侨出国咨询服务有限公司'], ['南京', '南京桉侨'], ['长沙', '长沙桉侨海外咨询服务有限公司'], ['青岛', '青岛桉侨'], ['北京', '北京侨桉咨询服务有限公司']];
   const bootstrap = (await request(`/api/bootstrap?company=group&period=${period}`)).payload; const companies = new Map();
@@ -69,17 +97,7 @@ async function publishIntercompanyFixture(period = '2027-04') {
     长沙: [entry('2202001', '广州桉侨移民咨询服务有限公司', 0, 60)], 青岛: [entry('2202001', '广州桉侨移民咨询服务有限公司', 20, 0)], 北京: []
   };
   for (const [region, company] of companies) {
-    const items = balances[region];
-    const trialRows = [
-      { row: 1, cells: ['科目余额表'] }, { row: 2, cells: [`编制单位：${company.name}`, null, null, null, `${period.slice(0, 4)}年${Number(period.slice(5))}月`] },
-      { row: 3, cells: ['科目编码', '科目名称', '期初余额', null, '本期发生额', null, '本年累计发生额', null, '期末余额', null] }, { row: 4, cells: [null, null, '借方', '贷方', '借方', '贷方', '借方', '贷方', '借方', '贷方'] },
-      ...items.map((item, index) => ({ row: index + 5, cells: [item.code, item.name, 0, 0, item.debit, item.credit, item.debit, item.credit, item.debit, item.credit] }))
-    ];
-    const journalRows = [{ row: 1, cells: ['日期', '凭证号', '摘要', '科目编码', '科目名称', '借方金额', '贷方金额'] }, ...items.map((item, index) => ({ row: index + 2, cells: [`${period}-08`, `记-${region}-${index + 1}`, `${region}往来测试`, item.code, item.name, item.debit, item.credit] }))];
-    const reports = { trial_balance: { sourceSheet: '4月科目余额表', rows: trialRows, maxRow: trialRows.length, maxCol: 10 }, journal: { sourceSheet: '4月序时账', rows: journalRows, maxRow: journalRows.length, maxCol: 7 } };
-    const uploaded = await post('/api/uploads', { companyKey: company.key, period, fileName: `${period}-${company.name}-往来校验.json`, fileType: 'application/json', contentBase64: Buffer.from(JSON.stringify(reports)).toString('base64') });
-    assert.equal(uploaded.response.status, 201, JSON.stringify(uploaded.payload));
-    for (const batch of uploaded.payload.uploads) assert.equal((await post(`/api/uploads/${batch.uploadKey}/publish`, {})).response.status, 200);
+    await publishIntercompanyCompany(company, region, period, balances[region]);
   }
   return companies;
 }
@@ -245,7 +263,7 @@ function bundleWithStaleLedgerSourcesBuffer() {
 }
 
 before(async () => {
-  child = spawn(process.execPath, ['app.mjs'], { cwd: projectDir, env: { ...process.env, NODE_ENV: 'test', PORT: String(testPort), DB_FILE: testDbPath, UPLOADS_DIR: testUploadsDir }, stdio: 'ignore' });
+  child = spawn(process.execPath, ['app.mjs'], { cwd: projectDir, env: { ...process.env, NODE_ENV: 'test', PORT: String(testPort), DB_FILE: testDbPath, UPLOADS_DIR: testUploadsDir, CONSULTANT_DIRECTORY_FILE: testConsultantDirectoryFile, CONSULTANT_DIRECTORY_STATUS_FILE: testConsultantDirectoryStatusFile, CONSULTANT_DIRECTORY_REFRESH_REQUEST_FILE: testConsultantDirectoryRefreshRequestFile }, stdio: 'ignore' });
   let started = false;
   for (let i = 0; i < 40; i++) {
     try { const response = await fetch(`${base}/api/health`); if (response.ok) { started = true; break; } } catch {}
@@ -258,7 +276,7 @@ before(async () => {
   await publishFixture('gz', '2026-08', ['journal']);
 });
 
-after(() => { child?.kill(); fs.rmSync(testUploadsDir, { recursive: true, force: true }); });
+after(() => { child?.kill(); fs.rmSync(testUploadsDir, { recursive: true, force: true }); fs.rmSync(testConsultantDirectoryFile, { force: true }); fs.rmSync(testConsultantDirectoryStatusFile, { force: true }); fs.rmSync(testConsultantDirectoryRefreshRequestFile, { force: true }); });
 
 test('平台生产模式公开登录引导页并将未认证请求交给小Q登录', async () => {
   const authPort = testPort + 1; const authBase = `http://127.0.0.1:${authPort}`;
@@ -431,6 +449,7 @@ test('启动信息按当前员工返回逐报表明细权限', async () => {
     revenue_profit_consolidated_income_statement: false,
     revenue_statistics: false,
     payroll_statement: false,
+    quotation_ledger: false,
     cash_flow: false,
     trial_balance: false,
     journal: false
@@ -615,7 +634,7 @@ test('工资表固定为内部数据源且任何角色都不能整表浏览或�
   try { assert.equal(scopeDb.prepare("SELECT COUNT(*) AS count FROM role_report_scopes WHERE report_type = 'payroll_statement'").get().count, 0); }
   finally { scopeDb.close(); }
   const backend = fs.readFileSync(path.join(projectDir, 'app.mjs'), 'utf8');
-  assert.match(backend, /sourceOnlyReportTypes = new Set\(\[payrollStatementReportType\]\)/);
+  assert.match(backend, /sourceOnlyReportTypes = new Set\(\[payrollStatementReportType, quotationLedgerReportType\]\)/);
   assert.match(backend, /DELETE FROM role_report_scopes WHERE report_type = \?/);
 });
 
@@ -740,15 +759,23 @@ test('全部不可见范围不返回公司期间或数据模块且服务端拒�
   assert.match(upload.payload.error, /数据范围权限/);
 });
 
-test('管理员可保存全局看板模块顺序，普通员工不可修改', async () => {
+test('管理员保存的全局看板模块顺序应用于所有公司，普通员工不可修改', async () => {
   const original = (await request('/api/bootstrap?company=gz&period=2026-06')).payload.moduleOrder.map(item => item.key);
   assert.equal(original.indexOf('uploads') + 1, original.indexOf('activity_logs'));
   assert.equal(original.indexOf('activity_logs') + 1, original.indexOf('permissions'));
   const reordered = [...original].reverse();
   const saved = await post('/api/admin/module-order', { order: reordered });
   assert.equal(saved.response.status, 200);
+  assert.equal(saved.payload.scope, 'all_companies');
   const visible = await request('/api/bootstrap?company=gz&period=2026-06', 'viewer');
+  assert.equal(visible.payload.moduleOrderScope, 'all_companies');
   assert.deepEqual(visible.payload.modules.map(item => item.key), ['home', ...reordered.filter(key => visible.payload.modules.some(item => item.key === key))]);
+  for (const companyKey of ['gz', 'sz', 'group']) {
+    const companyBootstrap = await request(`/api/bootstrap?company=${companyKey}&period=2026-06`);
+    const visibleKeys = new Set(companyBootstrap.payload.modules.map(item => item.key));
+    assert.equal(companyBootstrap.payload.moduleOrderScope, 'all_companies');
+    assert.deepEqual(companyBootstrap.payload.modules.map(item => item.key), ['home', ...reordered.filter(key => visibleKeys.has(key))]);
+  }
   const forbidden = await post('/api/admin/module-order', { order: original }, 'viewer');
   assert.equal(forbidden.response.status, 403);
   const restored = await post('/api/admin/module-order', { order: original });
@@ -906,10 +933,10 @@ test('上传页使用独立公司期间选择器且移除全局范围锁定', ()
 test('页面与后台运行版本一致且旧响应不能覆盖上传操作后的列表', async () => {
   const bootstrap = await request('/api/bootstrap?company=gz&period=2026-06');
   assert.equal(bootstrap.response.status, 200);
-  assert.equal(bootstrap.payload.appVersion, '1.1.35');
+  assert.equal(bootstrap.payload.appVersion, '1.1.45');
   const index = fs.readFileSync(path.join(projectDir, 'public', 'index.html'), 'utf8');
   const frontend = fs.readFileSync(path.join(projectDir, 'public', 'app.js'), 'utf8');
-  assert.match(index, /<meta name="app-version" content="1\.1\.35">/);
+  assert.match(index, /<meta name="app-version" content="1\.1\.45">/);
   assert.match(frontend, /const expectedAppVersion = document\.querySelector\('meta\[name="app-version"\]'\)/);
   assert.match(frontend, /bootstrap\?\.appVersion === expectedAppVersion/);
   assert.match(frontend, /APP_VERSION_MISMATCH/);
@@ -1320,7 +1347,7 @@ test('现金流量表金额下钻读取隐藏底稿并按现金流项目筛选',
     ['销售商品、提供劳务收到的现金', 0, 0, 500]
   ]), '现金流量表-钱去向');
   const header = Array(20).fill('');
-  [header[0], header[1], header[2], header[4], header[5], header[6], header[17], header[18], header[19]] = ['日期', '凭证号', '摘要', '科目名称', '借方金额', '贷方金额', '备注', '现金流量表项目', '备注'];
+  [header[0], header[1], header[2], header[4], header[5], header[6], header[17], header[18], header[19]] = ['日期', '凭证号', '摘要', '科目名称', '借方本币', '贷方本币', '备注', '现金流量表项目', '备注'];
   const detailA = Array(20).fill(null); const detailB = Array(20).fill(null);
   [detailA[0], detailA[1], detailA[2], detailA[4], detailA[5], detailA[6], detailA[17], detailA[18], detailA[19]] = ['2026-11-08', '记-001', '客户支付服务费', '银行存款', 300, 0, '合同A', '销售商品、提供劳务收到的现金', 'R-SALES'];
   [detailB[0], detailB[1], detailB[2], detailB[4], detailB[5], detailB[6], detailB[17], detailB[18], detailB[19]] = ['2026-11-12', '记-002', '客户支付服务费', '银行存款', 200, 0, '合同B', '销售商品、提供劳务收到的现金', 'R-SALES'];
@@ -1468,6 +1495,61 @@ test('主营业务项目按序时账表头取值且不会把会计人员编号�
   assert.match(stylesheet, /\.business-detail-table\{min-width:1040px\}/);
 });
 
+test('集团报单表按合同编号纠正主营业务客户和项目且保持分析专用', async () => {
+  const period = '2028-01';
+  const quotationBuffer = quotationLedgerWorkbookBuffer([
+    { contractNo: '20260709-1825', customerName: '吴红翔', projectName: '瓦努阿图-护照' },
+    { contractNo: 'AQ2026083696', customerName: '郑怡昕', projectName: '几内亚比绍绿卡-港投' }
+  ]);
+  const quotationUpload = await post('/api/uploads', {
+    companyKey: 'group', reportType: 'quotation_ledger', fileName: '202502年报价单台账汇总黎 -0903.xlsx',
+    contentBase64: quotationBuffer.toString('base64')
+  });
+  assert.equal(quotationUpload.response.status, 201, JSON.stringify(quotationUpload.payload));
+  assert.deepEqual(quotationUpload.payload.uploads.map(item => item.reportType), ['quotation_ledger']);
+  assert.equal(quotationUpload.payload.uploads[0].period, 'all-history');
+  assert.equal(quotationUpload.payload.uploads[0].sourceVersion, '0903');
+  assert.equal(quotationUpload.payload.sheets.find(item => item.reportType === 'quotation_ledger')?.rows, 3);
+  const quotationKey = quotationUpload.payload.uploads[0].uploadKey;
+  assert.equal((await post(`/api/uploads/${quotationKey}/publish`, {})).response.status, 200);
+  const quotationHistory = await request('/api/uploads?company=group&period=all-history&reportType=quotation_ledger&view=versions');
+  assert.equal(quotationHistory.response.status, 200);
+  assert.equal(quotationHistory.payload.uploads[0].sourceVersion, '0903');
+
+  const journal = {
+    sourceSheet: '1月序时账', maxRow: 3, maxCol: 14,
+    rows: [
+      { row: 1, cells: ['日期', '凭证号', '摘要', '科目编码', '科目名称', '借方金额', '贷方金额', '客户名称', '供应商编码', '供应商名称', '部门编码', '部门名称', '项目编码', '项目名称'] },
+      { row: 2, cells: ['2028-01-08', '记-001', '20260709-1825 确认服务收入', '6001001', '主营业务收入-旧项目名', 0, 30000, '旧客户名', '', '', '', '', 'P001', '旧项目名'] },
+      { row: 3, cells: ['2028-01-08', '记-001', '20260709-1825 确认服务成本', '6401001', '主营业务成本-旧项目名', 12000, 0, '', '', '', '', '', 'P001', '旧项目名'] }
+    ]
+  };
+  const journalUpload = await post('/api/uploads', {
+    companyKey: 'sz', period, reportType: 'journal', fileName: '2028.01深圳序时账.json', fileType: 'application/json',
+    contentBase64: Buffer.from(JSON.stringify({ journal })).toString('base64')
+  });
+  assert.equal(journalUpload.response.status, 201, JSON.stringify(journalUpload.payload));
+  assert.equal((await post(`/api/uploads/${journalUpload.payload.uploads[0].uploadKey}/publish`, {})).response.status, 200);
+
+  const analysis = await request(`/api/analysis/main-business?company=sz&period=${period}&year=2028`);
+  assert.equal(analysis.response.status, 200);
+  assert.equal(analysis.payload.detailRows.length, 1);
+  assert.equal(analysis.payload.detailRows[0].contractNo, '20260709-1825');
+  assert.equal(analysis.payload.detailRows[0].customerName, '吴红翔');
+  assert.equal(analysis.payload.detailRows[0].projectName, '瓦努阿图-护照');
+  assert.equal(analysis.payload.detailRows[0].revenue, 30000);
+  assert.equal(analysis.payload.detailRows[0].cost, 12000);
+  assert.deepEqual(analysis.payload.quotationMatch, { currentContracts: 1, matchedContracts: 1 });
+  assert.equal(analysis.payload.quotationSource.recordCount, 2);
+  assert.equal(analysis.payload.quotationSource.sourceVersion, '0903');
+  assert.equal((await request('/api/reports/quotation_ledger/raw?company=group&period=all-history')).response.status, 403);
+
+  const frontend = fs.readFileSync(path.join(projectDir, 'public', 'app.js'), 'utf8');
+  assert.match(frontend, /集团报单表（客户及项目匹配）/);
+  assert.match(frontend, /覆盖全历史数据，版本取文件名末尾后缀/);
+  assert.match(frontend, /客户和项目优先按合同编号精确匹配最新发布的集团报单表/);
+});
+
 test('主营业务成本可继承同凭证唯一订单号但不会误配多订单凭证', async () => {
   const journal = {
     sourceSheet: '2月序时账', maxRow: 4, maxCol: 14,
@@ -1492,6 +1574,70 @@ test('主营业务成本可继承同凭证唯一订单号但不会误配多订�
   assert.equal(analysis.payload.detailRows.find(row => row.contractNo === '20270220-2001').cost, 0);
   assert.equal(analysis.payload.detailRows.find(row => row.contractNo === '20270220-2002').cost, 0);
   assert.equal(analysis.payload.detailRows.find(row => row.contractNo === '未识别合同').cost, 300);
+});
+
+test('广州二十列序时账按本币列驱动主营业务、费用、手续费和下钻金额', async () => {
+  const header = ['日期', '凭证号', '摘要', '科目编码', '科目名称', '外币代码', '借方数量', '借方外币', '借方本币', '贷方数量', '贷方外币', '贷方本币', '客户编码', '客户名称', '部门编码', '部门名称', '制单人', '审核人', '附件数', '备注'];
+  const entry = ({ row, voucher, summary, code, account, debit = 0, credit = 0, customer = '', department = '商务顾问部' }) => {
+    const cells = Array(20).fill('');
+    Object.assign(cells, { 0: '2027-05-10', 1: voucher, 2: summary, 3: code, 4: account, 8: debit, 11: credit, 13: customer, 15: department, 16: '会计002' });
+    return { row, cells };
+  };
+  const journal = { sourceSheet: '5月序时账', maxRow: 9, maxCol: 20, rows: [
+    { row: 1, cells: header },
+    entry({ row: 2, voucher: '记-25', summary: '20270510-2001王炳几内亚比绍绿卡-读书，服务费16000元', code: '5001001', account: '主营业务收入-几内亚比绍绿卡-读书', credit: 16000 }),
+    entry({ row: 3, voucher: '记-25', summary: '通联扫码收取服务费', code: '1002001', account: '银行存款-招商银行', debit: 16000 }),
+    entry({ row: 4, voucher: '记-25', summary: '项目服务成本（摘要漏写订单号）', code: '5401001', account: '主营业务成本-几内亚比绍绿卡-读书', debit: 6000 }),
+    entry({ row: 5, voucher: '记-25', summary: '收款手续费', code: '5603002', account: '财务费用-手续费', debit: 25 }),
+    entry({ row: 6, voucher: '记-26', summary: '本月推广费', code: '5601006', account: '销售费用-广告费', debit: 1000 }),
+    entry({ row: 7, voucher: '记-27', summary: '本月办公费', code: '5602004', account: '管理费用-办公费', debit: 500 }),
+    entry({ row: 8, voucher: '记-28', summary: '利息支出', code: '5603001', account: '财务费用-利息支出', debit: 999 }),
+    entry({ row: 9, voucher: '记-25', summary: '手续费冲减', code: '5603002', account: '财务费用-手续费', debit: -9 })
+  ] };
+  const uploaded = await post('/api/uploads', { companyKey: 'gz', period: '2027-05', reportType: 'journal', fileName: '2027.5广州桉侨序时账.json', fileType: 'application/json', contentBase64: Buffer.from(JSON.stringify({ journal })).toString('base64') });
+  assert.equal(uploaded.response.status, 201, JSON.stringify(uploaded.payload));
+  const batch = uploaded.payload.uploads?.[0] || uploaded.payload;
+  assert.equal((await post(`/api/uploads/${batch.uploadKey}/publish`, {})).response.status, 200);
+
+  const business = await request('/api/analysis/main-business?company=gz&period=2027-05&year=2027');
+  assert.equal(business.response.status, 200);
+  assert.equal(business.payload.current.revenue, 16000); assert.equal(business.payload.current.cost, 6000);
+  assert.equal(business.payload.detailRows[0].contractNo, '20270510-2001');
+  assert.equal(business.payload.detailRows[0].customerName, '王炳');
+  assert.equal(business.payload.detailRows[0].projectName, '几内亚比绍绿卡-读书');
+  assert.notEqual(business.payload.detailRows[0].projectName, '商务顾问部');
+
+  const expenses = await request('/api/analysis/expenses?company=gz&period=2027-05&year=2027');
+  assert.equal(expenses.response.status, 200);
+  assert.equal(expenses.payload.selling.total, 1000); assert.equal(expenses.payload.administration.total, 500);
+  assert.equal(expenses.payload.finance.rows.length, 1);
+  assert.equal(expenses.payload.finance.rows[0].method, '通联扫码');
+  assert.equal(expenses.payload.finance.rows[0].current, 16000); assert.equal(expenses.payload.finance.rows[0].fee, 16);
+
+  const detail = await request(`/api/reports/journal/detail?company=gz&period=2027-05&search=${encodeURIComponent('主营业务收入')}`);
+  assert.equal(detail.response.status, 200);
+  assert.equal(detail.payload.rawRows.find(row => row.row === 2).journal.credit, 16000);
+  assert.equal(detail.payload.rawRows.find(row => row.row === 4).journal.debit, 6000);
+  const cashDetail = await request(`/api/reports/balance_sheet/detail?company=gz&period=2027-05&search=${encodeURIComponent('货币资金')}`);
+  assert.equal(cashDetail.response.status, 200);
+  assert.equal(cashDetail.payload.rawRows.find(row => row.row === 3).journal.debit, 16000);
+  const frontend = fs.readFileSync(path.join(projectDir, 'public', 'app.js'), 'utf8');
+  assert.match(frontend, /debit: \['借方金额', '借方本币'\]/);
+  assert.match(frontend, /journalDisplayColumns\(raw\)/);
+});
+
+test('公司财务汇总文件内的报价单不会被误建为集团报单表批次', async () => {
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([
+    ['日期', '凭证号', '摘要', '科目编码', '科目名称', '借方本币', '贷方本币'],
+    ['2027-06-30', '记-1', '测试收款', '1002001', '银行存款', 100, 0]
+  ]), '6月序时账');
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([
+    ['合同编号', '客户姓名', '项目'], ['20270601-0001', '测试客户', '测试项目']
+  ]), '报价单');
+  const uploaded = await post('/api/uploads', { companyKey: 'gz', period: '2027-06', reportType: 'journal', fileName: '2027.6广州桉侨财务报表.xlsx', contentBase64: XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }).toString('base64') });
+  assert.equal(uploaded.response.status, 201, JSON.stringify(uploaded.payload));
+  assert.deepEqual(uploaded.payload.uploads.map(item => item.reportType), ['journal']);
 });
 
 test('管理员可复制员工权限范围，普通员工不能复制', async () => {
@@ -1847,10 +1993,15 @@ test('集团营收统计表识别三维度八张子表并按集团权限发布',
   assert.match(frontend, /data-revenue-table/);
   assert.match(frontend, /data-revenue-cumulative-year/);
   assert.match(frontend, /data-revenue-cumulative-table/);
+  assert.match(frontend, /{ key: 'cumulative', name: '营收统计累计数据' }/);
+  assert.match(frontend, /state\.revenueDimension === 'cumulative'/);
+  assert.match(frontend, /revenueCumulativeTabLabelHtml/);
+  assert.match(frontend, /年度累计子表独立查看/);
   assert.match(frontend, /revenueStatisticsReportType, '集团营收统计表'/);
   assert.match(stylesheet, /\.revenue-dimension-switch/);
   assert.match(stylesheet, /\.revenue-table-scroll\{max-width:100%;overflow-x:auto/);
   assert.match(stylesheet, /\.revenue-cumulative-panel/);
+  assert.match(stylesheet, /\.revenue-cumulative-tabs \.revenue-tab-label/);
 });
 
 test('集团顾问投入产出比联合工资表、营收明细和各公司序时账且保留来源', async () => {
@@ -1883,6 +2034,9 @@ test('集团顾问投入产出比联合工资表、营收明细和各公司序�
     companyKey: 'group', reportType: 'revenue_statistics', fileName: '2027.3桉侨集团营收统计表.xlsx',
     contentBase64: revenueStatisticsWorkbookBuffer(period).toString('base64')
   });
+  const automaticRefreshRequest = JSON.parse(fs.readFileSync(testConsultantDirectoryRefreshRequestFile, 'utf8'));
+  assert.equal(automaticRefreshRequest.schemaVersion, 1); assert.equal(automaticRefreshRequest.reason, 'revenue_published');
+  assert.deepEqual(Object.keys(automaticRefreshRequest).sort(), ['reason', 'requestId', 'requestedAt', 'schemaVersion']);
   const journalRows = rows => ({ journal: { sourceSheet: '3月序时账', rows: [
     { row: 1, cells: ['日期', '凭证号', '摘要', '科目编码', '科目名称', '借方金额', '贷方金额'] },
     ...rows
@@ -1905,6 +2059,14 @@ test('集团顾问投入产出比联合工资表、营收明细和各公司序�
     ]))).toString('base64')
   });
 
+  fs.writeFileSync(testConsultantDirectoryFile, JSON.stringify({ schemaVersion: 1, generatedAt: '2027-03-31T08:00:00.000Z', people: [
+    { name: '詹志坚', englishName: 'James', employmentStatus: 'active' },
+    { name: '张莎莎', englishName: 'Sasa', employmentStatus: 'resigned' },
+    { name: '非顾问人员', englishName: 'Finance', employmentStatus: 'active' }
+  ] }));
+  fs.writeFileSync(testConsultantDirectoryStatusFile, JSON.stringify({ schemaVersion: 1, state: 'success', message: '企业微信花名册与通讯录已完成匹配', updatedAt: '2027-03-31T08:00:00.000Z', lastSuccessAt: '2027-03-31T08:00:00.000Z' }));
+  fs.rmSync(testConsultantDirectoryRefreshRequestFile, { force: true });
+
   const result = await request(`/api/analysis/consultant-roi?company=group&period=${period}`);
   assert.equal(result.response.status, 200, JSON.stringify(result.payload));
   const byName = Object.fromEntries(result.payload.rows.map(item => [item.canonicalName, item]));
@@ -1912,10 +2074,12 @@ test('集团顾问投入产出比联合工资表、营收明细和各公司序�
   assert.deepEqual({ baseSalary: byName['詹志坚'].baseSalary, commission: byName['詹志坚'].commission, journalExpense: byName['詹志坚'].journalExpense, input: byName['詹志坚'].input, output: byName['詹志坚'].output, region: byName['詹志坚'].region, matchStatus: byName['詹志坚'].matchStatus }, { baseSalary: 10000, commission: 2000, journalExpense: 3000, input: 15000, output: 120000, region: '广州', matchStatus: 'matched' });
   assert.equal(byName['詹志坚'].roi, 8);
   assert.deepEqual({ hireDate: byName['詹志坚'].hireDate, isNewEmployee: byName['詹志坚'].isNewEmployee }, { hireDate: '2027-03-05', isNewEmployee: true });
+  assert.deepEqual({ englishName: byName['詹志坚'].englishName, isResigned: byName['詹志坚'].isResigned }, { englishName: 'James', isResigned: false });
   assert.deepEqual({ baseSalary: byName['张莎莎'].baseSalary, commission: byName['张莎莎'].commission, journalExpense: byName['张莎莎'].journalExpense, input: byName['张莎莎'].input, output: byName['张莎莎'].output, region: byName['张莎莎'].region }, { baseSalary: 9000, commission: 1500, journalExpense: 1200, input: 11700, output: 80000, region: '深圳' });
   assert.equal(byName['徐梓茵'], undefined);
   assert.equal(byName['非顾问人员'], undefined);
   assert.equal(byName['张莎莎'].isNewEmployee, false);
+  assert.deepEqual({ englishName: byName['张莎莎'].englishName, isResigned: byName['张莎莎'].isResigned }, { englishName: 'Sasa', isResigned: true });
   assert.equal(result.payload.rows.length, 2);
   assert.equal(result.payload.totals.input, 26700);
   assert.equal(result.payload.totals.output, 200000);
@@ -1934,14 +2098,38 @@ test('集团顾问投入产出比联合工资表、营收明细和各公司序�
   assert.equal(result.payload.sources.payrollExcludedRows, 1);
   assert.equal(result.payload.sources.revenueExcludedPeriodRows, 1);
   assert.equal(result.payload.sources.unmatchedRevenueRows, 1);
+  assert.deepEqual({ available: result.payload.sources.directory.available, matchedRows: result.payload.sources.directory.matchedRows, generatedAt: result.payload.sources.directory.generatedAt }, { available: true, matchedRows: 2, generatedAt: '2027-03-31T08:00:00.000Z' });
+  assert.equal(result.payload.sources.directory.sync.state, 'success');
   assert.match(result.payload.sourceRevision, /^[a-f0-9]{20}$/);
+
+  fs.writeFileSync(testConsultantDirectoryFile, JSON.stringify({ schemaVersion: 1, generatedAt: '2027-03-31T09:00:00.000Z', people: [
+    { name: '詹志坚', englishName: 'James', employmentStatus: 'active' }, { name: '张莎莎', englishName: 'Sasa', employmentStatus: 'active' }
+  ] }));
+  const directoryRefreshed = await request(`/api/analysis/consultant-roi?company=group&period=${period}`);
+  assert.notEqual(directoryRefreshed.payload.sourceRevision, result.payload.sourceRevision);
+  assert.equal(directoryRefreshed.payload.rows.find(item => item.canonicalName === '张莎莎').isResigned, false);
 
   await uploadAndPublish({
     companyKey: 'group', reportType: 'revenue_statistics', fileName: '2027.3桉侨集团营收统计表-修订版.xlsx',
     contentBase64: revenueStatisticsWorkbookBuffer(period).toString('base64')
   });
   const refreshed = await request(`/api/analysis/consultant-roi?company=group&period=${period}`);
-  assert.notEqual(refreshed.payload.sourceRevision, result.payload.sourceRevision);
+  assert.notEqual(refreshed.payload.sourceRevision, directoryRefreshed.payload.sourceRevision);
+
+  const manualRefresh = await post('/api/analysis/consultant-directory/refresh', { companyKey: 'group', period });
+  assert.equal(manualRefresh.response.status, 202); assert.equal(manualRefresh.payload.requested, true); assert.equal(manualRefresh.payload.sync.state, 'pending');
+  const manualRefreshRequest = JSON.parse(fs.readFileSync(testConsultantDirectoryRefreshRequestFile, 'utf8'));
+  assert.equal(manualRefreshRequest.reason, 'manual'); assert.doesNotMatch(JSON.stringify(manualRefreshRequest), /詹志坚|张莎莎|工资|营收/);
+  const pendingDirectory = await request(`/api/analysis/consultant-roi?company=group&period=${period}`);
+  assert.equal(pendingDirectory.payload.sources.directory.sync.state, 'pending');
+  assert.equal((await post('/api/analysis/consultant-directory/refresh', { companyKey: 'group', period }, 'accountant')).response.status, 403);
+
+  fs.writeFileSync(testConsultantDirectoryFile, 'x'.repeat(513 * 1024));
+  const rejectedDirectory = await request(`/api/analysis/consultant-roi?company=group&period=${period}`);
+  assert.equal(rejectedDirectory.response.status, 200);
+  assert.equal(rejectedDirectory.payload.sources.directory.available, false);
+  assert.match(rejectedDirectory.payload.sources.directory.reason, /大小异常/);
+  assert.equal(rejectedDirectory.payload.rows.find(item => item.canonicalName === '詹志坚').englishName, '');
 
   assert.equal((await request(`/api/analysis/consultant-roi?company=gz&period=${period}`)).response.status, 400);
   assert.equal((await request(`/api/analysis/consultant-roi?company=group&period=${period}`, 'accountant')).response.status, 403);
@@ -1954,18 +2142,31 @@ test('集团顾问投入产出比联合工资表、营收明细和各公司序�
   const frontend = fs.readFileSync(path.join(projectDir, 'public', 'app.js'), 'utf8');
   const stylesheet = fs.readFileSync(path.join(projectDir, 'public', 'styles.css'), 'utf8');
   const serverSource = fs.readFileSync(path.join(projectDir, 'app.mjs'), 'utf8');
-  assert.match(frontend, /data-roi-input/); assert.match(frontend, /data-roi-filter/); assert.match(frontend, /data-roi-sort/);
+  const directorySyncSource = fs.readFileSync(path.join(projectDir, 'deploy', 'sync-consultant-directory.mjs'), 'utf8');
+  assert.match(frontend, /data-roi-input/); assert.match(frontend, /data-roi-filter-toggle/); assert.match(frontend, /data-roi-filter-draft/); assert.match(frontend, /data-roi-sort/);
+  assert.match(frontend, /consultant-roi-filter-menu/); assert.match(frontend, /positionColumnFilter/); assert.doesNotMatch(frontend, /roi-filter-row/);
   assert.match(frontend, /consultant-roi-export/); assert.match(frontend, /顾问投入产出比\.csv/);
   assert.match(frontend, /工资取数字段/); assert.match(frontend, /payrollFields/);
   assert.match(serverSource, /refreshedConsultantPayrollRawFor/); assert.match(serverSource, /hireDate\.slice\(0, 7\) === period/);
   assert.match(frontend, /consultantRoiAverageSummary/); assert.match(frontend, /consultant-roi-average-modal/); assert.match(frontend, /consultant-new-hire-badge/); assert.match(frontend, /入职时间/);
+  assert.match(frontend, /key: 'hireDate', label: '入职日期'/); assert.match(frontend, /key: 'englishName', label: '英文名'/); assert.match(frontend, /consultant-resigned-badge/);
+  assert.match(serverSource, /consultantDirectorySnapshot/); assert.match(serverSource, /directory: directory\.revision/); assert.match(serverSource, /employmentStatus === 'resigned'/);
+  assert.match(directorySyncSource, /contact', 'users', 'search/); assert.match(directorySyncSource, /sheet', 'ranges', 'get/); assert.match(directorySyncSource, /wide && !allowWideRead/);
+  assert.match(directorySyncSource, /schemaVersion: 1/); assert.match(directorySyncSource, /englishName: contactNames\.get\(key\) \|\| roster\?\.englishName/);
+  assert.match(directorySyncSource, /AUTH_REQUIRED/); assert.match(directorySyncSource, /source_permission_required/); assert.match(directorySyncSource, /CONSULTANT_DIRECTORY_STATUS_FILE/);
+  assert.match(serverSource, /CONSULTANT_DIRECTORY_REFRESH_REQUEST_FILE/); assert.match(serverSource, /consultantDirectoryRefreshForPublishedReports/); assert.match(serverSource, /consultant-directory\/refresh/);
   assert.match(frontend, /consultantRoiAutoRefreshMs = 60_000/); assert.match(frontend, /consultant-roi-refresh/); assert.match(frontend, /data\.sourceRevision === consultantRoiSourceRevision/);
+  assert.match(frontend, /consultantDirectoryPollingMs = 3_000/); assert.match(frontend, /consultant-directory-guide-modal/); assert.match(frontend, /wecom-cli auth init/);
   assert.match(frontend, /state\.page === consultantRoiModuleKey[\s\S]{0,180}renderConsultantRoiInteractive\(\{ trigger: 'resume' \}\)/);
   assert.match(frontend, /visibleColumns = consultantRoiColumns\.filter/); assert.match(frontend, /selectedInputs\.map\(item => item\.label\)/);
   assert.match(stylesheet, /\.consultant-roi-layout>\[data-analysis-block\]\{grid-column:span 12\}/);
   assert.match(stylesheet, /analysis-layout-editable>\.consultant-roi-table-panel \.consultant-roi-table-toolbar\{padding-right:78px\}/);
   assert.match(stylesheet, /\.consultant-roi-page-actions\{[^}]*flex-wrap:nowrap/); assert.match(stylesheet, /#consultant-roi-refresh-status\{[^}]*position:absolute/);
   assert.match(stylesheet, /\.consultant-roi-average-card/); assert.match(stylesheet, /\.consultant-roi-average-modal/); assert.match(stylesheet, /\.consultant-new-hire-badge/);
+  assert.match(stylesheet, /\.consultant-resigned-badge/); assert.match(stylesheet, /roi-col-hireDate/); assert.match(stylesheet, /roi-col-englishName/);
+  assert.match(stylesheet, /\.consultant-directory-guide/); assert.match(stylesheet, /\.consultant-directory-guide-modal/);
+  assert.match(stylesheet, /\.consultant-roi-table\{width:100%;min-width:0!important;table-layout:fixed\}/);
+  assert.match(stylesheet, /\.roi-filter-menu\{position:fixed/); assert.match(stylesheet, /\.roi-filter-trigger\.active/);
   const helperSource = frontend.slice(frontend.indexOf('const consultantRoiInputDefinitions'), frontend.indexOf('async function renderConsultantRoiAnalysis'));
   assert.doesNotMatch(helperSource, /label: '来源'/); assert.doesNotMatch(helperSource, /'匹配状态', '来源'/);
   const context = { result: null, summary: null, escapeHtml: value => String(value ?? ''), showNotice: () => {}, URL: {}, Blob: function Blob() {}, document: {}, window: {} };
@@ -2103,10 +2304,11 @@ test('桌面宽内容不压缩左侧导航且移动端恢复横向模块栏', ()
   assert.match(stylesheet, /@media\(max-width:900px\)\{\s*\.sidebar\{flex:0 0 auto;width:100%;min-width:0;max-width:100vw\}/);
 });
 
-test('各公司往来校验形成七家公司二十一组双边结果并严格隔离明细权限', async () => {
+test('各公司往来校验按已登记经营公司自动扩展组合并严格隔离明细权限', async () => {
   const period = '2027-04'; const companies = await publishIntercompanyFixture(period);
   const summary = await request(`/api/analysis/intercompany-reconciliation?company=group&period=${period}`);
-  assert.equal(summary.response.status, 200); assert.equal(summary.payload.companyCount, 7); assert.equal(summary.payload.combinationCount, 21); assert.equal(summary.payload.metrics.coveredCompanies, 7); assert.equal(summary.payload.scopeComplete, true); assert.equal(summary.payload.dataComplete, true);
+  assert.equal(summary.response.status, 200); const baselineCompanyCount = summary.payload.expectedCompanyCount;
+  assert.ok(baselineCompanyCount >= 7); assert.equal(summary.payload.companyCount, baselineCompanyCount); assert.equal(summary.payload.combinationCount, baselineCompanyCount * (baselineCompanyCount - 1) / 2); assert.equal(summary.payload.metrics.coveredCompanies, 7); assert.equal(summary.payload.scopeComplete, true);
   const pairByRegions = (left, right) => summary.payload.pairs.find(pair => [pair.companyA.region, pair.companyB.region].includes(left) && [pair.companyA.region, pair.companyB.region].includes(right));
   assert.equal(pairByRegions('广州', '深圳').status.key, 'matched');
   assert.equal(pairByRegions('广州', '成都').status.key, 'one_sided');
@@ -2121,6 +2323,15 @@ test('各公司往来校验形成七家公司二十一组双边结果并严格�
   const unmapped = await request(`/api/analysis/intercompany-reconciliation/unmapped?company=group&period=${period}`);
   assert.equal(unmapped.response.status, 200); assert.match(unmapped.payload.rows.find(row => row.name.includes('办公室押金')).reason, /业务后缀/);
   assert.equal((await request(`/api/analysis/intercompany-reconciliation?company=group&period=${period}`, 'viewer')).response.status, 403);
+  const createdShanghai = await post('/api/admin/companies', { name: '上海桉侨移民服务有限公司' });
+  assert.equal(createdShanghai.response.status, 201); const shanghai = createdShanghai.payload.company;
+  await publishIntercompanyCompany(shanghai, '上海', period, [{ code: '2202001', name: '广州桉侨移民咨询服务有限公司', debit: 0, credit: 25 }]);
+  const expanded = await request(`/api/analysis/intercompany-reconciliation?company=group&period=${period}`);
+  const expandedCompanyCount = baselineCompanyCount + 1;
+  assert.equal(expanded.response.status, 200); assert.equal(expanded.payload.expectedCompanyCount, expandedCompanyCount); assert.equal(expanded.payload.companyCount, expandedCompanyCount); assert.equal(expanded.payload.combinationCount, expandedCompanyCount * (expandedCompanyCount - 1) / 2);
+  assert.equal(expanded.payload.scopeComplete, true); assert.ok(expanded.payload.companies.some(company => company.key === shanghai.key && company.region === '上海'));
+  const shanghaiPair = expanded.payload.pairs.find(pair => [pair.companyA.key, pair.companyB.key].includes(shanghai.key) && [pair.companyA.key, pair.companyB.key].includes(companies.get('广州').key));
+  assert.equal(shanghaiPair.status.key, 'one_sided');
   await post('/api/admin/employee-permission-profile', {
     employeeKey: 'regional_gm', presetRoleKey: 'regional_manager', permissionKeys: ['module.intercompany_reconciliation.view'],
     companyKeys: ['group', companies.get('广州').key, companies.get('深圳').key], fromPeriod: '2027-01', toPeriod: '2027-12', accountVisibility: 'level1', showDirection: false, showFullEntry: false
@@ -2132,7 +2343,8 @@ test('各公司往来校验形成七家公司二十一组双边结果并严格�
   assert.equal(invalidChild.response.status, 400); assert.match(invalidChild.payload.error, /先开启各公司往来校验浏览权限/);
   const frontend = fs.readFileSync(path.join(projectDir, 'public', 'app.js'), 'utf8'); const stylesheet = fs.readFileSync(path.join(projectDir, 'public', 'styles.css'), 'utf8'); const html = fs.readFileSync(path.join(projectDir, 'public', 'index.html'), 'utf8');
   assert.match(frontend, /renderIntercompanyReconciliation[\s\S]*intercompany-reconciliation\/pair/); assert.match(frontend, /intercompany-only-exceptions/);
-  assert.match(stylesheet, /\.intercompany-matrix\{[^}]*min-width:790px/); assert.match(html, /id="intercompany-reconciliation-page"/);
+  assert.doesNotMatch(frontend, /class="card-grid intercompany-metrics"/); assert.match(frontend, /--intercompany-company-count/); assert.match(frontend, /\$\{companies\.length\} × \$\{companies\.length\} 往来校验矩阵/);
+  assert.match(stylesheet, /\.intercompany-matrix\{[^}]*var\(--intercompany-company-count/); assert.match(stylesheet, /\.intercompany-source-list\{grid-template-columns:repeat\(auto-fit/); assert.match(html, /id="intercompany-reconciliation-page"/);
 });
 
 test('管理员浏览日志支持全员采集、多条件筛选和删除留痕', async () => {

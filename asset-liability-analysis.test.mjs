@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { parseAssetLiabilityAnalysis } from './asset-liability-analysis.mjs';
 import { assetLiabilityChartLabels, assetLiabilityChartSegments, assetLiabilityTableRows } from './public/asset-liability-analysis.js';
 
@@ -119,4 +120,12 @@ test('图表为每个色块生成项目和比例引导线，并避免同侧标�
     const positions = labels.filter(label => label.side === side).map(label => label.labelY).sort((a, b) => a - b);
     positions.slice(1).forEach((position, index) => assert.ok(position - positions[index] >= 28.9));
   }
+});
+
+test('图表点击不显示浏览器原生黑色焦点框且表图字号保持清晰', () => {
+  const css = fs.readFileSync(new URL('./public/asset-liability-analysis.css', import.meta.url), 'utf8');
+  assert.match(css, /\.asset-liability-chart-svg \[data-analysis-segment\]:focus[\s\S]*?outline:none!important/);
+  assert.match(css, /\.asset-liability-chart-svg \.asset-liability-segment:focus-visible\{filter:drop-shadow/);
+  assert.match(css, /\.asset-liability-table-panel \.asset-liability-source-table table\{font-size:12px\}/);
+  assert.match(css, /\.asset-liability-label-name\{font-size:13\.5px\}/);
 });

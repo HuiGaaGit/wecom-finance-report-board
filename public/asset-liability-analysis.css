@@ -62,3 +62,48 @@
 @media(max-width:880px){.asset-liability-switcher{padding-top:52px}.asset-liability-tabs{width:100%;min-width:0}.asset-liability-workspace{grid-template-columns:1fr}.asset-liability-table-panel .asset-liability-source-table{max-height:350px}.asset-liability-chart-viewport{overflow-x:auto}.asset-liability-chart-panel .asset-liability-donut{width:700px;max-width:none}.asset-liability-chart-panel{padding-inline:12px}}
 @media(max-width:560px){.asset-liability-dialog{width:100vw;max-height:100vh;border:0;border-radius:0}.asset-liability-table-panel,.asset-liability-chart-panel{padding:13px 11px}.asset-liability-table-panel>header,.asset-liability-chart-panel>header{align-items:flex-start;flex-direction:column;gap:4px}.asset-liability-chart-panel .asset-liability-donut{width:650px}.asset-liability-dialog>footer{flex-direction:column;gap:3px}}
 @media(prefers-reduced-motion:reduce){.asset-liability-tabs i,.asset-liability-table-rail,.asset-liability-chart-rail,.asset-liability-segment,.asset-liability-direct-label{animation:none!important;transition:none!important}}
+
+/* Keep the split view readable while leaving the chart enough room for direct labels. */
+.asset-liability-dialog{width:min(1240px,calc(100vw - 32px))}
+.asset-liability-tabs{width:36%;min-width:340px;height:44px}
+.asset-liability-tabs button{font-size:14px}
+.asset-liability-workspace{grid-template-columns:minmax(360px,.84fr) minmax(0,1.56fr);gap:16px}
+.asset-liability-table-panel{padding:18px 16px}
+.asset-liability-table-panel>header,.asset-liability-chart-panel>header{margin-bottom:13px}
+.asset-liability-table-panel>header h3,.asset-liability-chart-panel h3{font-size:17px}
+.asset-liability-table-panel>header>strong,.asset-liability-chart-panel>header>strong{font-size:18px}
+.asset-liability-table-panel>header small,.asset-liability-chart-panel>header small{font-size:10px}
+.asset-liability-table-panel .asset-liability-source-table{max-height:548px}
+.asset-liability-table-panel .asset-liability-source-table table{font-size:12px}
+.asset-liability-table-panel .asset-liability-source-table th,.asset-liability-table-panel .asset-liability-source-table td{padding:8px 10px;line-height:1.35}
+.asset-liability-table-panel .asset-liability-source-table thead th{font-size:11px}
+.asset-liability-table-panel .asset-liability-source-table tbody td:first-child{gap:8px}
+.asset-liability-table-panel .asset-liability-source-table tbody i{width:8px;height:8px}
+.asset-liability-chart-panel{padding:18px 20px 14px}
+.asset-liability-chart-panel>header span{font-size:10px}
+.asset-liability-chart-panel>header h3{font-size:18px}
+.asset-liability-chart-panel>header>strong{font-size:20px}
+.asset-liability-chart-panel .asset-liability-donut>div small{font-size:11px}
+.asset-liability-chart-panel .asset-liability-donut>div strong{font-size:clamp(25px,2.8vw,34px)}
+.asset-liability-chart-panel .asset-liability-donut>div span{font-size:10px}
+.asset-liability-label-name{font-size:13.5px}
+.asset-liability-label-percent{font-size:13.5px}
+
+/* Chromium draws an SVG element's native focus ring as a black bounding box. */
+.asset-liability-chart-svg [data-analysis-segment]{-webkit-tap-highlight-color:transparent}
+.asset-liability-chart-svg [data-analysis-segment]:focus,
+.asset-liability-chart-svg [data-analysis-segment]:focus-visible{outline:none!important}
+.asset-liability-chart-svg .asset-liability-segment:focus-visible{filter:drop-shadow(0 5px 7px rgba(28,78,120,.28))}
+
+@media(max-width:880px){
+  .asset-liability-dialog{width:min(100vw - 20px,1240px)}
+  .asset-liability-tabs{width:100%;min-width:0}
+  .asset-liability-workspace{grid-template-columns:1fr}
+  .asset-liability-table-panel .asset-liability-source-table{max-height:390px}
+}
+@media(max-width:560px){
+  .asset-liability-dialog{width:100vw}
+  .asset-liability-tabs button{font-size:13px}
+  .asset-liability-table-panel .asset-liability-source-table table{font-size:11px}
+  .asset-liability-label-name,.asset-liability-label-percent{font-size:13px}
+}

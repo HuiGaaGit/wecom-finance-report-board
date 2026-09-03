@@ -1,0 +1,9 @@
+[Unit]
+Description=Refresh consultant directory after finance report publication
+
+[Path]
+PathChanged=/data/data/wecom-finance-report-board/consultant-directory-refresh-request.json
+Unit=wecom-finance-consultant-directory.service
+
+[Install]
+WantedBy=multi-user.target

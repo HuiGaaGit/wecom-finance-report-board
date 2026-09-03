@@ -17,7 +17,7 @@ if (envPath) {
   }
 }
 
-const required = ['NODE_ENV', 'AUTH_MODE', 'PORT', 'APP_BASE_PATH', 'PUBLIC_BASE_URL', 'FINANCE_ALLOWED_ORIGIN', 'SESSION_SECRET', 'PLATFORM_API_BASE_URL', 'PLATFORM_LOGIN_URL', 'DB_FILE', 'UPLOADS_DIR'];
+const required = ['NODE_ENV', 'AUTH_MODE', 'PORT', 'APP_BASE_PATH', 'PUBLIC_BASE_URL', 'FINANCE_ALLOWED_ORIGIN', 'SESSION_SECRET', 'PLATFORM_API_BASE_URL', 'PLATFORM_LOGIN_URL', 'DB_FILE', 'UPLOADS_DIR', 'CONSULTANT_DIRECTORY_FILE', 'CONSULTANT_DIRECTORY_STATUS_FILE', 'CONSULTANT_DIRECTORY_REFRESH_REQUEST_FILE'];
 const errors = required.filter(key => !values[key]).map(key => `缺少 ${key}`);
 if (values.NODE_ENV !== 'production') errors.push('NODE_ENV 必须为 production');
 if (values.AUTH_MODE !== 'platform') errors.push('AUTH_MODE 必须为 platform');
@@ -34,7 +34,7 @@ try {
 } catch {}
 if (String(values.SESSION_SECRET || '').length < 32) errors.push('SESSION_SECRET 至少 32 个字符');
 if (!Number.isInteger(Number(values.PORT)) || Number(values.PORT) < 1024 || Number(values.PORT) > 65535) errors.push('PORT 必须是 1024 至 65535 的整数');
-for (const key of ['DB_FILE', 'UPLOADS_DIR']) if (!path.posix.isAbsolute(String(values[key] || '').replaceAll('\\', '/'))) errors.push(`${key} 必须是绝对路径`);
+for (const key of ['DB_FILE', 'UPLOADS_DIR', 'CONSULTANT_DIRECTORY_FILE', 'CONSULTANT_DIRECTORY_STATUS_FILE', 'CONSULTANT_DIRECTORY_REFRESH_REQUEST_FILE']) if (!path.posix.isAbsolute(String(values[key] || '').replaceAll('\\', '/'))) errors.push(`${key} 必须是绝对路径`);
 if (!allowPlaceholders) for (const key of required) if (/CHANGE_ME|example\.com/i.test(String(values[key] || ''))) errors.push(`${key} 仍是模板占位值`);
 
 const projectDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -64,6 +64,7 @@ if (!platformNginx.includes('location ^~ /platform/finance/') || !platformNginx.
 if (!platformNginx.includes('deny 127.0.0.1') || !platformNginx.includes('deny 8.163.36.95') || !platformNginx.includes('deny 172.16.0.0/12')) errors.push('同源财务路径未拒绝回环、同机公网地址或 Docker 私网服务端访问');
 if (!platformNginx.includes("worker-src 'none'") || !platformNginx.includes('Cross-Origin-Opener-Policy') || !platformNginx.includes('X-Frame-Options "DENY"')) errors.push('同源财务路径的浏览器安全响应头缺失');
 for (const file of ['harden-finance-data.sh', 'restore-legacy-data-owner.sh', 'check-runtime-isolation.mjs']) if (!fs.existsSync(path.join(projectDir, 'deploy', file))) errors.push(`缺少隔离脚本 deploy/${file}`);
+for (const file of ['sync-consultant-directory.mjs', 'systemd/wecom-finance-consultant-directory.service', 'systemd/wecom-finance-consultant-directory.timer', 'systemd/wecom-finance-consultant-directory.path']) if (!fs.existsSync(path.join(projectDir, 'deploy', file))) errors.push(`缺少顾问人事同步文件 deploy/${file}`);
 if (!releaseScript.includes('--retry-connrefused')) errors.push('发布健康检查未重试连接拒绝');
 
 if (errors.length) {
