@@ -179,10 +179,19 @@ const shareCardData = () => {
     imgUrl: new URL(appUrl('/anqiao-logo.png'), window.location.origin).href
   };
 };
+const writeClipboardText = async text => {
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error('Clipboard API unavailable');
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const input = document.createElement('textarea'); input.value = text; input.setAttribute('readonly', ''); input.style.position = 'fixed'; input.style.opacity = '0'; document.body.appendChild(input); input.select();
+    const copied = document.execCommand('copy'); input.remove();
+    if (!copied) throw new Error('复制失败，请检查浏览器剪贴板权限');
+  }
+};
 const copyShareLink = async () => {
   const { link } = shareCardData();
-  try { await navigator.clipboard.writeText(link); }
-  catch { const input = document.createElement('textarea'); input.value = link; input.setAttribute('readonly', ''); input.style.position = 'fixed'; input.style.opacity = '0'; document.body.appendChild(input); input.select(); document.execCommand('copy'); input.remove(); }
+  await writeClipboardText(link);
   showNotice('分享链接已复制，可粘贴到企微聊天');
 };
 const sendShareCard = async () => {
@@ -544,6 +553,55 @@ function renderRawReport(data) {
   bindCommonFilters(); if ($('#version-select')) $('#version-select').innerHTML = '<option value="current">当前发布</option>'; document.querySelectorAll('.raw-number').forEach(button => button.onclick = event => { event.stopPropagation(); openRawDetail(button.dataset.search, button.dataset.detailPeriod); });
 }
 
+const financialBriefAmountText = amount => amount === null || amount === undefined ? '—' : Number(amount).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const financialBriefMetricRows = brief => {
+  const m = brief.metrics || {}; const value = financialBriefAmountText;
+  return [
+    { key: 'expectedRevenue', label: '预计营收', amount: value(m.expectedRevenue), plainGap: ' ' },
+    { key: 'accountBalance', label: '账户余额', amount: `${value(m.accountBalance)}元` },
+    { key: 'operatingRevenue', label: '营业收入（销售额）', amount: value(m.operatingRevenue) },
+    { key: 'operatingCost', label: '营业成本（项目成本）', amount: value(m.operatingCost) },
+    { key: 'sellingExpense', label: '销售费用', amount: value(m.sellingExpense), description: `（包括销售人员工资社保公积金，广宣费，办公费，业务招待费等），其中广宣费 ${value(m.advertisingExpense)}；`, plainDescription: `（包括销售人员工资社保公积金，广宣费，办公费，业务招待费等），其中广宣费${value(m.advertisingExpense)}；` },
+    { key: 'managementExpense', label: '管理费用', amount: value(m.managementExpense), description: '（包括租金管理费，后勤人员工资社保公积金，办公费、固定资产的折旧等）' },
+    { key: 'financeExpense', label: '财务费用', amount: value(m.financeExpense), description: '（包括银行及二维码收款的手续费、预付款承担的税点、汇率差等）' },
+    { key: 'netProfit', label: '净利润', amount: value(m.netProfit), description: '（考虑上面所有收支最终得出公司利润）' },
+    { key: 'comprehensiveRevenueProfit', label: '营收综合利润', amount: value(m.comprehensiveRevenueProfit), result: true }
+  ];
+};
+const financialBriefPlainText = brief => {
+  const [year, month] = String(brief.period || '').split('-'); const notes = brief.notes || [];
+  return [
+    `${year}年${Number(month)}月收支部分明细`,
+    brief.scopeLabel || '',
+    ...financialBriefMetricRows(brief).flatMap(row => [
+      `${row.label}${row.plainGap || ''}${row.amount}${row.plainDescription ?? row.description ?? ''}`,
+      ...notes.filter(note => note.metricKey === row.key).map(note => `  备注：${String(note.text || '').replace(/\s+/g, ' ').trim()}`)
+    ])
+  ].join('\n');
+};
+const financialBriefRowsHtml = brief => financialBriefMetricRows(brief).map(row => {
+  const notes = (brief.notes || []).filter(note => note.metricKey === row.key);
+  const noteHtml = notes.map(note => `<article class="financial-brief-note" data-note-key="${escapeHtml(note.noteKey)}"><span>备注</span><p>${escapeHtml(note.text)}</p><small>${escapeHtml(note.authorName || '')}${note.updatedAt !== note.createdAt ? ' · 已修改' : ''}</small>${brief.canManageNotes ? `<div><button type="button" class="financial-brief-note-edit" data-note-key="${escapeHtml(note.noteKey)}">编辑</button><button type="button" class="financial-brief-note-delete" data-note-key="${escapeHtml(note.noteKey)}">删除</button></div>` : ''}</article>`).join('');
+  return `<section class="financial-brief-item ${row.result ? 'result' : ''}" data-metric-key="${escapeHtml(row.key)}"><p class="${row.result ? 'financial-brief-result' : ''}"><strong>${escapeHtml(row.label)}</strong><b>${escapeHtml(row.amount)}</b>${row.description ? `<span>${escapeHtml(row.description)}</span>` : ''}</p>${noteHtml ? `<div class="financial-brief-notes">${noteHtml}</div>` : ''}${brief.canManageNotes ? `<button type="button" class="financial-brief-note-add" data-metric-key="${escapeHtml(row.key)}">＋ 添加二级备注</button>` : ''}</section>`;
+}).join('');
+const openFinancialBriefNoteEditor = (brief, button, note = null) => {
+  clearFinancialBriefAutoRefresh(); document.querySelector('.financial-brief-note-editor')?.remove();
+  const item = button.closest('.financial-brief-item'); const editor = document.createElement('form'); editor.className = 'financial-brief-note-editor';
+  editor.innerHTML = `<input maxlength="300" required aria-label="二级项目备注" placeholder="请输入二级项目备注（最多 300 字）" value="${escapeHtml(note?.text || '')}"><button type="submit" class="button primary compact">保存</button><button type="button" class="button compact" data-cancel>取消</button>`;
+  item.appendChild(editor); const input = editor.querySelector('input'); input.focus(); input.setSelectionRange(input.value.length, input.value.length);
+  editor.querySelector('[data-cancel]').onclick = () => { editor.remove(); scheduleFinancialBriefAutoRefresh(); };
+  editor.onsubmit = async event => { event.preventDefault(); const text = input.value.replace(/\s+/g, ' ').trim(); if (!text) return showNotice('请输入备注内容', true); const save = editor.querySelector('[type="submit"]'); save.disabled = true;
+    try { await api('/api/analysis/financial-brief/notes', { method: note ? 'PUT' : 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(note ? { noteKey: note.noteKey, text } : { companyKey: brief.companyKey, period: brief.period, metricKey: button.dataset.metricKey, text }) }); showNotice(note ? '二级备注已更新' : '二级备注已添加'); await renderFinancialBrief({ trigger: 'notes' }); }
+    catch (error) { save.disabled = false; showNotice(error.message, true); }
+  };
+};
+const bindFinancialBriefActions = brief => {
+  $('#financial-brief-refresh').onclick = () => renderFinancialBrief({ trigger: 'manual' });
+  $('#financial-brief-copy-button').onclick = async event => { const button = event.currentTarget; button.disabled = true; try { await writeClipboardText(financialBriefPlainText(brief)); showNotice('简报纯文字已复制，可直接粘贴'); } catch (error) { showNotice(error.message, true); } finally { button.disabled = false; } };
+  document.querySelectorAll('.financial-brief-note-add').forEach(button => button.onclick = () => openFinancialBriefNoteEditor(brief, button));
+  document.querySelectorAll('.financial-brief-note-edit').forEach(button => button.onclick = () => { const note = (brief.notes || []).find(item => item.noteKey === button.dataset.noteKey); if (note) { button.dataset.metricKey = note.metricKey; openFinancialBriefNoteEditor(brief, button, note); } });
+  document.querySelectorAll('.financial-brief-note-delete').forEach(button => button.onclick = async () => { const note = (brief.notes || []).find(item => item.noteKey === button.dataset.noteKey); if (!note || !window.confirm(`确定删除备注“${note.text}”吗？`)) return; button.disabled = true; try { await api('/api/analysis/financial-brief/notes', { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ noteKey: note.noteKey }) }); showNotice('二级备注已删除'); await renderFinancialBrief({ trigger: 'notes' }); } catch (error) { button.disabled = false; showNotice(error.message, true); } });
+};
 const clearFinancialBriefAutoRefresh = () => { window.clearTimeout(financialBriefRefreshTimer); financialBriefRefreshTimer = null; };
 const scheduleFinancialBriefAutoRefresh = () => {
   clearFinancialBriefAutoRefresh();
@@ -580,13 +638,12 @@ async function renderFinancialBrief({ trigger = 'initial' } = {}) {
   try {
     const brief = await api(`/api/analysis/financial-brief?company=${encodeURIComponent(scope.company)}&period=${encodeURIComponent(scope.period)}`);
     if (!isCurrent()) return;
-    const value = amount => amount === null || amount === undefined ? '—' : Number(amount).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    const [year, month] = String(brief.period || scope.period).split('-'); const m = brief.metrics || {};
+    const [year, month] = String(brief.period || scope.period).split('-');
     const missing = (brief.missing || []).length ? `<div class="financial-brief-warning"><strong>部分来源尚未齐全</strong><span>${escapeHtml(brief.missing.join('；'))}<small>新报表发布后会自动补刷新，也可点击“刷新数据”立即检查。</small></span></div>` : '';
     const sources = (brief.sources || []).map(source => `<li><strong>${escapeHtml(source.report)}</strong><span>${escapeHtml(source.scope || brief.company)} · ${escapeHtml(source.fileName)}</span></li>`).join('');
     const refreshedAt = new Date().toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    page.innerHTML = `<div class="page-title"><div><h1>财务数据简报</h1><p>${escapeHtml(brief.company)} · ${escapeHtml(brief.period)}</p></div><div class="financial-brief-page-actions">${filterHtml()}<div class="financial-brief-refresh-control"><button class="button financial-brief-refresh" id="financial-brief-refresh" type="button"><span aria-hidden="true">↻</span>刷新数据</button><small id="financial-brief-refresh-status">${escapeHtml(refreshedAt)} 已更新 · 每 60 秒自动刷新</small></div></div></div><article class="financial-brief-sheet"><header><span>FINANCIAL BRIEF</span><h2>${escapeHtml(year)}年${Number(month)}月收支部分明细</h2><p>${escapeHtml(brief.scopeLabel)}</p></header>${missing}<div class="financial-brief-copy"><p><strong>预计营收</strong><b>${value(m.expectedRevenue)}</b></p><p><strong>账户余额</strong><b>${value(m.accountBalance)}元</b></p><p><strong>营业收入（销售额）</strong><b>${value(m.operatingRevenue)}</b></p><p><strong>营业成本（项目成本）</strong><b>${value(m.operatingCost)}</b></p><p><strong>销售费用</strong><b>${value(m.sellingExpense)}</b><span>（包括销售人员工资社保公积金，广宣费，办公费，业务招待费等），其中广宣费 ${value(m.advertisingExpense)}；</span></p><p><strong>管理费用</strong><b>${value(m.managementExpense)}</b><span>（包括租金管理费，后勤人员工资社保公积金，办公费、固定资产的折旧等）</span></p><p><strong>财务费用</strong><b>${value(m.financeExpense)}</b><span>（包括银行及二维码收款的手续费、预付款承担的税点、汇率差等）</span></p><p><strong>净利润</strong><b>${value(m.netProfit)}</b><span>（考虑上面所有收支最终得出公司利润）</span></p><p class="financial-brief-result"><strong>营收综合利润</strong><b>${value(m.comprehensiveRevenueProfit)}</b></p></div><footer><h3>本期其他数据来源</h3><ul>${sources || '<li><span>当前期间尚无其他可用来源文件</span></li>'}</ul><small>简报仅使用当前期间的已发布版本；缺失项不会按 0 处理，也不会复用其他月份数据。</small></footer></article>`;
-    bindCommonFilters(); $('#financial-brief-refresh').onclick = () => renderFinancialBrief({ trigger: 'manual' }); applyReportWatermark();
+    page.innerHTML = `<div class="page-title"><div><h1>财务数据简报</h1><p>${escapeHtml(brief.company)} · ${escapeHtml(brief.period)}</p></div><div class="financial-brief-page-actions">${filterHtml()}<div class="financial-brief-refresh-control"><button class="button financial-brief-refresh" id="financial-brief-refresh" type="button"><span aria-hidden="true">↻</span>刷新数据</button><small id="financial-brief-refresh-status">${escapeHtml(refreshedAt)} 已更新 · 每 60 秒自动刷新</small></div></div></div><article class="financial-brief-sheet"><header><div class="financial-brief-heading"><span>FINANCIAL BRIEF</span><h2>${escapeHtml(year)}年${Number(month)}月收支部分明细</h2><p>${escapeHtml(brief.scopeLabel)}</p></div><button class="button financial-brief-copy-button" id="financial-brief-copy-button" type="button" title="复制简报纯文字到剪贴板"><i aria-hidden="true">▣</i>复制纯文字</button></header>${missing}<div class="financial-brief-copy">${financialBriefRowsHtml(brief)}</div><footer><h3>本期其他数据来源</h3><ul>${sources || '<li><span>当前期间尚无其他可用来源文件</span></li>'}</ul><small>简报仅使用当前期间的已发布版本；缺失项不会按 0 处理，也不会复用其他月份数据。</small></footer></article>`;
+    bindCommonFilters(); bindFinancialBriefActions(brief); applyReportWatermark();
   } catch (error) {
     if (!isCurrent()) return;
     if (existingSheet) { showNotice(`简报刷新失败：${error.message}`, true); if (existingStatus) existingStatus.textContent = '刷新失败，稍后将自动重试'; if (existingButton) { existingButton.disabled = false; existingButton.classList.remove('refreshing'); existingButton.innerHTML = '<span aria-hidden="true">↻</span>刷新数据'; } }

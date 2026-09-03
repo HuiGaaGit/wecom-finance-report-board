@@ -32,6 +32,10 @@ async function post(pathname, body, employee = 'admin') {
   const response = await fetch(`${base}${pathname}`, { method: 'POST', headers: { 'x-demo-employee': employee, 'content-type': 'application/json', connection: 'close' }, body: JSON.stringify(body) });
   const payload = await response.json(); return { response, payload };
 }
+async function put(pathname, body, employee = 'admin') {
+  const response = await fetch(`${base}${pathname}`, { method: 'PUT', headers: { 'x-demo-employee': employee, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const payload = await response.json(); return { response, payload };
+}
 async function remove(pathname, body, employee = 'admin') {
   const response = await fetch(`${base}${pathname}`, { method: 'DELETE', headers: { 'x-demo-employee': employee, 'content-type': 'application/json' }, body: JSON.stringify(body) });
   const payload = await response.json(); return { response, payload };
@@ -838,10 +842,10 @@ test('上传页使用独立公司期间选择器且移除全局范围锁定', ()
 test('页面与后台运行版本一致且旧响应不能覆盖上传操作后的列表', async () => {
   const bootstrap = await request('/api/bootstrap?company=gz&period=2026-06');
   assert.equal(bootstrap.response.status, 200);
-  assert.equal(bootstrap.payload.appVersion, '1.1.25');
+  assert.equal(bootstrap.payload.appVersion, '1.1.26');
   const index = fs.readFileSync(path.join(projectDir, 'public', 'index.html'), 'utf8');
   const frontend = fs.readFileSync(path.join(projectDir, 'public', 'app.js'), 'utf8');
-  assert.match(index, /<meta name="app-version" content="1\.1\.25">/);
+  assert.match(index, /<meta name="app-version" content="1\.1\.26">/);
   assert.match(frontend, /const expectedAppVersion = document\.querySelector\('meta\[name="app-version"\]'\)/);
   assert.match(frontend, /bootstrap\?\.appVersion === expectedAppVersion/);
   assert.match(frontend, /APP_VERSION_MISMATCH/);
@@ -1893,11 +1897,30 @@ test('财务数据简报按集团与公司范围联合已发布报表自动取�
   assert.equal(group.payload.sources.some(item => item.category === 'advertising'), false);
   const company = await request(`/api/analysis/financial-brief?company=gz&period=${period}`);
   assert.equal(company.response.status, 200); assert.equal(company.payload.metrics.expectedRevenue, 1985248.4008); assert.equal(company.payload.metrics.comprehensiveRevenueProfit, 154782.9308); assert.equal(company.payload.metrics.accountBalance, 8083648.16); assert.equal(company.payload.metrics.advertisingExpense, 487814.94);
+  assert.equal(company.payload.canManageNotes, true); assert.deepEqual(company.payload.notes, []);
+  const readOnlyProfile = await post('/api/admin/employee-permission-profile', { employeeKey: 'viewer', presetRoleKey: 'viewer', permissionKeys: ['module.financial_brief.view'], companyKeys: ['gz'], fromPeriod: period, toPeriod: period, accountVisibility: 'level1', showDirection: false, showFullEntry: false });
+  assert.equal(readOnlyProfile.response.status, 200);
+  const financeLeadProfile = await post('/api/admin/employee-permission-profile', { employeeKey: 'manager', presetRoleKey: 'manager', permissionKeys: ['module.financial_brief.view', 'module.financial_brief.notes.manage'], companyKeys: ['gz'], fromPeriod: period, toPeriod: period, accountVisibility: 'full', showDirection: true, showFullEntry: true });
+  assert.equal(financeLeadProfile.response.status, 200);
+  const viewerBrief = await request(`/api/analysis/financial-brief?company=gz&period=${period}`, 'viewer');
+  assert.equal(viewerBrief.response.status, 200); assert.equal(viewerBrief.payload.canManageNotes, false);
+  const forbiddenNote = await post('/api/analysis/financial-brief/notes', { companyKey: 'gz', period, metricKey: 'expectedRevenue', text: '无权备注' }, 'viewer');
+  assert.equal(forbiddenNote.response.status, 403);
+  const createdNote = await post('/api/analysis/financial-brief/notes', { companyKey: 'gz', period, metricKey: 'expectedRevenue', text: '  本月重点跟进项目  ' }, 'manager');
+  assert.equal(createdNote.response.status, 201); assert.equal(createdNote.payload.note.text, '本月重点跟进项目');
+  assert.equal((await put('/api/analysis/financial-brief/notes', { noteKey: createdNote.payload.note.noteKey, text: '越权修改' }, 'viewer')).response.status, 403);
+  assert.equal((await remove('/api/analysis/financial-brief/notes', { noteKey: createdNote.payload.note.noteKey }, 'viewer')).response.status, 403);
+  const updatedNote = await put('/api/analysis/financial-brief/notes', { noteKey: createdNote.payload.note.noteKey, text: '重点项目预计月底签约' });
+  assert.equal(updatedNote.response.status, 200); assert.equal(updatedNote.payload.note.text, '重点项目预计月底签约');
+  const withNote = await request(`/api/analysis/financial-brief?company=gz&period=${period}`, 'viewer');
+  assert.equal(withNote.payload.notes.length, 1); assert.equal(withNote.payload.notes[0].metricKey, 'expectedRevenue'); assert.equal(withNote.payload.notes[0].text, '重点项目预计月底签约');
   const nanjingBrief = await request(`/api/analysis/financial-brief?company=${nanjing.payload.company.key}&period=${period}`);
   assert.equal(nanjingBrief.response.status, 200); assert.equal(nanjingBrief.payload.metrics.expectedRevenue, 657147.15); assert.equal(nanjingBrief.payload.metrics.comprehensiveRevenueProfit, 406133.81); assert.equal(nanjingBrief.payload.metrics.accountBalance, 1077204.66);
   assert.ok(!nanjingBrief.payload.missing.some(item => item.includes('对应工作表') || item === '预计营收'));
   const roles = (await request('/api/admin/roles')).payload;
-  assert.ok(roles.permissionCatalog.find(item => item.id === 'analysis').children.some(item => item.key === 'module.financial_brief.view'));
+  const briefPermissions = roles.permissionCatalog.find(item => item.id === 'analysis').children.find(item => item.id === 'financial_brief_permissions');
+  assert.ok(briefPermissions.children.some(item => item.key === 'module.financial_brief.view'));
+  assert.ok(briefPermissions.children.some(item => item.key === 'module.financial_brief.notes.manage'));
   const bootstrap = (await request(`/api/bootstrap?company=gz&period=${period}`)).payload;
   assert.ok(bootstrap.modules.findIndex(item => item.key === 'financial_brief') < bootstrap.modules.findIndex(item => item.key === 'balance_sheet'));
   assert.equal(bootstrap.moduleOrder.findIndex(item => item.key === 'financial_brief') + 1, bootstrap.moduleOrder.findIndex(item => item.key === 'balance_sheet'));
@@ -1911,9 +1934,16 @@ test('财务数据简报按集团与公司范围联合已发布报表自动取�
   const stylesheet = fs.readFileSync(path.join(projectDir, 'public', 'styles.css'), 'utf8');
   assert.match(advertisingHelper, /amount: debitAmount/); assert.doesNotMatch(advertisingHelper, /rawReportFor\('journal'|creditAmount|借方－贷方/);
   assert.match(frontend, /renderFinancialBrief/); assert.match(frontend, /预计营收/); assert.match(frontend, /其中广宣费 \$\{value\(m\.advertisingExpense\)\}/);
+  assert.match(frontend, /financial-brief-copy-button/); assert.match(frontend, /financialBriefPlainText/); assert.match(frontend, /添加二级备注/); assert.match(frontend, /\/api\/analysis\/financial-brief\/notes/);
   assert.match(frontend, /financialBriefAutoRefreshMs = 60_000/); assert.match(frontend, /visibilitychange/); assert.match(frontend, /financial-brief-refresh/);
   assert.doesNotMatch(frontend, /广宣费来源明细|科目余额表优先、序时账兜底/); assert.doesNotMatch(stylesheet, /\.financial-brief-advertising/); assert.match(stylesheet, /financial-brief-spin/);
   assert.match(stylesheet, /\.financial-brief-page-actions\{flex-wrap:nowrap\}/); assert.match(stylesheet, /\.financial-brief-refresh\{[^}]*white-space:nowrap/); assert.match(stylesheet, /#financial-brief-refresh-status\{[^}]*position:absolute/);
+  assert.match(stylesheet, /\.financial-brief-copy-button/); assert.match(stylesheet, /\.financial-brief-note-editor/);
+  const plainTextSource = frontend.slice(frontend.indexOf('const financialBriefAmountText'), frontend.indexOf('const financialBriefRowsHtml'));
+  const plainContext = {}; vm.runInNewContext(`${plainTextSource}; result = financialBriefPlainText(${JSON.stringify(withNote.payload)});`, plainContext);
+  assert.doesNotMatch(plainContext.result, /\n\s*\n/); assert.match(plainContext.result, /预计营收 1,985,248\.40\n  备注：重点项目预计月底签约\n账户余额/);
+  const deletedNote = await remove('/api/analysis/financial-brief/notes', { noteKey: createdNote.payload.note.noteKey }, 'manager');
+  assert.equal(deletedNote.response.status, 200); assert.equal((await request(`/api/analysis/financial-brief?company=gz&period=${period}`)).payload.notes.length, 0);
   assert.match(frontend, /const nextModule = state\.bootstrap\.modules\.find\(item => item\.key === financialBriefModuleKey \|\| reportKeys\.has\(item\.key\)\)/);
   assert.doesNotMatch(frontend, /const nextModule = state\.bootstrap\.modules\.find\(item => item\.key !== 'home'\)/);
 });

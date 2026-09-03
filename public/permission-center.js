@@ -34,8 +34,11 @@ const categoryColumns = {
   system: [{ key: 'view', name: '查看' }, { key: 'manage', name: '管理' }]
 };
 const analysisPageKeys = ['cash_analysis', 'main_business_analysis', 'expense_analysis'];
+const financialBriefViewPermission = 'module.financial_brief.view';
+const financialBriefNotesPermission = 'module.financial_brief.notes.manage';
 const analysisPagePermission = pageKey => `module.${pageKey}.view`;
 const analysisBlockParentFor = key => {
+  if (key === financialBriefNotesPermission) return financialBriefViewPermission;
   const pageKey = analysisPageKeys.find(item => String(key).startsWith(`module.${item}.`) && key !== analysisPagePermission(item));
   return pageKey ? analysisPagePermission(pageKey) : '';
 };
@@ -69,6 +72,9 @@ const matrixRows = group => {
   return [];
 };
 const applyDependencies = (selected, changedKey = '', enabled = true) => {
+  if (changedKey === financialBriefViewPermission && !enabled) selected.delete(financialBriefNotesPermission);
+  if (selected.has(financialBriefNotesPermission)) selected.add(financialBriefViewPermission);
+  if (!selected.has(financialBriefViewPermission)) selected.delete(financialBriefNotesPermission);
   for (const pageKey of analysisPageKeys) {
     const parent = analysisPagePermission(pageKey); const prefix = `module.${pageKey}.`;
     const children = [...selected].filter(key => key.startsWith(prefix) && key !== parent);

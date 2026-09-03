@@ -279,3 +279,10 @@ cat /data/data/wecom-finance-report-board/backups/offsite-last-success.meta
 - 上线验收发现旧备份脚本把数据库备份和异机备份状态文件生成为 `0640`，与运行时 `0600` 隔离契约不一致；`1.1.25` 已统一生成权限并加固现有数据树，随后隔离检查通过。补丁前后数据库备份 SHA256 同为 `ea7581a800a8a9a9130893360228767162dc4453944c31e645b66d884fcaf34a`，未改变业务内容。
 - 发布前一致性备份：`/data/data/wecom-finance-report-board/backups/report-board-20260903T015532Z.db`；切换补丁前备份：`/data/data/wecom-finance-report-board/backups/report-board-20260903T020123Z.db`；发布后备份：`/data/data/wecom-finance-report-board/backups/report-board-20260903T020201Z.db`，三者权限均为 `0600`。
 - 发布前配置与源码快照：`/data/backups/wecom-finance-report-board/pre-1.1.24-20260903T015532Z`；Compose 回滚副本：`/data/opt/wecom-finance-report-board/compose.yml.pre-switch-1.1.25-20260903T020100Z`；上一候选源码保留在 `/data/repos/wecom-finance-report-board-pre-1.1.25-20260903T020100Z`。
+
+## 16. 财务简报复制与二级备注候选（1.1.26，未部署）
+
+- 简报卡片新增“复制纯文字”，标题、公司口径、一级项目与二级备注均以单换行连接，不产生项目间空行。
+- 新增按公司、期间和一级项目隔离的 `financial_brief_notes` 表及备注新增、修改、删除接口；备注内容归一为单行 1 至 300 字，保存操作写入审计日志。
+- 权限中心新增“编辑二级项目备注”权限。管理员、财务负责人角色默认开启；服务端仍逐请求校验简报浏览权、备注编辑权以及公司与期间范围。
+- 本候选由并行的资产负债分析任务继续合并到后续版本后统一部署；生产仍保持 `1.1.25`，不得把本候选单独切换到生产。

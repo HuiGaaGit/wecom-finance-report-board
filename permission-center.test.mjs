@@ -21,6 +21,7 @@ test('权限矩阵按分类映射动作且各分析页父子依赖保持不变',
   assert.equal(actionFor('reports', 'report.income_statement.detail.export'), 'detail_export');
   assert.equal(actionFor('analysis', 'module.cash_analysis.net_positions.view'), 'sensitive');
   assert.equal(actionFor('analysis', 'module.intercompany_reconciliation.detail'), 'sensitive');
+  assert.equal(actionFor('analysis', 'module.financial_brief.notes.manage'), 'sensitive');
   assert.equal(actionFor('uploads', 'module.uploads.publish'), 'publish');
   assert.equal(actionFor('system', 'module.database.manage'), 'manage');
   assert.equal(riskPermission('module.database.manage'), true);
@@ -30,6 +31,10 @@ test('权限矩阵按分类映射动作且各分析页父子依赖保持不变',
   assert.equal(parentRemoved.has('module.cash_analysis.net_positions.view'), false);
   const businessChild = applyDependencies(new Set(['module.main_business_analysis.gross_trend.view']));
   assert.equal(businessChild.has('module.main_business_analysis.view'), true);
+  const briefNoteChild = applyDependencies(new Set(['module.financial_brief.notes.manage']));
+  assert.equal(briefNoteChild.has('module.financial_brief.view'), true);
+  const briefParentRemoved = applyDependencies(new Set(['module.financial_brief.view', 'module.financial_brief.notes.manage']), 'module.financial_brief.view', false);
+  assert.equal(briefParentRemoved.has('module.financial_brief.notes.manage'), false);
   const systemRows = matrixRows({ id: 'system', children: [{ key: 'module.permissions.manage', name: '权限管理' }, { key: 'module.database.view', name: '数据库浏览' }, { key: 'module.database.manage', name: '数据库管理' }] });
   assert.deepEqual(systemRows.map(row => row.id), ['permissions', 'database']);
   assert.equal(systemRows[1].leaves.length, 2);

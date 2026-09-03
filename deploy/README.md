@@ -8,6 +8,7 @@
 - 持久数据：`/data/data/wecom-finance-report-board`
 - 容器：`wecom-finance-report-board`
 - 当前生产镜像：`aqllm/finance-report-board:1.1.25`（生产验收与回滚信息见 `docs/PRODUCTION_OPERATIONS.md`）
+- 当前源码候选：`1.1.26`（简报复制与二级备注，等待后续版本合并后统一部署）
 - 本机端口：`127.0.0.1:3180`
 - 正式地址：`https://anqiaoyiminxq.com/platform/finance/`
 

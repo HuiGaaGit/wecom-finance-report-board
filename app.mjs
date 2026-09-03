@@ -27,8 +27,10 @@ try {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const dataDir = path.join(__dirname, 'data');
-const appVersion = '1.1.25';
+const appVersion = '1.1.26';
 const financialBriefModuleKey = 'financial_brief';
+const financialBriefNotesPermissionKey = 'module.financial_brief.notes.manage';
+const financialBriefMetricKeys = new Set(['expectedRevenue', 'accountBalance', 'operatingRevenue', 'operatingCost', 'sellingExpense', 'managementExpense', 'financeExpense', 'netProfit', 'comprehensiveRevenueProfit']);
 const consultantRoiModuleKey = 'consultant_roi_analysis';
 const intercompanyModuleKey = 'intercompany_reconciliation';
 const activityLogModuleKey = 'activity_logs';
@@ -224,6 +226,19 @@ CREATE TABLE IF NOT EXISTS employee_permission_profiles (
   FOREIGN KEY (employee_key) REFERENCES employees(employee_key),
   FOREIGN KEY (preset_role_key) REFERENCES roles(role_key)
 );
+CREATE TABLE IF NOT EXISTS financial_brief_notes (
+  note_key TEXT PRIMARY KEY,
+  company_key TEXT NOT NULL,
+  period TEXT NOT NULL,
+  metric_key TEXT NOT NULL,
+  note_text TEXT NOT NULL,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (company_key) REFERENCES companies(company_key),
+  FOREIGN KEY (created_by) REFERENCES employees(employee_key)
+);
+CREATE INDEX IF NOT EXISTS idx_financial_brief_notes_scope ON financial_brief_notes(company_key, period, metric_key, created_at);
 CREATE TABLE IF NOT EXISTS report_snapshots (
   snapshot_key TEXT PRIMARY KEY,
   company_key TEXT NOT NULL,
@@ -413,6 +428,7 @@ for (const row of [['admin', 'expense_analysis', 'view'], ['manager', 'expense_a
 for (const row of [['admin', 'group_profit_analysis', 'view'], ['manager', 'group_profit_analysis', 'view']]) db.prepare('INSERT OR IGNORE INTO role_permissions(role_key, module_key, action) VALUES (?, ?, ?)').run(...row);
 for (const row of [['admin', consultantRoiModuleKey, 'view'], ['manager', consultantRoiModuleKey, 'view']]) db.prepare('INSERT OR IGNORE INTO role_permissions(role_key, module_key, action) VALUES (?, ?, ?)').run(...row);
 for (const role of ['admin', 'manager', 'accountant', 'viewer']) db.prepare('INSERT OR IGNORE INTO role_permissions(role_key, module_key, action) VALUES (?, ?, ?)').run(role, financialBriefModuleKey, 'view');
+for (const role of ['admin', 'manager']) db.prepare('INSERT OR IGNORE INTO role_permissions(role_key, module_key, action) VALUES (?, ?, ?)').run(role, financialBriefModuleKey, 'notes.manage');
 for (const row of [
   ['admin', 'report_import', 'upload'], ['admin', 'report_import', 'validate'], ['admin', 'report_import', 'publish']
 ]) db.prepare('INSERT OR IGNORE INTO role_permissions(role_key, module_key, action) VALUES (?, ?, ?)').run(...row);
@@ -672,7 +688,10 @@ const permissionCatalog = [
     reportPermissionNode('balance_sheet', '资产负债表'), reportPermissionNode('income_statement', '利润表'), summaryReportPermissionNode('consolidated_income_statement', '桉侨集团合并利润表'), summaryReportPermissionNode(revenueProfitReportType, '（营收利润口径）合并利润表'), summaryReportPermissionNode(revenueStatisticsReportType, '营收统计表'), reportPermissionNode('cash_flow', '现金流量表'), reportPermissionNode('trial_balance', '科目余额表'), reportPermissionNode('journal', '序时账')
   ] },
   { id: 'analysis', name: '经营分析', description: '分析页只开放聚合结果，不自动开放底层序时账', children: [
-    { key: 'module.financial_brief.view', name: '财务数据简报 · 浏览' },
+    { id: 'financial_brief_permissions', name: '财务数据简报', description: '简报浏览与二级备注编辑分别授权', children: [
+      { key: 'module.financial_brief.view', name: '浏览财务数据简报' },
+      { key: financialBriefNotesPermissionKey, name: '编辑二级项目备注' }
+    ] },
     analysisPermissionNode('cash_analysis'),
     analysisPermissionNode('main_business_analysis'),
     analysisPermissionNode('expense_analysis'),
@@ -748,6 +767,16 @@ if (appSetting(financialBriefPermissionMigrationKey, '0') !== '1') {
     db.prepare('UPDATE employee_permission_profiles SET permission_keys_json = ? WHERE employee_key = ?').run(JSON.stringify(keys), row.employeeKey);
   }
   saveAppSetting(financialBriefPermissionMigrationKey, '1', 'system');
+}
+const financialBriefNotesPermissionMigrationKey = 'financial_brief_notes_permission_v1';
+if (appSetting(financialBriefNotesPermissionMigrationKey, '0') !== '1') {
+  for (const row of db.prepare('SELECT employee_key AS employeeKey, preset_role_key AS presetRoleKey, permission_keys_json AS permissionKeysJson FROM employee_permission_profiles').all()) {
+    let keys = []; try { keys = JSON.parse(row.permissionKeysJson); } catch {}
+    if (!Array.isArray(keys) || !['admin', 'manager'].includes(row.presetRoleKey)) continue;
+    keys = [...new Set([...keys, 'module.financial_brief.view', financialBriefNotesPermissionKey])].sort();
+    db.prepare('UPDATE employee_permission_profiles SET permission_keys_json = ? WHERE employee_key = ?').run(JSON.stringify(keys), row.employeeKey);
+  }
+  saveAppSetting(financialBriefNotesPermissionMigrationKey, '1', 'system');
 }
 const consolidatedPermissionMigrationKey = 'admin_consolidated_income_permission_v1';
 if (appSetting(consolidatedPermissionMigrationKey, '0') !== '1') {
@@ -933,7 +962,7 @@ const auditActionNames = new Map([
   ['set_company_order', '调整公司顺序'], ['set_module_order', '调整模块顺序'], ['set_analysis_block_order', '调整分析布局'], ['set_report_watermark', '修改员工水印'],
   ['sync_platform_directory', '同步成员目录'], ['assign_role', '分配角色'], ['save_employee_permission_profile', '保存员工权限'],
   ['copy_employee_permissions', '复制员工权限'], ['remove_employee_permissions', '移除员工授权'], ['set_account_visibility', '修改科目显示'],
-  ['set_detail_preference', '修改明细偏好'], ['delete_activity_logs', '删除日志']
+  ['set_detail_preference', '修改明细偏好'], ['create_financial_brief_note', '新增简报备注'], ['update_financial_brief_note', '修改简报备注'], ['delete_financial_brief_note', '删除简报备注'], ['delete_activity_logs', '删除日志']
 ]);
 const auditActionName = action => auditActionNames.get(action) || action;
 const activityLogWhere = filters => {
@@ -2089,6 +2118,11 @@ const financialBriefFor = (companyKey, period) => {
   for (const [key, label] of Object.entries({ expectedRevenue: '预计营收', accountBalance: '账户余额', operatingRevenue: '营业收入', operatingCost: '营业成本', sellingExpense: '销售费用', advertisingExpense: '广宣费', managementExpense: '管理费用', financeExpense: '财务费用', netProfit: '净利润', comprehensiveRevenueProfit: '营收综合利润' })) if (metrics[key] === null && !missing.some(item => item === label || item.startsWith(`${label}来源`))) missing.push(label);
   return { company: company.company_name, companyKey, period, scopeLabel: companyKey === 'group' ? '集团方面' : `${company.company_name}方面`, metrics, sources, missing: [...new Set(missing)], complete: missing.length === 0 };
 };
+const financialBriefNoteRow = noteKey => db.prepare(`SELECT n.note_key AS noteKey, n.company_key AS companyKey, n.period, n.metric_key AS metricKey, n.note_text AS text, n.created_by AS createdBy, e.display_name AS authorName, n.created_at AS createdAt, n.updated_at AS updatedAt
+  FROM financial_brief_notes n JOIN employees e ON e.employee_key = n.created_by WHERE n.note_key = ?`).get(noteKey);
+const financialBriefNotesFor = (companyKey, period) => db.prepare(`SELECT n.note_key AS noteKey, n.metric_key AS metricKey, n.note_text AS text, n.created_by AS createdBy, e.display_name AS authorName, n.created_at AS createdAt, n.updated_at AS updatedAt
+  FROM financial_brief_notes n JOIN employees e ON e.employee_key = n.created_by WHERE n.company_key = ? AND n.period = ? ORDER BY n.metric_key, n.created_at, n.note_key`).all(companyKey, period);
+const normalizeFinancialBriefNote = value => String(value || '').replace(/\s+/g, ' ').trim();
 const sendStatic = (req, res, pathname) => {
   const safe = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, ''); const file = path.resolve(publicDir, safe);
   const relative = path.relative(publicDir, file);
@@ -2408,8 +2442,36 @@ const server = http.createServer(async (req, res) => {
       if (!companyRow(companyKey)) return bad(res, 404, '公司不存在');
       const employee = requireEmployee(req, res); if (!employee) return;
       if (!hasAnalysis(employee.employee_key, financialBriefModuleKey, companyKey, period)) return bad(res, 403, '当前员工没有财务数据简报权限');
-      const brief = financialBriefFor(companyKey, period); log(employee.employee_key, 'view_financial_brief', financialBriefModuleKey, `${companyKey}/${period}`, { moduleKey: financialBriefModuleKey, companyKey, period });
-      return json(res, 200, brief);
+      const brief = financialBriefFor(companyKey, period); const notes = financialBriefNotesFor(companyKey, period); const canManageNotes = hasPermissionKey(employee.employee_key, financialBriefNotesPermissionKey, companyKey, period);
+      log(employee.employee_key, 'view_financial_brief', financialBriefModuleKey, `${companyKey}/${period}`, { moduleKey: financialBriefModuleKey, companyKey, period });
+      return json(res, 200, { ...brief, notes, canManageNotes });
+    }
+    if (url.pathname === '/api/analysis/financial-brief/notes' && ['POST', 'PUT', 'DELETE'].includes(req.method)) {
+      const employee = requireEmployee(req, res); if (!employee) return;
+      const body = await parseBody(req); const noteKey = String(body.noteKey || '');
+      if (req.method === 'POST') {
+        const companyKey = String(body.companyKey || ''); const period = String(body.period || ''); const metricKey = String(body.metricKey || ''); const noteText = normalizeFinancialBriefNote(body.text);
+        if (!companyRow(companyKey)) return bad(res, 404, '公司不存在');
+        if (!/^\d{4}-(?:0[1-9]|1[0-2])$/.test(period)) return bad(res, 400, '会计期间格式无效');
+        if (!financialBriefMetricKeys.has(metricKey)) return bad(res, 400, '简报项目无效');
+        if (!noteText || noteText.length > 300) return bad(res, 400, '备注内容应为 1 至 300 个字符');
+        if (!hasAnalysis(employee.employee_key, financialBriefModuleKey, companyKey, period) || !hasPermissionKey(employee.employee_key, financialBriefNotesPermissionKey, companyKey, period)) return bad(res, 403, '当前员工没有简报备注编辑权限');
+        const createdAt = now(); const createdKey = `fbn-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+        db.prepare('INSERT INTO financial_brief_notes(note_key, company_key, period, metric_key, note_text, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(createdKey, companyKey, period, metricKey, noteText, employee.employee_key, createdAt, createdAt);
+        log(employee.employee_key, 'create_financial_brief_note', createdKey, `${metricKey}:${noteText}`, { moduleKey: financialBriefModuleKey, companyKey, period });
+        return json(res, 201, { ok: true, note: financialBriefNoteRow(createdKey) });
+      }
+      const existing = financialBriefNoteRow(noteKey); if (!existing) return bad(res, 404, '简报备注不存在');
+      if (!hasAnalysis(employee.employee_key, financialBriefModuleKey, existing.companyKey, existing.period) || !hasPermissionKey(employee.employee_key, financialBriefNotesPermissionKey, existing.companyKey, existing.period)) return bad(res, 403, '当前员工没有简报备注编辑权限');
+      if (req.method === 'PUT') {
+        const noteText = normalizeFinancialBriefNote(body.text); if (!noteText || noteText.length > 300) return bad(res, 400, '备注内容应为 1 至 300 个字符');
+        db.prepare('UPDATE financial_brief_notes SET note_text = ?, updated_at = ? WHERE note_key = ?').run(noteText, now(), noteKey);
+        log(employee.employee_key, 'update_financial_brief_note', noteKey, noteText, { moduleKey: financialBriefModuleKey, companyKey: existing.companyKey, period: existing.period });
+        return json(res, 200, { ok: true, note: financialBriefNoteRow(noteKey) });
+      }
+      db.prepare('DELETE FROM financial_brief_notes WHERE note_key = ?').run(noteKey);
+      log(employee.employee_key, 'delete_financial_brief_note', noteKey, `${existing.metricKey}:${existing.text}`, { moduleKey: financialBriefModuleKey, companyKey: existing.companyKey, period: existing.period });
+      return json(res, 200, { ok: true, removed: 1 });
     }
     if (url.pathname === '/api/analysis/group-profit-trends' && req.method === 'GET') {
       const companyKey = url.searchParams.get('company') || 'group'; const period = url.searchParams.get('period') || '2026-07'; const year = url.searchParams.get('year') || period.slice(0, 4);
@@ -2640,6 +2702,7 @@ const server = http.createServer(async (req, res) => {
         const parentKey = `module.${pageKey}.view`;
         if (analysisBlockPermissionKeys(pageKey).some(key => permissionKeys.includes(key)) && !permissionKeys.includes(parentKey)) return bad(res, 400, `查看${definition.pageName}子模块前，需先开启${definition.pageName}浏览权限`);
       }
+      if (permissionKeys.includes(financialBriefNotesPermissionKey) && !permissionKeys.includes('module.financial_brief.view')) return bad(res, 400, '编辑简报二级备注前，需先开启财务数据简报浏览权限');
       if (permissionKeys.includes(intercompanyDetailPermissionKey) && !permissionKeys.includes(intercompanyViewPermissionKey)) return bad(res, 400, '查看双方序时账明细前，需先开启各公司往来校验浏览权限');
       if (!Array.isArray(body.companyKeys) || companyKeys.some(key => key !== '*' && !db.prepare('SELECT 1 FROM companies WHERE company_key = ?').get(key))) return bad(res, 400, '请选择有效的公司范围');
       if (!/^\d{4}-\d{2}$/.test(fromPeriod) || !/^\d{4}-\d{2}$/.test(toPeriod) || fromPeriod > toPeriod) return bad(res, 400, '期间范围无效');
