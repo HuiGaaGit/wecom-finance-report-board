@@ -1,8 +1,8 @@
 # 桉侨财务模块生产说明
 
 更新日期：2026-09-03
-当前生产版本：1.1.27
-最近发布包：1.1.27（已部署）
+当前生产版本：1.1.29
+最近发布包：1.1.29（已部署）
 正式地址：<https://anqiaoyiminxq.com/platform/finance/>
 
 ## 1. 系统归属与隔离
@@ -75,7 +75,7 @@ ssh -F deploy/ssh_config wecom-finance-prod "hostname && whoami"
 
 - Compose 项目：`wecom-finance-report-board`
 - 容器：`wecom-finance-report-board`
-- 当前镜像：`aqllm/finance-report-board:1.1.27`
+- 当前镜像：`aqllm/finance-report-board:1.1.29`
 - 容器运行用户：`20117:20117`
 - 容器端口：`3180`
 - 主机监听：`127.0.0.1:3180`
@@ -301,7 +301,7 @@ cat /data/data/wecom-finance-report-board/backups/offsite-last-success.meta
 - 发布前数据库备份：`/data/data/wecom-finance-report-board/backups/report-board-20260903T044128Z.db`；SHA256：`3003f60691d99920cf1bd9a744f4cbe301f441546ccb818fd4793f1c6c643f90`。发布后数据库备份：`/data/data/wecom-finance-report-board/backups/report-board-20260903T050045Z.db`；SHA256：`a7c012afea1440aa8e81b602ab419d84d793ffa10012f93491c2d22ad659b0b6`。两份备份权限均为 `0600`。
 - 发布前源码与 Compose 回滚快照：`/data/backups/wecom-finance-report-board/pre-1.1.27-20260903T044128Z`。回滚时恢复该快照中的 Compose，并重新执行 `docker compose up -d --no-build`；除非数据库完整性失败，不得用旧数据库覆盖当前业务数据。
 
-## 18. 财务简报明细行与资产负债分析表图联动候选（1.1.29，待部署）
+## 18. 财务简报明细行与资产负债分析表图联动发布（1.1.29）
 
 - 原自由文字备注卡片改为一级项目下方的二级项目明细行，每行包含项目名称与金额，沿用一级项目的列对齐并缩小一号字体，不显示“备注”标签、作者或独立卡片边框。
 - 新增与编辑表单分别录入二级项目名称和金额；纯文字复制时二级项目紧跟所属一级项目，全部项目之间不插入空行。
@@ -309,4 +309,9 @@ cat /data/data/wecom-finance-report-board/backups/offsite-last-success.meta
 - 权限键保持 `module.financial_brief.notes.manage` 以兼容现有授权，权限中心展示名称更新为“编辑二级项目明细”。SQLite 继续复用 `financial_brief_notes` 表并增量增加名称、金额字段，不重建数据库；若历史备注存在，会把原文字兼容迁移为二级项目名称。
 - 资产负债分析移除顶部资金规模、项目数、差额四张概览卡及独立勾稽标签；两侧按上传原顺序完整展示源表项目、金额和合计，无金额项目保留短横线。
 - 每个正数项目与图表扇区使用稳定标识关联。点击表格行或扇区后，对应扇区动画放大、其他扇区弱化，圆心切换为项目名称、占比和准确金额；支持键盘 Enter/空格选择和屏幕阅读器动态播报。
-- 本候选基于已提交的 `1.1.28` 财务简报变更继续递增为 `1.1.29`，完成服务器测试、生产备份与发布验收后补充镜像、哈希和回滚记录。
+- 本版本基于已提交的 `1.1.28` 财务简报变更继续递增为 `1.1.29`。源码功能提交：`73d5fe746e7d01315672ccb02101e2ed73a7c749`；发布包：`artifacts/wecom-finance-report-board-1.1.29.zip`，SHA256：`2D3F058935C54194F5FB1E9FB9077D7FD173E7E38C3F888F81C663DFBE9FD3FA`，服务端副本核验一致。
+- 本地与服务器 Node 20 Docker tests 完整回归均为 `90/90`；正式镜像：`aqllm/finance-report-board:1.1.29`，镜像 ID：`sha256:eb53acc64cd5fec10490b177c8b1cad55bf4016964451521c876944bde5de45f`。
+- 生产已于 `2026-09-03` 从 `1.1.27` 切换到 `1.1.29`。容器状态为 `healthy`，回环和公网健康接口均返回 `version=1.1.29`、`authMode=platform`；新增资产分析 JS/CSS 公网资源返回 HTTP 200，Nginx 配置和运行时隔离检查通过。
+- SQLite 完整性为 `ok`；核心业务事实保持 8 家公司、88 个上传批次、88 份报表快照和 4,635 条报表行，二级项目表当前为 0 行，增列迁移未改写历史报表数据。
+- 发布前数据库备份：`/data/data/wecom-finance-report-board/backups/report-board-20260903T061119Z.db`，SHA256：`7f7a8d31490394e2b10e6703cca856181e6e90442383abb626d45677a426651b`；发布后备份：`/data/data/wecom-finance-report-board/backups/report-board-20260903T061448Z.db`，SHA256：`6669c2f860af8532ffc7cfc98ac1f36af2520ed2e27d90edf4276d7db50d2d14`，两者权限均为 `0600`。
+- 发布前源码与 Compose 回滚快照：`/data/backups/wecom-finance-report-board/pre-1.1.29-20260903T061103Z`。回滚时恢复该快照中的 Compose 并重新启动上一镜像；除非数据库完整性失败，不得用旧备份覆盖正常业务数据。
