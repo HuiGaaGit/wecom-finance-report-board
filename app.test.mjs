@@ -591,6 +591,7 @@ test('生产容器使用专用用户且隔离检查覆盖数据挂载、Socket�
   const databaseBackup = fs.readFileSync(path.join(projectDir, 'deploy', 'backup-database.mjs'), 'utf8');
   const offsiteBackup = fs.readFileSync(path.join(projectDir, 'deploy', 'offsite-backup.sh'), 'utf8');
   assert.match(dockerfile, /APP_UID=20117/); assert.match(dockerfile, /USER \$\{APP_UID\}:\$\{APP_GID\}/);
+  assert.match(dockerfile, /ARG NPM_REGISTRY=https:\/\/registry\.npmjs\.org/); assert.match(dockerfile, /npm ci --omit=dev --registry="\$\{NPM_REGISTRY\}"/);
   assert.match(compose, /user: "20117:20117"/); assert.match(compose, /127\.0\.0\.1:3180:3180/); assert.match(compose, /read_only: true/);
   assert.equal(runtimeCheck.includes('docker\\.sock'), true); assert.match(runtimeCheck, /network', 'inspect'/); assert.match(runtimeCheck, /3180\/tcp/); assert.match(runtimeCheck, /其他容器/);
   assert.match(harden, /expected_root=\/data\/data\/wecom-finance-report-board/); assert.match(harden, /目录 0700 · 文件 0600/);

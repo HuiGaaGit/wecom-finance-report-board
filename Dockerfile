@@ -11,7 +11,8 @@ RUN sed -i \
   && apt-get update \
   && apt-get install -y --no-install-recommends python3 make g++ \
   && rm -rf /var/lib/apt/lists/*
-RUN npm ci --omit=dev && npm cache clean --force
+ARG NPM_REGISTRY=https://registry.npmjs.org
+RUN npm ci --omit=dev --registry="${NPM_REGISTRY}" && npm cache clean --force
 
 FROM dependencies AS tests
 
