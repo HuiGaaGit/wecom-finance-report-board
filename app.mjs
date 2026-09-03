@@ -28,7 +28,7 @@ try {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const dataDir = path.join(__dirname, 'data');
-const appVersion = '1.1.30';
+const appVersion = '1.1.33';
 const financialBriefModuleKey = 'financial_brief';
 const financialBriefNotesPermissionKey = 'module.financial_brief.notes.manage';
 const financialBriefMetricKeys = new Set(['expectedRevenue', 'accountBalance', 'operatingRevenue', 'operatingCost', 'sellingExpense', 'managementExpense', 'financeExpense', 'netProfit']);
@@ -1635,8 +1635,19 @@ const payrollHeaderMapping = headers => {
   const hireDateIndex = findPreferredHeaderIndex(headers, [[/^(?:入职日期|入职时间|入职日|到职日期|加入日期)$/]]);
   return { nameIndex, salaryIndexes, commissionIndex: safeCommissionIndex, companyIndex, departmentIndex, hireDateIndex };
 };
+const genericPayrollSheetCandidates = workbook => workbook.SheetNames.map(name => {
+  let rows = [];
+  try { rows = uploadSheetRows(workbook.Sheets[name], name).rows.slice(0, 40); } catch {}
+  const ranked = rows.map((headers, index) => {
+    const mapping = payrollHeaderMapping(headers || []);
+    const complete = mapping.nameIndex >= 0 && mapping.departmentIndex >= 0 && mapping.salaryIndexes.length > 0 && mapping.commissionIndex >= 0;
+    return { index, mapping, complete };
+  }).filter(item => item.complete).sort((a, b) => a.index - b.index);
+  return ranked.length ? { name, headerRow: ranked[0].index + 1 } : null;
+}).filter(Boolean);
 const payrollSheetFor = (workbook, selectedPeriod = '', strict = false) => {
-  const candidates = workbook.SheetNames.filter(name => /工资|薪酬明细/.test(String(name).replace(/\s+/g, '')));
+  let candidates = workbook.SheetNames.filter(name => /工资|薪酬明细/.test(String(name).replace(/\s+/g, '')));
+  if (!candidates.length && strict) candidates = genericPayrollSheetCandidates(workbook).map(item => item.name);
   if (!candidates.length || !selectedPeriod) return candidates[0] || '';
   const month = selectedPeriod.slice(5, 7); const described = candidates.map(name => ({ name, ...periodHintsFromText(name) }));
   const exact = described.find(item => item.periods.includes(selectedPeriod));
@@ -1713,6 +1724,69 @@ const revenueTableTitleDefinitions = [
   { key: 'B7', pattern: /渠道营收排名(?:B7)?$/i },
   { key: 'B8', pattern: /渠道营收明细排名统计(?:B8)?$/i }
 ];
+const revenueCumulativeTableDefinitions = [
+  { key: 'L1', titlePattern: /总集团营收表.*时间划分/i, headers: [/月份/, /(?:预计|实际|实收)?营收(?:金额|总额)?/, /(?:营收)?占比/, /项目(?:数量|数)/] },
+  { key: 'L2', titlePattern: /营收总表.*(?:区域|地区)划分/i, headers: [/(?:业绩归属|区域|地区)/, /月份/, /(?:预计|实际|实收)?营收(?:金额|总额)?/, /(?:营收)?占比/, /项目(?:数量|数)/] },
+  { key: 'L2-1', titlePattern: /营收项目明细表.*(?:区域|地区)划分/i, headers: [/(?:业绩归属|区域|地区)/, /月份/, /项目/, /(?:预计|实际|实收)?营收(?:金额|总额)?/, /(?:营收)?占比/, /项目(?:数量|数)/] },
+  { key: 'L3', titlePattern: /项目(?:负责人|经理)营收累计表/i, headers: [/项目(?:负责人|经理)/, /月份/, /(?:预计|实际|实收)?营收(?:金额|总额)?/, /(?:营收)?占比/, /项目(?:数量|数)/] },
+  { key: 'L4', titlePattern: /直客.*来源统计累计表/i, headers: [/(?:来源|项目来源)/, /月份/, /(?:预计|实际|实收)?营收(?:金额|总额)?/, /(?:营收)?占比/, /项目(?:数量|数)/] },
+  { key: 'L5', titlePattern: /直客营收统计累计表/i, headers: [/顾问/, /(?:来源|项目来源)/, /(?:预计|实际|实收)?营收(?:金额|总额)?/, /(?:营收)?占比/, /项目(?:数量|数)/] },
+  { key: 'L6', titlePattern: /渠道营收统计累计表/i, headers: [/(?:渠道顾问|渠道)/, /月份/, /(?:预计|实际|实收)?营收(?:金额|总额)?/, /(?:营收)?占比/, /项目(?:数量|数)/] }
+];
+const revenueCumulativeTitleKey = value => String(value || '').replace(/\s+/g, '').match(/(L(?:2-1|[1-6]))$/i)?.[1]?.toUpperCase() || '';
+const parseRevenueCumulativeSections = rows => {
+  const issues = [];
+  const sections = rows.map((row, rowIndex) => {
+    const title = (row || []).map(value => String(value || '').trim()).find(value => /^20\d{2}年(?:度)?累计(?:统计)?数据$/.test(value.replace(/\s+/g, '')));
+    const year = title?.match(/^(20\d{2})年/)?.[1];
+    return year ? { year, title, rowIndex } : null;
+  }).filter(Boolean);
+  const cumulativeYears = sections.map((section, sectionIndex) => {
+    const sectionEnd = sections[sectionIndex + 1]?.rowIndex ?? rows.length;
+    const candidates = [];
+    for (let rowIndex = section.rowIndex + 1; rowIndex < sectionEnd; rowIndex += 1) {
+      for (let column = 0; column < (rows[rowIndex] || []).length; column += 1) {
+        const title = String(rows[rowIndex]?.[column] || '').trim();
+        if (!title) continue;
+        const normalizedTitle = normalizedHeader(title); const titleKey = revenueCumulativeTitleKey(title);
+        const definition = revenueCumulativeTableDefinitions.find(item => item.key === titleKey || item.titlePattern.test(normalizedTitle));
+        if (definition && !candidates.some(item => item.definition.key === definition.key)) candidates.push({ definition, title, rowIndex, column });
+      }
+    }
+    candidates.sort((a, b) => a.column - b.column || a.rowIndex - b.rowIndex);
+    const tables = candidates.map((anchor, index) => {
+      const nextColumn = candidates[index + 1]?.column ?? Math.max(anchor.column + 1, rows.reduce((max, row) => Math.max(max, row?.length || 0), 0));
+      let headerRowIndex = -1; let headers = [];
+      for (let rowIndex = anchor.rowIndex + 1; rowIndex < Math.min(sectionEnd, anchor.rowIndex + 13); rowIndex += 1) {
+        const candidateHeaders = (rows[rowIndex] || []).slice(anchor.column, nextColumn);
+        const normalizedHeaders = candidateHeaders.map(normalizedHeader);
+        if (!anchor.definition.headers.every(pattern => normalizedHeaders.some(header => pattern.test(header)))) continue;
+        headerRowIndex = rowIndex; headers = candidateHeaders;
+        while (headers.length && !revenueCellHasValue(headers.at(-1))) headers.pop();
+        break;
+      }
+      if (headerRowIndex < 0 || !headers.length) {
+        issues.push(`${section.year}年${anchor.definition.key}“${anchor.title}”未找到匹配字段表头`);
+        return null;
+      }
+      const dataRows = []; let emptyStreak = 0; let started = false;
+      for (let rowIndex = headerRowIndex + 1; rowIndex < sectionEnd; rowIndex += 1) {
+        const cells = (rows[rowIndex] || []).slice(anchor.column, anchor.column + headers.length);
+        if (!cells.some(revenueCellHasValue)) {
+          if (started && ++emptyStreak >= 3) break;
+          continue;
+        }
+        started = true; emptyStreak = 0; dataRows.push({ row: rowIndex + 1, cells });
+      }
+      const shortTitle = anchor.title.replace(/^20\d{2}年/, '').replace(/L(?:2-1|[1-6])$/i, '').trim();
+      return { key: anchor.definition.key, title: anchor.title, shortTitle, titleRow: anchor.rowIndex + 1, headerRow: headerRowIndex + 1, headers: headers.map(value => String(value ?? '').trim()), rows: dataRows };
+    }).filter(Boolean);
+    const missing = revenueCumulativeTableDefinitions.filter(definition => !tables.some(table => table.key === definition.key)).map(definition => definition.key);
+    if (missing.length) issues.push(`${section.year}年累计数据缺少可识别子表：${missing.join('、')}`);
+    return { year: section.year, sourceTitle: section.title, tables };
+  });
+  return { cumulativeYears, cumulativeIssues: [...new Set(issues)] };
+};
 const parseRevenueStatisticsSheet = (workbook, sheetName, selectedPeriod = '') => {
   const sheet = workbook.Sheets[sheetName];
   const sheetRows = uploadSheetRows(sheet, sheetName); const rows = sheetRows.rows;
@@ -1750,7 +1824,41 @@ const parseRevenueStatisticsSheet = (workbook, sheetName, selectedPeriod = '') =
   const note = rows.flat().map(value => String(value || '').trim()).find(value => /^注[：:]/.test(value)) || '';
   const sheetMeta = workbook.Workbook?.Sheets?.find(item => item.name === sheetName);
   const consultantRevenue = parseConsultantRevenueDetail(workbook, selectedPeriod);
-  return { sourceSheet: sheetName, sourcePeriod: periodMatch ? `${periodMatch[1]}-${String(periodMatch[2]).padStart(2, '0')}` : '', hidden: Boolean(sheetMeta?.Hidden), maxRow: rows.length, maxCol: sheetRows.maxCol, declaredRange: sheetRows.declaredRange, effectiveRange: sheetRows.effectiveRange, rangeTrimmed: sheetRows.rangeTrimmed, note, dimensions, consultantRevenue };
+  const cumulative = parseRevenueCumulativeSections(rows);
+  return { sourceSheet: sheetName, sourcePeriod: periodMatch ? `${periodMatch[1]}-${String(periodMatch[2]).padStart(2, '0')}` : '', hidden: Boolean(sheetMeta?.Hidden), maxRow: rows.length, maxCol: sheetRows.maxCol, declaredRange: sheetRows.declaredRange, effectiveRange: sheetRows.effectiveRange, rangeTrimmed: sheetRows.rangeTrimmed, note, dimensions, ...cumulative, consultantRevenue };
+};
+const cellPeriod = value => {
+  if (typeof value === 'number' && value > 30000 && value < 100000) return excelDateText(value).slice(0, 7);
+  const text = String(value ?? '').trim();
+  const iso = text.match(/^(20\d{2})[-/.](1[0-2]|0?[1-9])[-/.](?:3[01]|[12]\d|0?[1-9])/);
+  if (iso) return `${iso[1]}-${String(iso[2]).padStart(2, '0')}`;
+  return '';
+};
+const journalRowsForSelectedPeriod = (rows, selectedPeriod) => {
+  if (!selectedPeriod) return { rows, sourcePeriods: [], excludedRows: 0, excludeReport: false };
+  const headerIndex = rows.slice(0, 40).findIndex(row => (row || []).some(value => normalizedHeader(value) === '日期'));
+  if (headerIndex < 0) return { rows, sourcePeriods: [], excludedRows: 0, excludeReport: false };
+  const dateIndex = (rows[headerIndex] || []).findIndex(value => normalizedHeader(value) === '日期');
+  const sourcePeriods = new Set(); let activePeriod = ''; let datedRows = 0; let selectedDatedRows = 0; let excludedRows = 0;
+  const kept = rows.filter((row, index) => {
+    if (index <= headerIndex) return true;
+    const rowPeriod = cellPeriod(row?.[dateIndex]);
+    if (rowPeriod) { activePeriod = rowPeriod; sourcePeriods.add(rowPeriod); datedRows += 1; if (rowPeriod === selectedPeriod) selectedDatedRows += 1; }
+    if (!activePeriod || activePeriod === selectedPeriod) return true;
+    excludedRows += 1; return false;
+  });
+  return { rows: kept, sourcePeriods: [...sourcePeriods], excludedRows, excludeReport: datedRows > 0 && selectedDatedRows === 0 };
+};
+const trialPeriodsFromMetadata = (rows, sheetName) => {
+  const explicit = [];
+  const headerIndex = rows.slice(0, 20).findIndex(row => (row || []).some(value => /科目编码/.test(normalizedHeader(value))) && (row || []).some(value => /科目名称/.test(normalizedHeader(value))));
+  const metadataRows = rows.slice(0, headerIndex >= 0 ? headerIndex : Math.min(rows.length, 8));
+  for (const value of metadataRows.flat()) {
+    const numericPeriod = cellPeriod(value); if (numericPeriod) explicit.push(numericPeriod);
+    explicit.push(...periodHintsFromText(value).periods);
+  }
+  if (!explicit.length) explicit.push(...periodHintsFromText(sheetName).periods);
+  return [...new Set(explicit)];
 };
 const parseUploadedFile = (buffer, fileName, fileType, options = {}) => {
   if (fileType === 'application/json' || fileName.toLowerCase().endsWith('.json')) {
@@ -1759,6 +1867,7 @@ const parseUploadedFile = (buffer, fileName, fileType, options = {}) => {
   }
   const workbook = XLSX.read(buffer, { type: 'buffer', cellDates: false });
   const reports = {};
+  const periodExcludedReports = [];
   const reportSheetPatterns = {
     balance_sheet: /^(?:(?:20\d{2}年)?\d{1,2}月)?资产负债表$/,
     income_statement: /^(?:(?:20\d{2}年)?\d{1,2}月)?利润表$/,
@@ -1771,13 +1880,32 @@ const parseUploadedFile = (buffer, fileName, fileType, options = {}) => {
     journal: /^(?:(?:20\d{2}年)?\d{1,2}月)?序时账$/
   };
   for (const [type, pattern] of Object.entries(reportSheetPatterns)) {
-    const sheetName = type === payrollStatementReportType
+    const requestedGroupType = groupStatementReportTypes.has(options.requestedReportType) ? options.requestedReportType : '';
+    if (requestedGroupType && ((type === 'income_statement') || (groupStatementReportTypes.has(type) && type !== requestedGroupType))) continue;
+    let sheetName = type === payrollStatementReportType
       ? payrollSheetFor(workbook, options.selectedPeriod, options.requestedReportType === payrollStatementReportType)
       : workbook.SheetNames.find(name => pattern.test(String(name).replace(/\s+/g, '')));
+    if (!sheetName && type === requestedGroupType) sheetName = workbook.SheetNames.find(name => /^利润表$/.test(String(name).replace(/\s+/g, '')));
     if (!sheetName) continue;
     if (type === revenueStatisticsReportType) { reports[type] = parseRevenueStatisticsSheet(workbook, sheetName, options.selectedPeriod); continue; }
     if (type === payrollStatementReportType) { reports[type] = parsePayrollSheet(workbook, sheetName); continue; }
     const sheetRows = uploadSheetRows(workbook.Sheets[sheetName], sheetName); let rows = sheetRows.rows;
+    if (type === 'journal') {
+      const periodCheck = journalRowsForSelectedPeriod(rows, options.selectedPeriod);
+      if (periodCheck.excludeReport) {
+        periodExcludedReports.push({ reportType: type, sourceSheet: sheetName, selectedPeriod: options.selectedPeriod, detectedPeriods: periodCheck.sourcePeriods, excludedRows: periodCheck.excludedRows, reason: '序时账没有所选期间的分录' });
+        continue;
+      }
+      rows = periodCheck.rows;
+      if (periodCheck.excludedRows) periodExcludedReports.push({ reportType: type, sourceSheet: sheetName, selectedPeriod: options.selectedPeriod, detectedPeriods: periodCheck.sourcePeriods, excludedRows: periodCheck.excludedRows, reason: '已排除其他期间的序时账分录' });
+    }
+    if (type === 'trial_balance' && options.selectedPeriod) {
+      const sourcePeriods = trialPeriodsFromMetadata(rows, sheetName);
+      if (sourcePeriods.length && !sourcePeriods.includes(options.selectedPeriod)) {
+        periodExcludedReports.push({ reportType: type, sourceSheet: sheetName, selectedPeriod: options.selectedPeriod, detectedPeriods: sourcePeriods, excludedRows: rows.length, reason: '科目余额表期间与所选期间不一致' });
+        continue;
+      }
+    }
     if (['balance_sheet', 'income_statement', 'cash_flow'].includes(type)) rows = normalizeStatementDate(rows);
     if (groupStatementReportTypes.has(type)) rows = statementRowsFromSheet(workbook, sheetName, type === revenueProfitReportType ? 'B1:H50' : 'B1:E50');
     const maxCol = rows.reduce((max, row) => Math.max(max, row.length), 0);
@@ -1791,6 +1919,12 @@ const parseUploadedFile = (buffer, fileName, fileType, options = {}) => {
     reports[type].entities = entities;
     reports[type].entityNames = entities.map(item => item.companyName);
     if (type !== 'consolidated_income_statement') continue;
+    reports.consolidated_income_statement.reconciliationAvailable = entities.length > 0;
+    if (!entities.length) {
+      reports.consolidated_income_statement.reconciliation = [];
+      reports.consolidated_income_statement.reconciliationPassed = null;
+      continue;
+    }
     const entityRowsByName = entities.map(entity => new Map(entity.rows.map(row => [String(row.cells?.[0] || '').trim(), row.cells || []])));
     const reconciliation = reports.consolidated_income_statement.rows.filter(row => row.row >= 5).map(row => {
       const label = String(row.cells?.[0] || '').trim();
@@ -1809,7 +1943,8 @@ const parseUploadedFile = (buffer, fileName, fileType, options = {}) => {
     const sheetMeta = workbook.Workbook?.Sheets?.find(item => item.name === cashFlowWorkpaperName);
     reports.cash_flow_workpaper = { sourceSheet: cashFlowWorkpaperName, hidden: Boolean(sheetMeta?.Hidden), maxRow: rows.length, maxCol, declaredRange: sheetRows.declaredRange, effectiveRange: sheetRows.effectiveRange, rangeTrimmed: sheetRows.rangeTrimmed, rows: rows.map((cells, index) => ({ row: index + 1, cells })) };
   }
-  if (!Object.keys(reports).length) throw new Error('未找到可识别的资产负债表、利润表、集团合并利润表、营收利润口径合并利润表、营收统计汇总表、工资表、现金流量表、科目余额表或序时账工作表');
+  Object.defineProperty(reports, 'periodExcludedReports', { value: periodExcludedReports, enumerable: false });
+  if (!Object.keys(reports).length && !periodExcludedReports.length) throw new Error('未找到可识别的资产负债表、利润表、集团合并利润表、营收利润口径合并利润表、营收统计汇总表、工资表、现金流量表、科目余额表或序时账工作表');
   return reports;
 };
 const uploadPeriodHint = (fileName, reports, selectedPeriod) => {
@@ -1932,10 +2067,12 @@ const groupProfitAnalysisFor = (period, year) => {
     source: monthly.length ? { noData: false, reportType: 'consolidated_income_statement', reportName: '桉侨集团合并利润表', periods: monthly.map(item => item.period), files: [...new Set(monthly.map(item => item.sourceName))] } : { noData: true, reportType: 'consolidated_income_statement', reportName: '桉侨集团合并利润表', periods: [], files: [] }
   };
 };
-const consultantRevenueRefreshCache = new Map();
-const refreshedConsultantRevenueRawFor = (revenue, period) => {
-  if (revenue.raw?.consultantRevenue?.selectedPeriod === period || !revenue.meta?.uploadKey) return revenue.raw;
-  if (consultantRevenueRefreshCache.has(revenue.meta.uploadKey)) return consultantRevenueRefreshCache.get(revenue.meta.uploadKey);
+const revenueStatisticsRefreshCache = new Map();
+const refreshedRevenueStatisticsRawFor = (revenue, period) => {
+  const consultantReady = revenue.raw?.consultantRevenue?.selectedPeriod === period;
+  const cumulativeReady = Array.isArray(revenue.raw?.cumulativeYears);
+  if ((consultantReady && cumulativeReady) || !revenue.meta?.uploadKey) return revenue.raw;
+  if (revenueStatisticsRefreshCache.has(revenue.meta.uploadKey)) return revenueStatisticsRefreshCache.get(revenue.meta.uploadKey);
   const upload = db.prepare('SELECT file_name, file_type, storage_path FROM upload_batches WHERE upload_key = ?').get(revenue.meta.uploadKey);
   let refreshed = revenue.raw;
   if (upload?.storage_path && fs.existsSync(upload.storage_path)) {
@@ -1944,7 +2081,7 @@ const refreshedConsultantRevenueRawFor = (revenue, period) => {
       refreshed = reports[revenueStatisticsReportType] || refreshed;
     } catch {}
   }
-  consultantRevenueRefreshCache.set(revenue.meta.uploadKey, refreshed);
+  revenueStatisticsRefreshCache.set(revenue.meta.uploadKey, refreshed);
   return refreshed;
 };
 const consultantPayrollRefreshCache = new Map();
@@ -1962,7 +2099,7 @@ const refreshedConsultantPayrollRawFor = (payroll, period) => {
 };
 const consultantRoiAnalysisFor = (employeeKey, period) => {
   const payroll = rawReportFor(payrollStatementReportType, 'group', period); const revenue = rawReportFor(revenueStatisticsReportType, 'group', period);
-  const payrollRaw = refreshedConsultantPayrollRawFor(payroll, period); const payrollRows = payrollRaw?.payrollRows || []; const consultantPayrollRows = payrollRows.filter(item => consultantDepartmentMatches(item.department)); const revenueRaw = refreshedConsultantRevenueRawFor(revenue, period); const revenueRows = revenueRaw?.consultantRevenue?.rows || [];
+  const payrollRaw = refreshedConsultantPayrollRawFor(payroll, period); const payrollRows = payrollRaw?.payrollRows || []; const consultantPayrollRows = payrollRows.filter(item => consultantDepartmentMatches(item.department)); const revenueRaw = refreshedRevenueStatisticsRawFor(revenue, period); const revenueRows = revenueRaw?.consultantRevenue?.rows || [];
   const consultants = new Map();
   const ensure = (canonicalName, displayName) => { if (!consultants.has(canonicalName)) consultants.set(canonicalName, { canonicalName, name: displayName || canonicalName, regions: new Set(), hireDates: new Set(), baseSalary: 0, commission: 0, journalExpense: 0, expectedRevenue: 0, payrollDetails: [], revenueDetails: [], expenseDetails: [] }); return consultants.get(canonicalName); };
   for (const item of consultantPayrollRows) {
@@ -2309,7 +2446,9 @@ const server = http.createServer(async (req, res) => {
       const periodHint = uploadPeriodHint(safeName, reports, period);
       if (periodHint.conflict) return json(res, 409, { error: '文件名或工作表中检测到多个不一致的月份，请核对原始文件后再上传', code: 'PERIOD_HINT_CONFLICT', selectedPeriod: period, detectedPeriods: periodHint.explicitPeriods, detectedMonths: periodHint.monthHints, evidence: periodHint.sources });
       if (periodHint.detectedPeriod && periodHint.detectedPeriod !== period) return json(res, 409, { error: `检测到文件期间为 ${periodHint.detectedPeriod}，与当前选定期间 ${period} 不一致`, code: 'PERIOD_MISMATCH', selectedPeriod: period, detectedPeriod: periodHint.detectedPeriod, evidence: periodHint.sources });
+      const periodExcludedReports = reports.periodExcludedReports || [];
       const recognizedTypes = Object.keys(reports).filter(type => reportTypeRow(type)); const selectedTypes = recognizedTypes.length > 1 || !reportType ? recognizedTypes : recognizedTypes.filter(type => type === reportType);
+      if (!selectedTypes.length && periodExcludedReports.length) return bad(res, 400, `文件中的报表数据不属于所选期间 ${period}，已阻止生成上传批次`, { code: 'REPORT_PERIOD_EXCLUDED', periodExcludedReports });
       if (!selectedTypes.length) return bad(res, 400, reportType ? '文件中没有找到指定报表工作表' : '文件中没有找到可识别的报表工作表');
       if (selectedTypes.some(type => groupOnlyReportTypes.has(type)) && companyKey !== 'group') return json(res, 409, { error: '集团报表只能归属“桉侨集团”，请切换上传公司后重试', code: 'GROUP_COMPANY_REQUIRED', selectedCompanyKey: companyKey, requiredCompanyKey: 'group' });
       if (companyKey === 'group' && selectedTypes.some(type => !groupOnlyReportTypes.has(type))) return json(res, 409, { error: '“桉侨集团”只接收集团合并利润表、营收统计表和每月工资表，请重新选择报表或公司', code: 'GROUP_REPORT_TYPE_REQUIRED' });
@@ -2327,7 +2466,7 @@ const server = http.createServer(async (req, res) => {
         db.prepare("UPDATE upload_batches SET status = 'validated' WHERE upload_key = ?").run(uploadKey); log(employee.employee_key, 'upload_report', uploadKey, `${companyKey}/${period}/${type}/${fileName}`, { moduleKey: 'uploads', companyKey, period });
         createdUploads.push({ uploadKey, reportType: type, status: 'validated' });
       }
-      return json(res, 201, { uploadKey: createdUploads[0].uploadKey, uploadKeys: createdUploads.map(item => item.uploadKey), status: 'validated', uploads: createdUploads, trimmedSheets, sheets: Object.entries(reports).map(([key, value]) => ({ reportType: key, sourceSheet: value.sourceSheet, rows: value.maxRow, columns: value.maxCol, hidden: Boolean(value.hidden), declaredRange: value.declaredRange || '', effectiveRange: value.effectiveRange || '', trimmed: Boolean(value.rangeTrimmed) })) });
+      return json(res, 201, { uploadKey: createdUploads[0].uploadKey, uploadKeys: createdUploads.map(item => item.uploadKey), status: 'validated', uploads: createdUploads, trimmedSheets, periodExcludedReports, sheets: Object.entries(reports).map(([key, value]) => ({ reportType: key, sourceSheet: value.sourceSheet, rows: value.maxRow, columns: value.maxCol, hidden: Boolean(value.hidden), declaredRange: value.declaredRange || '', effectiveRange: value.effectiveRange || '', trimmed: Boolean(value.rangeTrimmed) })) });
     }
     if (url.pathname === '/api/uploads/bulk-publish' && req.method === 'POST') {
       const employee = requireImport(req, res, 'publish'); if (!employee) return;
@@ -2458,6 +2597,7 @@ const server = http.createServer(async (req, res) => {
       let raw; let meta;
       if (upload && fs.existsSync(upload.raw_path)) { const all = JSON.parse(fs.readFileSync(upload.raw_path, 'utf8')); raw = all[reportType] || all; meta = { demo: false, uploadKey: upload.upload_key, fileName: upload.file_name, uploadedBy: upload.employee_key, status: upload.status, createdAt: upload.created_at, publishedAt: upload.published_at }; }
       else { const missing = rawReportFor(reportType, companyKey, period); raw = missing.raw; meta = { ...missing.meta, uploadedBy: null }; }
+      if (reportType === revenueStatisticsReportType) raw = refreshedRevenueStatisticsRawFor({ raw, meta }, period);
       log(employee.employee_key, 'view_raw_report', `${reportType}:raw`, `${companyKey}/${period}`, { moduleKey: reportType, companyKey, period }); return json(res, 200, { report: reportType, company: companyRow(companyKey).company_name, period, meta, raw });
     }
     if (url.pathname === '/api/analysis/financial-brief' && req.method === 'GET') {

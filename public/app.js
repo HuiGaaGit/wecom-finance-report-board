@@ -11,7 +11,7 @@ const consultantRoiModuleKey = 'consultant_roi_analysis';
 const intercompanyModuleKey = 'intercompany_reconciliation';
 const activityLogModuleKey = 'activity_logs';
 const revenueDimensions = [{ key: 'group', name: '集团维度' }, { key: 'direct', name: '单独直客维度' }, { key: 'channel', name: '单独渠道维度' }];
-const state = { employeeKey: 'admin', bootstrap: null, page: 'home', reportType: 'balance_sheet', company: 'gz', period: '2026-06', periodExplicit: false, detailPeriod: '', detailAccountCodes: [], version: null, summary: null, raw: null, consolidatedEntityReportType: '', consolidatedEntitySheet: '', consolidatedExpanded: false, consolidatedScope: '', revenueDimension: 'group', revenueTable: 'B1', revenueExpanded: false };
+const state = { employeeKey: 'admin', bootstrap: null, page: 'home', reportType: 'balance_sheet', company: 'gz', period: '2026-06', periodExplicit: false, detailPeriod: '', detailAccountCodes: [], version: null, summary: null, raw: null, consolidatedEntityReportType: '', consolidatedEntitySheet: '', consolidatedExpanded: false, consolidatedScope: '', revenueDimension: 'group', revenueTable: 'B1', revenueCumulativeYear: '2026', revenueCumulativeTable: 'L1', revenueExpanded: false };
 const consultantRoiView = {
   inputs: { baseSalary: true, commission: true, journalExpense: true },
   filters: {},
@@ -1179,6 +1179,25 @@ const revenueCellText = (value, header) => {
   if (/营收/.test(header)) return value.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   return value.toLocaleString('zh-CN', { maximumFractionDigits: 2 });
 };
+const revenueRowsHtml = (table, firstRowTotal = false) => (table?.rows || []).map((row, index) => {
+  const total = (row.cells || []).some(value => /^(?:总计|合计)$/.test(String(value || '').trim()));
+  return `<tr class="${total || (firstRowTotal && index === 0) ? 'revenue-total-row' : ''}">${(table.headers || []).map((header, column) => { const value = row.cells?.[column]; return `<td class="${typeof value === 'number' ? 'revenue-number' : ''}">${escapeHtml(revenueCellText(value, header))}</td>`; }).join('')}</tr>`;
+}).join('');
+const revenueCumulativePanelHtml = (cumulativeYears, cumulativeIssues) => {
+  if (!cumulativeYears.length) {
+    const issue = cumulativeIssues.length ? `<p>${escapeHtml(cumulativeIssues.join('；'))}</p>` : '<p>当前营收统计文件未包含可识别的年度累计数据。</p>';
+    return `<section class="panel revenue-cumulative-panel"><div class="revenue-cumulative-title"><div><span>年度经营累计</span><h2>营收统计累计数据</h2></div></div><div class="revenue-cumulative-empty"><strong>暂无累计数据</strong>${issue}</div></section>`;
+  }
+  const orderedYears = [...cumulativeYears].sort((a, b) => Number(b.year) - Number(a.year));
+  const selectedYear = cumulativeYears.find(item => item.year === state.revenueCumulativeYear) || orderedYears[0];
+  if (!selectedYear.tables?.some(item => item.key === state.revenueCumulativeTable)) state.revenueCumulativeTable = selectedYear.tables?.[0]?.key || '';
+  const table = selectedYear.tables?.find(item => item.key === state.revenueCumulativeTable);
+  const headers = table?.headers || [];
+  const yearOptions = orderedYears.map(item => `<option value="${escapeHtml(item.year)}" ${item.year === selectedYear.year ? 'selected' : ''}>${escapeHtml(item.year)}年</option>`).join('');
+  const tableTabs = (selectedYear.tables || []).map(item => `<button type="button" class="revenue-table-tab ${item.key === state.revenueCumulativeTable ? 'active' : ''}" data-revenue-cumulative-table="${escapeHtml(item.key)}"><b>${escapeHtml(item.key)}</b><span>${escapeHtml(item.shortTitle || item.title)}</span></button>`).join('');
+  const issue = cumulativeIssues.filter(message => message.startsWith(selectedYear.year)).map(message => `<li>${escapeHtml(message)}</li>`).join('');
+  return `<section class="panel revenue-cumulative-panel"><div class="revenue-cumulative-title"><div><span>年度经营累计</span><h2>营收统计累计数据</h2><p>${escapeHtml(selectedYear.sourceTitle || `${selectedYear.year}年累计数据`)} · 按标题和字段表头动态识别</p></div><label><span>时间维度</span><select data-revenue-cumulative-year>${yearOptions}</select></label></div><div class="revenue-table-tabs revenue-cumulative-tabs" role="tablist" aria-label="${escapeHtml(selectedYear.year)}年累计数据子表">${tableTabs}</div><div class="revenue-panel-heading revenue-cumulative-table-heading"><div><span>${escapeHtml(table?.key || '')}</span><h3>${escapeHtml(table?.shortTitle || table?.title || '累计数据子表')}</h3></div><div class="revenue-source-meta"><span>字段表头定位</span><b>${headers.length} 个字段</b></div></div><div class="revenue-table-scroll" role="region" aria-label="${escapeHtml(table?.title || '营收统计累计表')}，可左右滑动" tabindex="0"><table class="revenue-statistics-table revenue-cumulative-table" style="--revenue-columns:${Math.max(headers.length, 1)}"><thead><tr>${headers.map(header => `<th>${escapeHtml(header)}</th>`).join('')}</tr></thead><tbody>${revenueRowsHtml(table) || `<tr><td colspan="${Math.max(headers.length, 1)}" class="empty">当前累计子表暂无数据</td></tr>`}</tbody></table></div>${issue ? `<ul class="revenue-cumulative-issues">${issue}</ul>` : ''}</section>`;
+};
 
 async function renderRevenueStatistics() {
   const page = $('#revenue-statistics-page');
@@ -1191,6 +1210,10 @@ async function renderRevenueStatistics() {
       page.innerHTML = `<div class="page-title"><div><h1>营收统计表</h1><p>集团维度、单独直客维度、单独渠道维度</p></div></div><div class="empty">${escapeHtml(data.meta?.noData ? `${state.period} 暂无已发布营收统计表` : '源文件未识别到三个营收统计维度')}</div>`;
       return;
     }
+    const cumulativeYears = data.raw?.cumulativeYears || [];
+    const cumulativeIssues = data.raw?.cumulativeIssues || [];
+    const periodYear = String(data.period || state.period).slice(0, 4);
+    if (!cumulativeYears.some(item => item.year === state.revenueCumulativeYear)) state.revenueCumulativeYear = cumulativeYears.some(item => item.year === periodYear) ? periodYear : [...cumulativeYears].sort((a, b) => Number(b.year) - Number(a.year))[0]?.year || periodYear;
     if (!dimensions.some(item => item.key === state.revenueDimension)) state.revenueDimension = dimensions[0].key;
     const paint = () => {
       const dimension = dimensions.find(item => item.key === state.revenueDimension) || dimensions[0];
@@ -1199,11 +1222,13 @@ async function renderRevenueStatistics() {
       const dimensionButtons = dimensions.map(item => `<button type="button" class="revenue-dimension-button ${item.key === dimension.key ? 'active' : ''}" data-revenue-page-dimension="${escapeHtml(item.key)}"><small>一级维度</small><strong>${escapeHtml(item.name)}</strong><span>${item.tables?.length || 0} 张子表</span></button>`).join('');
       const tableTabs = (dimension.tables || []).map(item => `<button type="button" class="revenue-table-tab ${item.key === state.revenueTable ? 'active' : ''}" data-revenue-table="${escapeHtml(item.key)}"><b>${escapeHtml(item.key)}</b><span>${escapeHtml(item.shortTitle || item.title)}</span></button>`).join('');
       const headers = table?.headers || [];
-      const rows = (table?.rows || []).map((row, index) => `<tr class="${index === 0 ? 'revenue-total-row' : ''}">${headers.map((header, column) => { const value = row.cells?.[column]; const numeric = typeof value === 'number'; return `<td class="${numeric ? 'revenue-number' : ''}">${escapeHtml(revenueCellText(value, header))}</td>`; }).join('')}</tr>`).join('');
+      const rows = revenueRowsHtml(table, true);
       const sourceState = data.meta?.status === 'published' ? '当前发布' : data.meta?.status === 'validated' ? '待发布预览' : data.meta?.status || '原始资料';
-      page.innerHTML = `<div class="page-title revenue-page-title"><div><h1>营收统计表</h1><p>${escapeHtml(data.company)} · ${escapeHtml(data.period)} · 三个统计口径独立查看</p></div><div class="revenue-source-badge"><span>${escapeHtml(sourceState)}</span><strong>${escapeHtml(data.meta?.fileName || data.raw?.sourceSheet || '营收统计汇总表')}</strong></div></div><section class="revenue-dimension-switch" aria-label="营收统计一级维度">${dimensionButtons}</section><section class="panel revenue-statistics-panel"><div class="revenue-panel-heading"><div><span>${escapeHtml(dimension.sourceTitle || dimension.name)}</span><h2>${escapeHtml(table?.shortTitle || table?.title || '二级统计表')}</h2></div><div class="revenue-source-meta"><span>${escapeHtml(data.raw?.sourceSheet || '数据统计汇总表（mia）')}</span><b>${escapeHtml(data.raw?.sourcePeriod || data.period)}</b></div></div><div class="revenue-table-tabs" role="tablist" aria-label="${escapeHtml(dimension.name)}二级表">${tableTabs}</div><div class="revenue-table-scroll" role="region" aria-label="${escapeHtml(table?.title || '营收统计表')}，可左右滑动" tabindex="0"><table class="revenue-statistics-table" style="--revenue-columns:${Math.max(headers.length, 1)}"><thead><tr>${headers.map(header => `<th>${escapeHtml(header)}</th>`).join('')}</tr></thead><tbody>${rows || `<tr><td colspan="${Math.max(headers.length, 1)}" class="empty">当前子表暂无数据</td></tr>`}</tbody></table></div>${data.raw?.note ? `<div class="revenue-scope-note"><strong>口径提示</strong><span>${escapeHtml(data.raw.note)}</span></div>` : ''}</section>`;
+      page.innerHTML = `<div class="page-title revenue-page-title"><div><h1>营收统计表</h1><p>${escapeHtml(data.company)} · ${escapeHtml(data.period)} · 三个统计口径独立查看</p></div><div class="revenue-source-badge"><span>${escapeHtml(sourceState)}</span><strong>${escapeHtml(data.meta?.fileName || data.raw?.sourceSheet || '营收统计汇总表')}</strong></div></div><section class="revenue-dimension-switch" aria-label="营收统计一级维度">${dimensionButtons}</section><section class="panel revenue-statistics-panel"><div class="revenue-panel-heading"><div><span>${escapeHtml(dimension.sourceTitle || dimension.name)}</span><h2>${escapeHtml(table?.shortTitle || table?.title || '二级统计表')}</h2></div><div class="revenue-source-meta"><span>${escapeHtml(data.raw?.sourceSheet || '数据统计汇总表（mia）')}</span><b>${escapeHtml(data.raw?.sourcePeriod || data.period)}</b></div></div><div class="revenue-table-tabs" role="tablist" aria-label="${escapeHtml(dimension.name)}二级表">${tableTabs}</div><div class="revenue-table-scroll" role="region" aria-label="${escapeHtml(table?.title || '营收统计表')}，可左右滑动" tabindex="0"><table class="revenue-statistics-table" style="--revenue-columns:${Math.max(headers.length, 1)}"><thead><tr>${headers.map(header => `<th>${escapeHtml(header)}</th>`).join('')}</tr></thead><tbody>${rows || `<tr><td colspan="${Math.max(headers.length, 1)}" class="empty">当前子表暂无数据</td></tr>`}</tbody></table></div>${data.raw?.note ? `<div class="revenue-scope-note"><strong>口径提示</strong><span>${escapeHtml(data.raw.note)}</span></div>` : ''}</section>${revenueCumulativePanelHtml(cumulativeYears, cumulativeIssues)}`;
       page.querySelectorAll('[data-revenue-page-dimension]').forEach(button => button.onclick = () => { state.revenueDimension = button.dataset.revenuePageDimension; state.revenueTable = ''; state.revenueExpanded = true; renderNav(); paint(); applyReportWatermark(); });
       page.querySelectorAll('[data-revenue-table]').forEach(button => button.onclick = () => { state.revenueTable = button.dataset.revenueTable; paint(); applyReportWatermark(); });
+      page.querySelector('[data-revenue-cumulative-year]')?.addEventListener('change', event => { state.revenueCumulativeYear = event.currentTarget.value; state.revenueCumulativeTable = ''; paint(); applyReportWatermark(); });
+      page.querySelectorAll('[data-revenue-cumulative-table]').forEach(button => button.onclick = () => { state.revenueCumulativeTable = button.dataset.revenueCumulativeTable; paint(); applyReportWatermark(); });
     };
     paint();
   } catch (error) { page.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`; }
@@ -1369,7 +1394,7 @@ async function renderUploads() {
     let companyKey = page.querySelector('#upload-company-select')?.value || ''; let period = page.querySelector('#upload-period-select')?.value || '';
     if (!state.bootstrap.companies.some(company => company.key === companyKey)) return showNotice('上传公司未选择或已失效，请重新选择公司', true);
     if (!/^\d{4}-\d{2}$/.test(period)) return showNotice('报表期间未选择或格式无效，请重新选择期间', true);
-    state.uploadCompany = companyKey; state.uploadPeriod = period; let success = 0; const trimmedSheets = []; const successfulScopes = []; uploadButton.disabled = true;
+    state.uploadCompany = companyKey; state.uploadPeriod = period; let success = 0; const trimmedSheets = []; const periodExcludedReports = []; const successfulScopes = []; uploadButton.disabled = true;
     for (const [reportType, file] of entries) {
       try {
         if (!uploadTypes.some(([type]) => type === reportType)) throw new Error('报表位置已失效，请移除文件后重新选择');
@@ -1394,7 +1419,7 @@ async function renderUploads() {
           }
         }
         if (!result) throw new Error('范围校验次数过多，请拆分文件后重试');
-        success += result.uploads?.length || 1; successfulScopes.push({ company: companyKey, period }); trimmedSheets.push(...(result.trimmedSheets || []));
+        success += result.uploads?.length || 1; successfulScopes.push({ company: companyKey, period }); trimmedSheets.push(...(result.trimmedSheets || [])); periodExcludedReports.push(...(result.periodExcludedReports || []));
       } catch (error) { showNotice(`${reportType === 'bundle' ? '汇总财务报表' : reportNames[reportType]}：${error.message}`, true); }
     }
     uploadButton.disabled = false;
@@ -1403,7 +1428,8 @@ async function renderUploads() {
       const successfulCompanies = [...new Set(successfulScopes.map(item => item.company))]; const successfulPeriods = [...new Set(successfulScopes.map(item => item.period))];
       state.uploadHistoryView = 'pending'; state.uploadHistoryPage = 1;
       state.uploadHistoryFilters = { company: successfulCompanies.length === 1 ? successfulCompanies[0] : '', period: successfulPeriods.length === 1 ? successfulPeriods[0] : '', reportType: '', search: '' };
-      showNotice(`已上传并校验 ${success} 个报表批次${trimmedSheets.length ? `；已自动裁剪 ${trimmedSheets.length} 个工作表的尾部空白范围` : ''}`); await renderUploads();
+      const excludedNames = [...new Set(periodExcludedReports.map(item => reportNames[item.reportType] || item.reportType))];
+      showNotice(`已上传并校验 ${success} 个报表批次${trimmedSheets.length ? `；已自动裁剪 ${trimmedSheets.length} 个工作表的尾部空白范围` : ''}${excludedNames.length ? `；因期间不符未生成：${excludedNames.join('、')}` : ''}`); await renderUploads();
     }
   };
   page.querySelectorAll('[data-publish]').forEach(button => button.onclick = async () => {
