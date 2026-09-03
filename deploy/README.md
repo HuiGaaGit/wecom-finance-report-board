@@ -7,8 +7,8 @@
 - 环境变量：`/data/secrets/wecom-finance-report-board/report-board.env`
 - 持久数据：`/data/data/wecom-finance-report-board`
 - 容器：`wecom-finance-report-board`
-- 当前生产镜像：`aqllm/finance-report-board:1.1.34`（生产验收与回滚信息见 `docs/PRODUCTION_OPERATIONS.md`）
-- 当前源码版本：`1.1.34`（财务简报二级说明改为自由文字，支持新增、编辑和确认删除）
+- 当前生产镜像：`aqllm/finance-report-board:1.1.35`（生产验收与回滚信息见 `docs/PRODUCTION_OPERATIONS.md`）
+- 当前源码版本：`1.1.35`（资产负债分析改为左侧页签滑动表格、右侧带直连项目比例的大图）
 - 本机端口：`127.0.0.1:3180`
 - 正式地址：`https://anqiaoyiminxq.com/platform/finance/`
 

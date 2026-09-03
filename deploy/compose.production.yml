@@ -8,7 +8,7 @@ services:
       args:
         APP_UID: 20117
         APP_GID: 20117
-    image: aqllm/finance-report-board:1.1.34
+    image: aqllm/finance-report-board:1.1.35
     container_name: wecom-finance-report-board
     user: "20117:20117"
     restart: unless-stopped

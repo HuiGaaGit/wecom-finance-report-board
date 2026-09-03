@@ -906,10 +906,10 @@ test('上传页使用独立公司期间选择器且移除全局范围锁定', ()
 test('页面与后台运行版本一致且旧响应不能覆盖上传操作后的列表', async () => {
   const bootstrap = await request('/api/bootstrap?company=gz&period=2026-06');
   assert.equal(bootstrap.response.status, 200);
-  assert.equal(bootstrap.payload.appVersion, '1.1.34');
+  assert.equal(bootstrap.payload.appVersion, '1.1.35');
   const index = fs.readFileSync(path.join(projectDir, 'public', 'index.html'), 'utf8');
   const frontend = fs.readFileSync(path.join(projectDir, 'public', 'app.js'), 'utf8');
-  assert.match(index, /<meta name="app-version" content="1\.1\.34">/);
+  assert.match(index, /<meta name="app-version" content="1\.1\.35">/);
   assert.match(frontend, /const expectedAppVersion = document\.querySelector\('meta\[name="app-version"\]'\)/);
   assert.match(frontend, /bootstrap\?\.appVersion === expectedAppVersion/);
   assert.match(frontend, /APP_VERSION_MISMATCH/);
@@ -2205,5 +2205,6 @@ test('资产负债分析读取当前发布批次并在新版本发布后即时�
   const featureStyle = fs.readFileSync(path.join(projectDir, 'public', 'asset-liability-analysis.css'), 'utf8');
   assert.match(frontend, /assetLiabilityAnalysisButtonHtml/); assert.match(frontend, /bindAssetLiabilityAnalysis/);
   assert.match(feature, /\/api\/reports\/balance_sheet\/analysis/); assert.match(feature, /setInterval\(\(\) => load\(\{ quiet: true \}\), 60000\)/);
-  assert.match(feature, /setAttribute\('role', 'dialog'\)/); assert.match(feature, /assetLiabilityChartSegments/); assert.match(featureStyle, /asset-liability-donut/);
+  assert.match(feature, /setAttribute\('role', 'dialog'\)/); assert.match(feature, /assetLiabilityChartSegments/); assert.match(feature, /assetLiabilityChartLabels/);
+  assert.match(feature, /data-analysis-switch/); assert.doesNotMatch(feature, /源表项目与金额/); assert.match(featureStyle, /asset-liability-direct-label/);
 });

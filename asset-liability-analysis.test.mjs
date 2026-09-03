@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseAssetLiabilityAnalysis } from './asset-liability-analysis.mjs';
-import { assetLiabilityChartSegments, assetLiabilityTableRows } from './public/asset-liability-analysis.js';
+import { assetLiabilityChartLabels, assetLiabilityChartSegments, assetLiabilityTableRows } from './public/asset-liability-analysis.js';
 
 const row = (number, values) => ({ row: number, cells: values });
 
@@ -102,4 +102,21 @@ test('源表明细保持上传顺序并与按金额排序的图表扇区稳定�
   assert.deepEqual(rows.map(item => item.selectable), [true, false, true]);
   assert.deepEqual(rows.map(item => Number(item.percent.toFixed(1))), [20, 0, 80]);
   assert.deepEqual(rows.filter(item => item.selectable).map(item => item.segmentId), ['item-0', 'item-2']);
+});
+
+test('图表为每个色块生成项目和比例引导线，并避免同侧标签碰撞', () => {
+  const segments = assetLiabilityChartSegments(Array.from({ length: 18 }, (_, index) => ({ label: `项目${index + 1}`, amount: 190 - index * 7 })));
+  const labels = assetLiabilityChartLabels(segments);
+  assert.equal(labels.length, segments.length);
+  assert.deepEqual(labels.map(item => item.segmentId).sort(), segments.map(item => item.segmentId).sort());
+  labels.forEach(label => {
+    assert.ok(['left', 'right'].includes(label.side));
+    assert.ok(Number.isFinite(label.arcX) && Number.isFinite(label.arcY));
+    assert.ok(Number.isFinite(label.labelX) && Number.isFinite(label.labelY));
+    assert.equal(label.percent, segments.find(segment => segment.segmentId === label.segmentId).percent);
+  });
+  for (const side of ['left', 'right']) {
+    const positions = labels.filter(label => label.side === side).map(label => label.labelY).sort((a, b) => a - b);
+    positions.slice(1).forEach((position, index) => assert.ok(position - positions[index] >= 28.9));
+  }
 });
