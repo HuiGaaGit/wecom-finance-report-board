@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseAssetLiabilityAnalysis } from './asset-liability-analysis.mjs';
-import { assetLiabilityChartSegments } from './public/asset-liability-analysis.js';
+import { assetLiabilityChartSegments, assetLiabilityTableRows } from './public/asset-liability-analysis.js';
 
 const row = (number, values) => ({ row: number, cells: values });
 
@@ -90,4 +90,16 @@ test('图表只绘制正数项目，按金额排序并形成连续占比', () =>
   assert.deepEqual(segments.map(item => Number(item.percent.toFixed(1))), [60, 20, 20]);
   assert.deepEqual(segments.map(item => Number(item.offset.toFixed(1))), [0, 60, 80]);
   assert.equal(Number(segments.reduce((sum, item) => sum + item.percent, 0).toFixed(4)), 100);
+});
+
+test('源表明细保持上传顺序并与按金额排序的图表扇区稳定关联', () => {
+  const rows = assetLiabilityTableRows([
+    { label: '原表第一项', amount: 20, amountAvailable: true },
+    { label: '原表空金额项', amount: 0, amountAvailable: false, sourceValue: '—' },
+    { label: '原表第三项', amount: 80, amountAvailable: true }
+  ]);
+  assert.deepEqual(rows.map(item => item.label), ['原表第一项', '原表空金额项', '原表第三项']);
+  assert.deepEqual(rows.map(item => item.selectable), [true, false, true]);
+  assert.deepEqual(rows.map(item => Number(item.percent.toFixed(1))), [20, 0, 80]);
+  assert.deepEqual(rows.filter(item => item.selectable).map(item => item.segmentId), ['item-0', 'item-2']);
 });
