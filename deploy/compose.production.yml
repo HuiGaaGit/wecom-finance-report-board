@@ -5,8 +5,12 @@ services:
     build:
       context: ${FINANCE_SOURCE_DIR:-/data/repos/wecom-finance-report-board}
       dockerfile: Dockerfile
-    image: aqllm/finance-report-board:1.1.14
+      args:
+        APP_UID: 20117
+        APP_GID: 20117
+    image: aqllm/finance-report-board:1.1.25
     container_name: wecom-finance-report-board
+    user: "20117:20117"
     restart: unless-stopped
     env_file:
       - /data/secrets/wecom-finance-report-board/report-board.env
@@ -23,7 +27,7 @@ services:
       - finance-report-board
     read_only: true
     tmpfs:
-      - /tmp:size=64m,mode=1777
+      - /tmp:size=64m,mode=0700,uid=20117,gid=20117
     cap_drop:
       - ALL
     security_opt:

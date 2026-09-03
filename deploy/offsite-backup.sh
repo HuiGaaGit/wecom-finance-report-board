@@ -75,5 +75,5 @@ rsync "${rsync_options[@]}" "$stage_directory/manifests/" "$destination:manifest
 
 status_file="$data_root/backups/offsite-last-success.meta"
 printf 'timestamp=%s\ndatabase=%s\nupload_files=%s\nupload_bytes=%s\ndestination=%s\n' "$timestamp" "$backup_name" "$upload_count" "$upload_bytes" "$OFFSITE_HOST" >"$status_file"
-chmod 0640 "$status_file"
+chmod 0600 "$status_file"
 echo "异机备份完成：$timestamp · $backup_name · $upload_count 个上传文件"

@@ -1,3 +1,5 @@
+import { renderPermissionCenter } from './permission-center.js';
+
 const revenueProfitReportType = 'revenue_profit_consolidated_income_statement';
 const financialBriefModuleKey = 'financial_brief';
 const groupStatementReportTypes = new Set(['consolidated_income_statement', revenueProfitReportType]);
@@ -5,6 +7,8 @@ const reportPageTypes = ['balance_sheet', 'income_statement', 'consolidated_inco
 const revenueStatisticsReportType = 'revenue_statistics';
 const payrollStatementReportType = 'payroll_statement';
 const consultantRoiModuleKey = 'consultant_roi_analysis';
+const intercompanyModuleKey = 'intercompany_reconciliation';
+const activityLogModuleKey = 'activity_logs';
 const revenueDimensions = [{ key: 'group', name: '集团维度' }, { key: 'direct', name: '单独直客维度' }, { key: 'channel', name: '单独渠道维度' }];
 const state = { employeeKey: 'admin', bootstrap: null, page: 'home', reportType: 'balance_sheet', company: 'gz', period: '2026-06', periodExplicit: false, detailPeriod: '', detailAccountCodes: [], version: null, summary: null, raw: null, consolidatedEntityReportType: '', consolidatedEntitySheet: '', consolidatedExpanded: false, consolidatedScope: '', revenueDimension: 'group', revenueTable: 'B1', revenueExpanded: false };
 const consultantRoiView = {
@@ -14,13 +18,21 @@ const consultantRoiView = {
   sortDirection: 'desc'
 };
 let reportRequestRevision = 0;
+let pageRequestRevision = 0;
 const financialBriefAutoRefreshMs = 60_000;
 let financialBriefRefreshTimer = null;
 let financialBriefRefreshInFlight = false;
 let financialBriefRequestRevision = 0;
+const consultantRoiAutoRefreshMs = 60_000;
+let consultantRoiRefreshTimer = null;
+let consultantRoiRefreshInFlight = false;
+let consultantRoiRequestRevision = 0;
+let consultantRoiSourceRevision = '';
+let uploadHistoryRequestRevision = 0;
+let uploadHistoryMutationInFlight = false;
 const appBasePath = document.querySelector('meta[name="app-base-path"]')?.content || '';
+const expectedAppVersion = document.querySelector('meta[name="app-version"]')?.content || '';
 const platformLoginUrl = document.querySelector('meta[name="platform-login-url"]')?.content || '/platform/login';
-const platformApiBasePath = document.querySelector('meta[name="platform-api-base-path"]')?.content || '/api';
 const platformAuthStorageKey = 'aqllm_tob_auth';
 const platformReturnStorageKey = 'aqllm:safe-return-to';
 const appUrl = url => `${appBasePath}${String(url).startsWith('/') ? url : `/${url}`}`;
@@ -30,38 +42,28 @@ const money = value => `${Number(value || 0).toLocaleString('zh-CN', { maximumFr
 const reportNames = { balance_sheet: '资产负债表', income_statement: '利润表', consolidated_income_statement: '桉侨集团合并利润表', [revenueProfitReportType]: '（营收利润口径）合并利润表', [revenueStatisticsReportType]: '营收统计表', [payrollStatementReportType]: '每月工资表', cash_flow: '现金流量表', trial_balance: '科目余额表', journal: '序时账' };
 const showNotice = (message, error = false) => { const box = $('#notice'); box.textContent = message; box.classList.toggle('error', error); box.classList.remove('hidden'); window.clearTimeout(showNotice.timer); showNotice.timer = window.setTimeout(() => box.classList.add('hidden'), 3500); };
 const platformReturnPath = () => appBasePath.startsWith('/platform/') ? `${appBasePath.slice('/platform'.length)}/`.replace(/\/+/g, '/') : `${appBasePath || '/'}/`.replace(/\/+/g, '/');
-const redirectToPlatformLogin = () => {
+const readPlatformAccessToken = () => {
+  try {
+    const auth = JSON.parse(localStorage.getItem(platformAuthStorageKey) || 'null');
+    return typeof auth?.accessToken === 'string' && auth.accessToken.length <= 8192 ? auth.accessToken : '';
+  } catch { return ''; }
+};
+const redirectToPlatformLogin = (forceRefresh = false) => {
   try { sessionStorage.setItem(platformReturnStorageKey, platformReturnPath()); } catch {}
-  window.location.assign(platformLoginUrl);
-};
-const readPlatformAuth = () => {
-  try { return JSON.parse(localStorage.getItem(platformAuthStorageKey) || 'null'); }
-  catch { return null; }
-};
-const refreshPlatformAccessToken = async auth => {
-  if (!auth?.refreshToken) throw new Error('缺少小Q刷新凭证');
-  const response = await fetch(`${platformApiBasePath}/refresh-token`, {
-    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ refreshToken: auth.refreshToken }),
-  });
-  const payload = await response.json().catch(() => ({})); const data = payload?.data || payload;
-  if (!response.ok || !data?.accessToken || !data?.refreshToken || !data?.expires) throw new Error('小Q登录状态已失效');
-  const next = { ...auth, accessToken: data.accessToken, refreshToken: data.refreshToken, expires: data.expires };
-  localStorage.setItem(platformAuthStorageKey, JSON.stringify(next)); return next.accessToken;
+  const target = new URL(platformLoginUrl, window.location.href);
+  if (forceRefresh) target.searchParams.set('reauth', '1');
+  window.location.assign(target.href);
 };
 let platformSessionPromise = null;
 const ensurePlatformSession = () => {
   if (platformSessionPromise) return platformSessionPromise;
   platformSessionPromise = (async () => {
-    const auth = readPlatformAuth();
-    if (!auth?.accessToken) { redirectToPlatformLogin(); throw new Error('正在前往小Q登录'); }
+    const accessToken = readPlatformAccessToken();
+    if (!accessToken) { redirectToPlatformLogin(); throw new Error('正在前往小Q登录'); }
     const exchange = token => fetch(appUrl('/api/auth/platform-session'), { method: 'POST', headers: { authorization: `Bearer ${token}` } });
-    let response = await exchange(auth.accessToken);
-    if (response.status === 401 && auth.refreshToken) {
-      try { response = await exchange(await refreshPlatformAccessToken(auth)); }
-      catch { localStorage.removeItem(platformAuthStorageKey); redirectToPlatformLogin(); throw new Error('小Q登录状态已失效，正在重新登录'); }
-    }
+    const response = await exchange(accessToken);
     const payload = await response.json().catch(() => ({}));
-    if (response.status === 401) { localStorage.removeItem(platformAuthStorageKey); redirectToPlatformLogin(); throw new Error(payload.error || '小Q登录状态已失效'); }
+    if (response.status === 401) { redirectToPlatformLogin(true); throw new Error(payload.error || '小Q登录状态已失效'); }
     if (!response.ok) throw Object.assign(new Error(payload.error || `登录校验失败（${response.status}）`), { status: response.status });
     return payload;
   })().finally(() => { platformSessionPromise = null; });
@@ -71,7 +73,7 @@ const api = async (url, options = {}, authRetried = false) => {
   const headers = { ...(options.headers || {}) };
   if (state.bootstrap?.authMode === 'demo') headers['x-demo-employee'] = state.employeeKey;
   if (state.bootstrap?.authMode === 'platform' && url === '/api/admin/directory-sync') {
-    const accessToken = readPlatformAuth()?.accessToken;
+    const accessToken = readPlatformAccessToken();
     if (accessToken) headers.authorization = `Bearer ${accessToken}`;
   }
   const response = await fetch(appUrl(url), { ...options, headers });
@@ -79,6 +81,11 @@ const api = async (url, options = {}, authRetried = false) => {
   if (response.status === 401 && payload.loginUrl && !authRetried) { await ensurePlatformSession(); return api(url, options, true); }
   if (!response.ok) { const error = new Error(payload.error || `请求失败（${response.status}）`); Object.assign(error, payload, { status: response.status }); throw error; }
   return payload;
+};
+const assertCompatibleAppVersion = bootstrap => {
+  if (!expectedAppVersion || bootstrap?.appVersion === expectedAppVersion) return bootstrap;
+  const runtimeVersion = bootstrap?.appVersion ? `v${bootstrap.appVersion}` : '旧版服务';
+  throw Object.assign(new Error(`页面版本 v${expectedAppVersion} 与后台 ${runtimeVersion} 不一致。请重启财务看板服务并刷新页面后再操作，当前页面已停止提交数据。`), { code: 'APP_VERSION_MISMATCH', expectedAppVersion, runtimeVersion: bootstrap?.appVersion || '' });
 };
 const setActiveNav = () => {
   document.querySelectorAll('.nav-item').forEach(item => {
@@ -102,6 +109,7 @@ const pageHostFor = page => {
   if (reportPageTypes.includes(page)) return $('#report-page');
   if (page === 'journal_detail') return $('#detail-page');
   if (page === 'permissions') return $('#permissions-page');
+  if (page === activityLogModuleKey) return $('#activity-logs-page');
   if (page === 'uploads') return $('#uploads-page');
   if (page === 'database_admin') return $('#database-admin-page');
   if (page === 'cash_analysis') return $('#analysis-page');
@@ -109,17 +117,19 @@ const pageHostFor = page => {
   if (page === 'expense_analysis') return $('#expense-analysis-page');
   if (page === 'group_profit_analysis') return $('#group-profit-analysis-page');
   if (page === consultantRoiModuleKey) return $('#consultant-roi-analysis-page');
+  if (page === intercompanyModuleKey) return $('#intercompany-reconciliation-page');
   return null;
 };
 const syncPageVisibility = () => {
   const activeHost = pageHostFor(state.page);
-  document.querySelectorAll('.content > .page').forEach(page => page.classList.toggle('hidden', page !== activeHost));
+  document.querySelectorAll('.content > .page').forEach(page => { const hidden = page !== activeHost; page.classList.toggle('hidden', hidden); if (hidden) page.removeAttribute('aria-busy'); });
 };
 const restartPageArrival = () => {
   const activeHost = pageHostFor(state.page); if (!activeHost) return;
-  if (window.matchMedia?.('(max-width: 900px)').matches || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) { activeHost.classList.remove('page-entering'); return; }
-  activeHost.classList.remove('page-entering'); void activeHost.offsetWidth; activeHost.classList.add('page-entering');
-  activeHost.addEventListener('animationend', () => activeHost.classList.remove('page-entering'), { once: true });
+  activeHost.getAnimations?.().filter(animation => animation.id === 'page-arrival').forEach(animation => animation.cancel());
+  if (window.matchMedia?.('(max-width: 900px)').matches || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+  const animation = activeHost.animate([{ opacity: .72, transform: 'translateY(4px)' }, { opacity: 1, transform: 'translateY(0)' }], { duration: 190, easing: 'cubic-bezier(.2,.78,.28,1)' });
+  animation.id = 'page-arrival';
 };
 const navigateToPage = page => { state.page = page; state.version = null; syncPageVisibility(); setActiveNav(); refresh({ reloadBootstrap: false }); };
 const openConsolidatedParent = reportType => {
@@ -157,8 +167,8 @@ const revealActiveNav = nav => {
     else scroller.scrollLeft = left;
   });
 };
-const currentCompanyName = () => state.bootstrap?.companies.find(item => item.key === state.company)?.name || state.company;
-const sharePageNames = { home: '首页', [financialBriefModuleKey]: '财务数据简报', cash_analysis: '资产净额分析', main_business_analysis: '主营业务分析', expense_analysis: '费用分析', group_profit_analysis: '集团合并利润趋势图', uploads: '上传报表', database_admin: '数据库管理', permissions: '权限管理', journal_detail: '序时账明细', ...reportNames };
+const currentCompanyName = () => state.bootstrap?.companies.find(item => item.key === state.company)?.name || (state.bootstrap?.companies?.length ? state.company : '未选择公司');
+const sharePageNames = { home: '首页', [financialBriefModuleKey]: '财务数据简报', cash_analysis: '资产净额分析', main_business_analysis: '主营业务分析', expense_analysis: '费用分析', group_profit_analysis: '集团合并利润趋势图', [intercompanyModuleKey]: '各公司往来校验', uploads: '上传报表', [activityLogModuleKey]: '浏览日志', database_admin: '数据库管理', permissions: '权限管理', journal_detail: '序时账明细', ...reportNames };
 const shareCardData = () => {
   const moduleName = sharePageNames[state.page] || '财务报表看板';
   const scope = state.bootstrap && state.page !== 'home' ? `${currentCompanyName()} · ${state.period}` : '企业微信安全访问';
@@ -268,17 +278,17 @@ function bindSidebarModuleOrder(nav) {
 function animateAnalysisReflow(container, mutate) {
   const blocks = [...container.querySelectorAll(':scope > [data-analysis-block]')];
   const firstRects = new Map(blocks.map(block => [block, block.getBoundingClientRect()]));
-  blocks.forEach(block => block.getAnimations?.().forEach(animation => animation.cancel()));
   mutate();
   if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
   blocks.forEach(block => {
     const first = firstRects.get(block); const last = block.getBoundingClientRect(); const dx = first.left - last.left; const dy = first.top - last.top;
     if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
-    block.animate([
+    const animation = block.animate([
       { transform: `translate(${dx}px, ${dy}px)` },
-      { transform: `translate(${-dx * 0.035}px, ${-dy * 0.035}px)`, offset: 0.78 },
+      { transform: `translate(${-dx * 0.025}px, ${-dy * 0.025}px)`, offset: 0.82 },
       { transform: 'translate(0, 0)' }
-    ], { duration: 360, easing: 'cubic-bezier(.2,.82,.24,1)', fill: 'both' });
+    ], { duration: 260, easing: 'cubic-bezier(.2,.82,.24,1)' });
+    animation.id = 'analysis-reflow';
   });
 }
 
@@ -303,6 +313,11 @@ function applyAnalysisBlockLayout(container, pageKey) {
   [...new Set([...saved, ...blocks.map(block => block.dataset.analysisBlock)])].forEach(key => { const block = byKey.get(key); if (block && block.parentElement === container) container.appendChild(block); });
   const collapsedBlocks = readCollapsedAnalysisBlocks(pageKey);
   const canReorder = state.bootstrap?.canManagePermissions === true;
+  const fullOrderFor = visibleOrder => {
+    const complete = state.bootstrap?.analysisBlockOrder?.[pageKey] || [];
+    const visible = new Set(visibleOrder); let cursor = 0;
+    return complete.map(key => visible.has(key) ? visibleOrder[cursor++] : key);
+  };
   if (canReorder) container.classList.add('analysis-layout-editable');
   blocks.forEach(block => {
     block.classList.add('analysis-layout-block');
@@ -328,11 +343,13 @@ function applyAnalysisBlockLayout(container, pageKey) {
     const handle = document.createElement('button');
     handle.type = 'button'; handle.className = 'analysis-drag-handle'; handle.setAttribute('aria-label', `拖动${label}`); handle.title = '按住拖动调整位置'; handle.innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="7" cy="5" r="1.25"/><circle cx="13" cy="5" r="1.25"/><circle cx="7" cy="10" r="1.25"/><circle cx="13" cy="10" r="1.25"/><circle cx="7" cy="15" r="1.25"/><circle cx="13" cy="15" r="1.25"/></svg>';
     overlay.appendChild(handle); block.appendChild(overlay);
-    let active = null; let moved = false;
+    let active = null; let moved = false; let moveFrame = 0; let latestPointer = null;
     const finish = event => {
       if (!active) return;
+      if (moveFrame) { cancelAnimationFrame(moveFrame); moveFrame = 0; }
       handle.releasePointerCapture?.(event.pointerId); active.classList.remove('analysis-block-dragging'); container.classList.remove('dragging');
-      const order = [...container.querySelectorAll(':scope > [data-analysis-block]')].map(item => item.dataset.analysisBlock); active = null;
+      if (moved && !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) block.animate([{ transform: 'scale(.992)' }, { transform: 'scale(1.006)', offset: .55 }, { transform: 'scale(1)' }], { duration: 180, easing: 'cubic-bezier(.2,.8,.25,1)' });
+      const visibleOrder = [...container.querySelectorAll(':scope > [data-analysis-block]')].map(item => item.dataset.analysisBlock); const order = fullOrderFor(visibleOrder); active = null; latestPointer = null;
       if (!moved) return;
       api('/api/admin/analysis-block-order', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ pageKey, order }) })
         .then(result => { state.bootstrap.analysisBlockOrder[pageKey] = result.order; showNotice('分析板块顺序已保存'); })
@@ -341,25 +358,29 @@ function applyAnalysisBlockLayout(container, pageKey) {
     handle.addEventListener('pointerdown', event => { event.preventDefault(); active = block; moved = false; handle.setPointerCapture?.(event.pointerId); block.classList.add('analysis-block-dragging'); container.classList.add('dragging'); });
     handle.addEventListener('pointermove', event => {
       if (!active) return;
-      event.preventDefault();
-      const target = document.elementFromPoint(event.clientX, event.clientY)?.closest?.('[data-analysis-block]');
-      if (!target || target === active || target.parentElement !== container) return;
-      const rect = target.getBoundingClientRect(); const activeRect = active.getBoundingClientRect(); const sameRow = Math.abs(rect.top - activeRect.top) < Math.min(rect.height, activeRect.height) / 2; const after = sameRow ? event.clientX > rect.left + rect.width / 2 : event.clientY > rect.top + rect.height / 2;
-      const placement = after ? target.nextElementSibling : target; if (placement === active || (!after && active.nextElementSibling === target)) return;
-      animateAnalysisReflow(container, () => container.insertBefore(active, placement)); moved = true;
+      event.preventDefault(); latestPointer = { x: event.clientX, y: event.clientY };
+      if (moveFrame) return;
+      moveFrame = requestAnimationFrame(() => {
+        moveFrame = 0; if (!active || !latestPointer) return;
+        const { x, y } = latestPointer; const target = document.elementFromPoint(x, y)?.closest?.('[data-analysis-block]');
+        if (!target || target === active || target.parentElement !== container) return;
+        const rect = target.getBoundingClientRect(); const activeRect = active.getBoundingClientRect(); const sameRow = Math.abs(rect.top - activeRect.top) < Math.min(rect.height, activeRect.height) / 2; const after = sameRow ? x > rect.left + rect.width / 2 : y > rect.top + rect.height / 2;
+        const placement = after ? target.nextElementSibling : target; if (placement === active || (!after && active.nextElementSibling === target)) return;
+        animateAnalysisReflow(container, () => container.insertBefore(active, placement)); moved = true;
+      });
     });
     handle.addEventListener('pointerup', finish); handle.addEventListener('pointercancel', finish);
   });
 }
 
 async function loadBootstrap() {
-  let bootstrap = await api(`/api/bootstrap?company=${encodeURIComponent(state.company)}&period=${encodeURIComponent(state.period)}`);
+  let bootstrap = assertCompatibleAppVersion(await api(`/api/bootstrap?company=${encodeURIComponent(state.company)}&period=${encodeURIComponent(state.period)}`));
   const nextCompany = bootstrap.companies.some(item => item.key === state.company) ? state.company : bootstrap.companies[0]?.key;
   const companyPeriods = bootstrap.availablePeriodsByCompany?.[nextCompany] || [];
   const nextPeriod = state.periodExplicit && companyPeriods.includes(state.period) ? state.period : (companyPeriods[0] || state.period);
   if (nextCompany && (nextCompany !== state.company || nextPeriod !== state.period)) {
     state.company = nextCompany; state.period = nextPeriod;
-    bootstrap = await api(`/api/bootstrap?company=${encodeURIComponent(state.company)}&period=${encodeURIComponent(state.period)}`);
+    bootstrap = assertCompatibleAppVersion(await api(`/api/bootstrap?company=${encodeURIComponent(state.company)}&period=${encodeURIComponent(state.period)}`));
   }
   state.periodExplicit = true;
   state.bootstrap = bootstrap;
@@ -441,6 +462,7 @@ function bindHomeCompanyReorder(container) {
 function renderHome() {
   const page = $('#home-page');
   const canReorderCompanies = state.bootstrap?.canReorderCompanies === true;
+  const hasCompanies = state.bootstrap.companies.length > 0;
   const periods = availablePeriods();
   const periodGroups = Object.entries(periods.reduce((groups, period) => {
     const [year, month] = String(period).split('-');
@@ -451,11 +473,11 @@ function renderHome() {
     const count = state.bootstrap.availablePeriodsByCompany?.[company.key]?.length || 0;
     const selected = company.key === state.company;
     return `<button type="button" class="home-company-option ${selected ? 'selected' : ''}" data-home-company="${escapeHtml(company.key)}" role="radio" aria-checked="${selected}"${canReorderCompanies ? ' aria-roledescription="可长按拖动排序的公司卡片"' : ''}><span class="home-company-mark tone-${index % 3}">${escapeHtml(company.name.slice(0, 2))}</span><span class="home-company-copy"><strong>${escapeHtml(company.name)}</strong><small>${count ? `${count} 个可用期间` : '暂无已发布数据'}</small></span><span class="home-choice-check" aria-hidden="true">✓</span></button>`;
-  }).join('');
-  const periodOptions = periodGroups.length ? periodGroups.map(([year, items]) => `<div class="home-period-year"><strong>${escapeHtml(year)}</strong><div class="home-period-options">${items.map(item => `<button type="button" class="home-period-option ${item.value === state.period ? 'selected' : ''}" data-home-period="${escapeHtml(item.value)}" aria-pressed="${item.value === state.period}"><span>${escapeHtml(item.month)}月</span><small>${escapeHtml(item.value)}</small></button>`).join('')}</div></div>`).join('') : '<div class="home-period-empty"><span>—</span><strong>暂无可用期间</strong><small>请先上传并发布当前公司的财务报表</small></div>';
+  }).join('') || '<div class="home-period-empty"><span>—</span><strong>暂无可查看数据</strong><small>请联系财务管理员配置数据范围</small></div>';
+  const periodOptions = periodGroups.length ? periodGroups.map(([year, items]) => `<div class="home-period-year"><strong>${escapeHtml(year)}</strong><div class="home-period-options">${items.map(item => `<button type="button" class="home-period-option ${item.value === state.period ? 'selected' : ''}" data-home-period="${escapeHtml(item.value)}" aria-pressed="${item.value === state.period}"><span>${escapeHtml(item.month)}月</span><small>${escapeHtml(item.value)}</small></button>`).join('')}</div></div>`).join('') : `<div class="home-period-empty"><span>—</span><strong>${hasCompanies ? '暂无可用期间' : '暂无可查看数据'}</strong><small>${hasCompanies ? '请先上传并发布当前公司的财务报表' : '数据范围配置完成后，可用期间将在此显示'}</small></div>`;
   const reportKeys = new Set((state.bootstrap.reportTypes || []).map(item => item.key));
   const nextModule = state.bootstrap.modules.find(item => item.key === financialBriefModuleKey || reportKeys.has(item.key));
-  page.innerHTML = `<section class="home-stage"><div class="home-ambient home-ambient-one"></div><div class="home-ambient home-ambient-two"></div><header class="home-heading"><span class="home-eyebrow">FINANCE WORKSPACE</span><h1>选择本次查看范围</h1><p>先确定公司与会计期间，进入后所有报表和分析将保持同一数据口径。</p></header><div class="home-scope-card"><section class="home-scope-section"><div class="home-step-title"><span>01</span><div><strong>选择公司</strong><small>${canReorderCompanies ? '按当前员工的数据权限显示 · 长按公司卡片可调整全局顺序' : '按当前员工的数据权限显示'}</small></div></div><div class="home-company-options" role="radiogroup" aria-label="选择公司">${companies}</div></section><div class="home-scope-divider" aria-hidden="true"><span></span></div><section class="home-scope-section"><div class="home-step-title"><span>02</span><div><strong>选择期间</strong><small>仅列出已有已发布数据的月份</small></div></div><div class="home-period-list">${periodOptions}</div></section><footer class="home-confirm-bar"><div class="home-current-scope"><span>当前查看范围</span><strong>${escapeHtml(currentCompanyName())}</strong><i></i><strong>${periods.length ? escapeHtml(state.period) : '未选择期间'}</strong></div><button type="button" class="home-enter-button" ${!nextModule || !periods.length ? 'disabled' : ''}><span>开始浏览报表</span><b aria-hidden="true">→</b></button></footer></div></section>`;
+  page.innerHTML = `<section class="home-stage"><div class="home-ambient home-ambient-one"></div><div class="home-ambient home-ambient-two"></div><header class="home-heading"><span class="home-eyebrow">FINANCE WORKSPACE</span><h1>选择本次查看范围</h1><p>先确定公司与会计期间，进入后所有报表和分析将保持同一数据口径。</p></header><div class="home-scope-card"><section class="home-scope-section"><div class="home-step-title"><span>01</span><div><strong>选择公司</strong><small>${canReorderCompanies ? '按当前员工的数据权限显示 · 长按公司卡片可调整全局顺序' : '按当前员工的数据权限显示'}</small></div></div><div class="home-company-options" role="radiogroup" aria-label="选择公司">${companies}</div></section><div class="home-scope-divider" aria-hidden="true"><span></span></div><section class="home-scope-section"><div class="home-step-title"><span>02</span><div><strong>选择期间</strong><small>仅列出已有已发布数据的月份</small></div></div><div class="home-period-list">${periodOptions}</div></section><footer class="home-confirm-bar"><div class="home-current-scope"><span>当前查看范围</span><strong>${escapeHtml(hasCompanies ? currentCompanyName() : '未选择公司')}</strong><i></i><strong>${periods.length ? escapeHtml(state.period) : '未选择期间'}</strong></div><button type="button" class="home-enter-button" ${!nextModule || !periods.length ? 'disabled' : ''}><span>开始浏览报表</span><b aria-hidden="true">→</b></button></footer></div></section>`;
   page.querySelectorAll('[data-home-company]').forEach(button => button.onclick = async () => {
     state.company = button.dataset.homeCompany;
     state.periodExplicit = false;
@@ -533,6 +555,17 @@ const scheduleFinancialBriefAutoRefresh = () => {
     else scheduleFinancialBriefAutoRefresh();
   }, financialBriefAutoRefreshMs);
 };
+const clearConsultantRoiAutoRefresh = () => { window.clearTimeout(consultantRoiRefreshTimer); consultantRoiRefreshTimer = null; };
+const scheduleConsultantRoiAutoRefresh = () => {
+  clearConsultantRoiAutoRefresh();
+  if (state.page !== consultantRoiModuleKey) return;
+  consultantRoiRefreshTimer = window.setTimeout(() => {
+    consultantRoiRefreshTimer = null;
+    if (state.page !== consultantRoiModuleKey) return;
+    if (document.visibilityState === 'visible') renderConsultantRoiInteractive({ trigger: 'auto' });
+    else scheduleConsultantRoiAutoRefresh();
+  }, consultantRoiAutoRefreshMs);
+};
 
 async function renderFinancialBrief({ trigger = 'initial' } = {}) {
   const page = $('#financial-brief-page');
@@ -565,11 +598,11 @@ async function renderFinancialBrief({ trigger = 'initial' } = {}) {
 
 async function renderCashAnalysis() {
   const page = $('#analysis-page');
+  const revision = pageRequestRevision; const scope = { company: state.company, period: state.period };
   try {
-    const [analysis, cashFlow] = await Promise.all([
-      api(`/api/analysis/cash-flow?company=${encodeURIComponent(state.company)}&period=${encodeURIComponent(state.period)}&year=${encodeURIComponent(state.period.slice(0, 4))}`),
-      api(`/api/reports/cash_flow/summary?company=${encodeURIComponent(state.company)}&period=${encodeURIComponent(state.period)}`).catch(() => ({ lines: [] }))
-    ]);
+    const analysis = await api(`/api/analysis/cash-flow?company=${encodeURIComponent(scope.company)}&period=${encodeURIComponent(scope.period)}&year=${encodeURIComponent(scope.period.slice(0, 4))}`);
+    if (revision !== pageRequestRevision || state.page !== 'cash_analysis' || state.company !== scope.company || state.period !== scope.period) return;
+    const cashFlow = { lines: [] };
     if (analysis.source?.noData) { renderMissingData(page, '资产净额分析', '科目余额表'); return; }
     const m = analysis.metrics || {}; const positions = analysis.internalPositions || []; const cashAccounts = analysis.cashAccounts || []; const otherItems = analysis.otherCurrentItems || []; const trend = analysis.monthlyTrend || [];
     const amountClass = value => Number(value || 0) < 0 ? 'negative' : 'positive'; const amountText = value => `${Number(value || 0) < 0 ? '-' : ''}¥${statementAmount(Math.abs(Number(value || 0)))}`;
@@ -616,7 +649,7 @@ async function renderCashAnalysis() {
     const trendPanel = page.querySelector('.core-liquidity-trend-panel'); if (trendPanel) { trendPanel.dataset.analysisBlock = 'core_liquidity_trend'; trendPanel.classList.add('analysis-span-12'); layout.appendChild(trendPanel); }
     applyAnalysisBlockLayout(layout, 'cash_analysis');
     bindCommonFilters(); document.querySelectorAll('[data-analysis-search]').forEach(button => button.onclick = () => { state.reportType = 'trial_balance'; openRawDetail(button.dataset.analysisSearch, '', String(button.dataset.analysisCodes || '').split(',').filter(Boolean)); });
-  } catch (error) { page.innerHTML = `<div class="page-title"><div><h1>资产净额分析</h1><p>${escapeHtml(currentCompanyName())} · ${state.period}</p></div>${filterHtml()}</div><div class="empty">${escapeHtml(error.message)}</div>`; bindCommonFilters(); }
+  } catch (error) { if (revision !== pageRequestRevision || state.page !== 'cash_analysis') return; page.innerHTML = `<div class="page-title"><div><h1>资产净额分析</h1><p>${escapeHtml(currentCompanyName())} · ${state.period}</p></div>${filterHtml()}</div><div class="empty">${escapeHtml(error.message)}</div>`; bindCommonFilters(); }
 }
 
 const businessCurrency = value => `¥${Number(value || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -701,15 +734,17 @@ async function renderGroupProfitAnalysis() {
 
 async function renderMainBusinessAnalysis() {
   const page = $('#business-analysis-page');
+  const revision = pageRequestRevision; const scope = { company: state.company, period: state.period };
   try {
-    const analysis = await api(`/api/analysis/main-business?company=${encodeURIComponent(state.company)}&period=${encodeURIComponent(state.period)}&year=${encodeURIComponent(state.period.slice(0, 4))}`);
+    const analysis = await api(`/api/analysis/main-business?company=${encodeURIComponent(scope.company)}&period=${encodeURIComponent(scope.period)}&year=${encodeURIComponent(scope.period.slice(0, 4))}`);
+    if (revision !== pageRequestRevision || state.page !== 'main_business_analysis' || state.company !== scope.company || state.period !== scope.period) return;
     if (analysis.source?.noData) { renderMissingData(page, '主营业务分析', '序时账'); return; }
     const detailRows = analysis.detailRows || []; const projectRows = analysis.projectRows || []; const trend = analysis.monthlyTrend || [];
     const revenue = analysis.current?.revenue || 0; const cost = analysis.current?.cost || 0; const gross = revenue - cost; const projectMax = Math.max(...projectRows.flatMap(row => [row.currentProjectCount, row.previousProjectCount]), 1);
     const sourceText = `${analysis.source?.fileName || '—'} · ${analysis.source?.sourceSheet || '—'}${analysis.source?.demo ? ' · 演示原始资料，上传后自动切换为发布批次' : ` · 上传批次 ${analysis.source?.uploadKey || '—'}`}`;
     const detailHtml = detailRows.map(row => `<tr><td class="num">${row.index}</td><td>${escapeHtml(row.contractNo)}</td><td>${escapeHtml(row.customerName || '未识别客户')}</td><td>${escapeHtml(row.projectName)}</td><td class="num">${businessCurrency(row.revenue)}</td><td class="num">${businessCurrency(row.cost)}</td><td class="num ${row.grossMargin !== null && row.grossMargin < 0 ? 'negative' : 'positive'}">${businessRate(row.grossMargin)}</td></tr>`).join('');
     const projectHtml = projectRows.map(row => { const diff = row.currentProjectCount - row.previousProjectCount; return `<tr><td>${escapeHtml(row.projectName)}</td><td class="project-gauge-cell"><div class="project-gauge current"><span class="project-gauge-fill" style="width:${row.currentProjectCount / projectMax * 100}%"></span><strong>${row.currentProjectCount}</strong></div></td><td class="project-gauge-cell"><div class="project-gauge previous"><span class="project-gauge-fill" style="width:${row.previousProjectCount / projectMax * 100}%"></span><strong>${row.previousProjectCount}</strong></div></td><td class="num ${diff >= 0 ? 'positive' : 'negative'}">${row.changeRate === null ? (row.currentProjectCount ? '新增' : '—') : `${row.changeRate >= 0 ? '+' : ''}${businessRate(row.changeRate)}`}</td></tr>`; }).join('');
-    page.innerHTML = `<div class="page-title"><div><h1>主营业务分析</h1><p>${escapeHtml(analysis.company || currentCompanyName())} · ${escapeHtml(analysis.period)} · 本期确认口径</p></div>${filterHtml()}</div><section class="analysis-source business-source"><strong>数据来源</strong><span>${escapeHtml(sourceText)}</span><small>收入取主营业务收入贷方，成本取主营业务成本借方；项目数量按唯一合同编号统计，上期为 ${escapeHtml(analysis.previousPeriod || '—')}。</small></section><div class="card-grid business-card-grid"><div class="card business-card revenue-card"><div class="metric-label">本期确认收入</div><div class="metric-value">${businessCurrency(revenue)}</div><div class="metric-change">主营业务收入贷方</div></div><div class="card business-card cost-card"><div class="metric-label">本期确认成本</div><div class="metric-value">${businessCurrency(cost)}</div><div class="metric-change">主营业务成本借方</div></div><div class="card business-card gross-card"><div class="metric-label">本期毛利</div><div class="metric-value ${gross < 0 ? 'negative' : 'positive'}">${businessCurrency(gross)}</div><div class="metric-change">收入 − 成本</div></div><div class="card business-card"><div class="metric-label">确认项目数</div><div class="metric-value">${detailRows.length}</div><div class="metric-change">按合同与项目归类</div></div></div><section class="panel business-panel"><div class="toolbar"><div><h2>本月确认的项目主营业务收入成本</h2><div class="panel-sub">毛利率 =（本期确认收入 − 本期确认成本）÷ 本期确认收入</div></div></div><div class="table-wrap"><table class="data-table business-detail-table"><thead><tr><th>序号</th><th>合同编号</th><th>项目名称</th><th>本期确认收入</th><th>本期确认成本</th><th>毛利率</th></tr></thead><tbody>${detailHtml || '<tr><td colspan="6" class="empty">当前期间暂无主营业务分录</td></tr>'}</tbody></table></div></section><div class="two-col business-project-grid"><section class="panel business-panel"><div class="toolbar"><div><h2>项目数量变化</h2><div class="panel-sub">按项目名称归类，比较本期与上期项目数量</div></div></div><div class="table-wrap"><table class="data-table business-project-table"><thead><tr><th>项目名称</th><th>本期项目数量</th><th>上期项目数量</th><th>变动比率</th></tr></thead><tbody>${projectHtml || '<tr><td colspan="4" class="empty">暂无项目数量变化</td></tr>'}</tbody></table></div></section><section class="panel business-panel"><div class="project-chart-title"><span>项目数量对比</span><small><i class="legend-dot current"></i>本期　<i class="legend-dot previous"></i>上期</small></div><div class="business-project-bars">${projectRows.slice(0, 8).map(row => `<div class="project-bar-row"><div class="bar-label" title="${escapeHtml(row.projectName)}">${escapeHtml(row.projectName)}</div><div class="bar-track"><div class="bar-fill project-current-fill" style="width:${row.currentProjectCount / projectMax * 100}%"></div></div><strong>${row.currentProjectCount}</strong><div class="bar-track"><div class="bar-fill project-previous-fill" style="width:${row.previousProjectCount / projectMax * 100}%"></div></div><strong>${row.previousProjectCount}</strong></div>`).join('') || '<div class="empty">暂无项目数量数据</div>'}</div></section></div><section class="panel business-panel business-trend-panel"><div class="toolbar"><div><h2>${escapeHtml(analysis.year)} 年主营业务毛利月度变动</h2><div class="panel-sub">仅展示毛利主线，并按毛利自身区间突出月度态势变化</div></div></div>${businessTrendSvg(trend)}</section>${analysis.warnings?.length ? `<div class="business-warning">⚠ ${analysis.warnings.map(item => escapeHtml(item)).join('；')}</div>` : ''}`;
+    page.innerHTML = `<div class="page-title"><div><h1>主营业务分析</h1><p>${escapeHtml(analysis.company || currentCompanyName())} · ${escapeHtml(analysis.period)} · 本期确认口径</p></div>${filterHtml()}</div><section class="analysis-source business-source"><strong>数据来源</strong><span>${escapeHtml(sourceText)}</span><small>收入取主营业务收入贷方，成本取主营业务成本借方；项目数量按唯一合同编号统计，上期为 ${escapeHtml(analysis.previousPeriod || '—')}。</small></section><div class="card-grid business-card-grid"><div class="card business-card revenue-card"><div class="metric-label">本期确认收入</div><div class="metric-value">${businessCurrency(revenue)}</div><div class="metric-change">主营业务收入贷方</div></div><div class="card business-card cost-card"><div class="metric-label">本期确认成本</div><div class="metric-value">${businessCurrency(cost)}</div><div class="metric-change">主营业务成本借方</div></div><div class="card business-card gross-card"><div class="metric-label">本期毛利</div><div class="metric-value ${gross < 0 ? 'negative' : 'positive'}">${businessCurrency(gross)}</div><div class="metric-change">收入 − 成本</div></div><div class="card business-card"><div class="metric-label">确认项目数</div><div class="metric-value">${Number(analysis.current?.projectCount || 0)}</div><div class="metric-change">按合同与项目归类</div></div></div><section class="panel business-panel"><div class="toolbar"><div><h2>本月确认的项目主营业务收入成本</h2><div class="panel-sub">毛利率 =（本期确认收入 − 本期确认成本）÷ 本期确认收入</div></div></div><div class="table-wrap"><table class="data-table business-detail-table"><thead><tr><th>序号</th><th>合同编号</th><th>项目名称</th><th>本期确认收入</th><th>本期确认成本</th><th>毛利率</th></tr></thead><tbody>${detailHtml || '<tr><td colspan="6" class="empty">当前期间暂无主营业务分录</td></tr>'}</tbody></table></div></section><div class="two-col business-project-grid"><section class="panel business-panel"><div class="toolbar"><div><h2>项目数量变化</h2><div class="panel-sub">按项目名称归类，比较本期与上期项目数量</div></div></div><div class="table-wrap"><table class="data-table business-project-table"><thead><tr><th>项目名称</th><th>本期项目数量</th><th>上期项目数量</th><th>变动比率</th></tr></thead><tbody>${projectHtml || '<tr><td colspan="4" class="empty">暂无项目数量变化</td></tr>'}</tbody></table></div></section><section class="panel business-panel"><div class="project-chart-title"><span>项目数量对比</span><small><i class="legend-dot current"></i>本期　<i class="legend-dot previous"></i>上期</small></div><div class="business-project-bars">${projectRows.slice(0, 8).map(row => `<div class="project-bar-row"><div class="bar-label" title="${escapeHtml(row.projectName)}">${escapeHtml(row.projectName)}</div><div class="bar-track"><div class="bar-fill project-current-fill" style="width:${row.currentProjectCount / projectMax * 100}%"></div></div><strong>${row.currentProjectCount}</strong><div class="bar-track"><div class="bar-fill project-previous-fill" style="width:${row.previousProjectCount / projectMax * 100}%"></div></div><strong>${row.previousProjectCount}</strong></div>`).join('') || '<div class="empty">暂无项目数量数据</div>'}</div></section></div><section class="panel business-panel business-trend-panel"><div class="toolbar"><div><h2>${escapeHtml(analysis.year)} 年主营业务毛利月度变动</h2><div class="panel-sub">仅展示毛利主线，并按毛利自身区间突出月度态势变化</div></div></div>${businessTrendSvg(trend)}</section>${analysis.warnings?.length ? `<div class="business-warning">⚠ ${analysis.warnings.map(item => escapeHtml(item)).join('；')}</div>` : ''}`;
     const detailHeader = page.querySelector('.business-detail-table thead tr'); detailHeader?.querySelector('th:nth-child(2)')?.insertAdjacentHTML('afterend', '<th>客户名称</th>');
     const detailEmpty = page.querySelector('.business-detail-table td.empty'); if (detailEmpty) detailEmpty.colSpan = 7;
     const projectGrid = page.querySelector('.business-project-grid');
@@ -725,7 +760,7 @@ async function renderMainBusinessAnalysis() {
     const trendPanel = page.querySelector('.business-trend-panel'); if (trendPanel) { trendPanel.dataset.analysisBlock = 'gross_trend'; trendPanel.classList.add('analysis-span-12'); layout.appendChild(trendPanel); }
     applyAnalysisBlockLayout(layout, 'main_business_analysis');
     bindCommonFilters();
-  } catch (error) { page.innerHTML = `<div class="page-title"><div><h1>主营业务分析</h1><p>${escapeHtml(currentCompanyName())} · ${state.period}</p></div>${filterHtml()}</div><div class="empty">${escapeHtml(error.message)}</div>`; bindCommonFilters(); }
+  } catch (error) { if (revision !== pageRequestRevision || state.page !== 'main_business_analysis') return; page.innerHTML = `<div class="page-title"><div><h1>主营业务分析</h1><p>${escapeHtml(currentCompanyName())} · ${state.period}</p></div>${filterHtml()}</div><div class="empty">${escapeHtml(error.message)}</div>`; bindCommonFilters(); }
 }
 
 const expenseMoney = value => `¥${Number(value || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -777,12 +812,13 @@ const consultantRoiNumberFilterMatches = (value, filter) => {
   }
   const exact = Number(text); return Number.isFinite(exact) ? Number(value) === exact : String(value ?? '').includes(text);
 };
-const consultantRoiRowsForView = rawRows => {
-  const rows = (rawRows || []).map(row => {
+const consultantRoiRowsWithSelectedInputs = rawRows => (rawRows || []).map(row => {
     const input = consultantRoiInputDefinitions.reduce((sum, item) => sum + (consultantRoiView.inputs[item.key] ? Number(row[item.key] || 0) : 0), 0);
     const output = Number(row.output || 0); const matchLabel = consultantRoiMatchLabel(row.matchStatus);
     return { ...row, input, output, roi: input ? output / input : null, matchLabel, sourceText: consultantRoiSourceText(row) };
-  }).filter(row => consultantRoiColumns.every(column => {
+  });
+const consultantRoiRowsForView = rawRows => {
+  const rows = consultantRoiRowsWithSelectedInputs(rawRows).filter(row => consultantRoiColumns.every(column => {
     const filter = consultantRoiView.filters[column.key]; if (!filter) return true;
     if (column.type === 'number') return consultantRoiNumberFilterMatches(row[column.key], filter);
     return String(row[column.key] ?? '').toLocaleLowerCase('zh-CN').includes(String(filter).toLocaleLowerCase('zh-CN'));
@@ -793,6 +829,19 @@ const consultantRoiRowsForView = rawRows => {
     const compared = column.type === 'number' ? (Number(left ?? -Infinity) - Number(right ?? -Infinity)) : String(left ?? '').localeCompare(String(right ?? ''), 'zh-CN', { numeric: true });
     return compared * direction || String(a.name).localeCompare(String(b.name), 'zh-CN');
   });
+};
+const consultantRoiAverageSummary = rawRows => {
+  const rows = consultantRoiRowsWithSelectedInputs(rawRows); const valid = rows.filter(row => row.input > 0 && Number.isFinite(row.roi));
+  const averageRoi = valid.length ? valid.reduce((sum, row) => sum + row.roi, 0) / valid.length : null; const regions = new Map();
+  const ensureRegion = name => { const key = String(name || '待补充').trim() || '待补充'; if (!regions.has(key)) regions.set(key, { region: key, input: 0, output: 0, consultants: new Set() }); return regions.get(key); };
+  for (const row of rows) {
+    const revenueByRegion = new Map();
+    for (const detail of row.revenueDetails || []) { const region = String(detail.region || '待补充').trim() || '待补充'; revenueByRegion.set(region, (revenueByRegion.get(region) || 0) + Number(detail.expectedRevenue || 0)); }
+    const attributedOutput = [...revenueByRegion.values()].reduce((sum, value) => sum + value, 0);
+    if (attributedOutput > 0) for (const [region, output] of revenueByRegion) { const item = ensureRegion(region); item.output += output; item.input += row.input * output / attributedOutput; item.consultants.add(row.canonicalName || row.name); }
+    else { const item = ensureRegion(row.region || '待补充'); item.input += row.input; item.output += row.output; item.consultants.add(row.canonicalName || row.name); }
+  }
+  return { averageRoi, consultantCount: valid.length, regions: [...regions.values()].map(item => ({ region: item.region, input: item.input, output: item.output, roi: item.input ? item.output / item.input : null, consultantCount: item.consultants.size })).sort((a, b) => b.output - a.output || b.input - a.input) };
 };
 const consultantRoiFilterHtml = column => column.type === 'status'
   ? `<select data-roi-filter="${column.key}" aria-label="筛选${column.label}"><option value="">全部</option>${['已匹配', '缺工资', '缺营收'].map(value => `<option value="${value}" ${consultantRoiView.filters[column.key] === value ? 'selected' : ''}>${value}</option>`).join('')}</select>`
@@ -817,38 +866,120 @@ async function renderConsultantRoiAnalysis() {
   } catch (error) { page.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`; }
 }
 
-async function renderConsultantRoiInteractive() {
+async function renderConsultantRoiInteractive({ trigger = 'initial' } = {}) {
   const page = $('#consultant-roi-analysis-page');
+  if (consultantRoiRefreshInFlight) return;
+  clearConsultantRoiAutoRefresh();
+  const scope = { company: state.company, period: state.period }; const revision = ++consultantRoiRequestRevision;
+  const isCurrent = () => revision === consultantRoiRequestRevision && state.page === consultantRoiModuleKey && state.company === scope.company && state.period === scope.period;
+  const existingTable = page.querySelector('.consultant-roi-table-panel'); const existingButton = $('#consultant-roi-refresh'); const existingStatus = $('#consultant-roi-refresh-status');
+  consultantRoiRefreshInFlight = true; page.setAttribute('aria-busy', 'true');
+  if (existingButton) { existingButton.disabled = true; existingButton.classList.add('refreshing'); existingButton.innerHTML = '<span aria-hidden="true">↻</span>刷新中…'; }
+  if (existingStatus) existingStatus.textContent = trigger === 'auto' ? '正在自动检查最新发布版本…' : '正在读取最新发布版本…';
   try {
-    const data = await api(`/api/analysis/consultant-roi?company=${encodeURIComponent(state.company)}&period=${encodeURIComponent(state.period)}`); const rawRows = data.rows || [];
+    const data = await api(`/api/analysis/consultant-roi?company=${encodeURIComponent(scope.company)}&period=${encodeURIComponent(scope.period)}`, { cache: 'no-store' });
+    if (!isCurrent()) return;
+    if (trigger === 'auto' && consultantRoiSourceRevision && data.sourceRevision === consultantRoiSourceRevision && existingTable) return;
+    consultantRoiSourceRevision = data.sourceRevision || '';
+    const rawRows = data.rows || [];
     const sourceState = data.missing?.length ? `<span class="consultant-roi-missing"><strong>来源待补齐</strong><span>${data.missing.map(escapeHtml).join('、')}</span></span>` : '<span class="consultant-roi-complete">三类数据来源已匹配</span>';
     const payrollFields = data.sources.payrollFields || {}; const salaryFields = Array.isArray(payrollFields.baseSalary) ? payrollFields.baseSalary : [payrollFields.baseSalary].filter(Boolean);
-    const payrollFieldText = [payrollFields.company ? `公司→${payrollFields.company}` : '', payrollFields.department ? `部门→${payrollFields.department}` : '', payrollFields.name ? `姓名→${payrollFields.name}` : '', salaryFields.length ? `基本工资→${salaryFields.join('＋')}` : '', payrollFields.commission ? `提成→${payrollFields.commission}` : ''].filter(Boolean).join('；');
+    const payrollFieldText = [payrollFields.company ? `公司→${payrollFields.company}` : '', payrollFields.department ? `部门→${payrollFields.department}` : '', payrollFields.name ? `姓名→${payrollFields.name}` : '', payrollFields.hireDate ? `入职时间→${payrollFields.hireDate}` : '', salaryFields.length ? `基本工资→${salaryFields.join('＋')}` : '', payrollFields.commission ? `提成→${payrollFields.commission}` : ''].filter(Boolean).join('；');
+    const revenueFields = data.sources.revenueFields || {}; const revenueFieldText = [revenueFields.period ? `期间→${revenueFields.period}` : '', revenueFields.consultant ? `顾问→${revenueFields.consultant}` : '', revenueFields.region ? `地区→${revenueFields.region}` : '', revenueFields.expectedRevenue ? `预计营收→${revenueFields.expectedRevenue}` : ''].filter(Boolean).join('；');
+    const departments = data.sources.payrollConsultantDepartments || []; const departmentText = departments.length ? `顾问部门：${departments.join('、')}，纳入 ${Number(data.sources.payrollConsultantRows || 0)} 人，排除非顾问 ${Number(data.sources.payrollExcludedRows || 0)} 人。` : '';
+    const refreshedAt = new Date().toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
     const detail = row => `<details class="consultant-roi-detail"><summary>查看来源</summary><div><strong>工资表</strong>${row.payrollDetails.map(item => `<span>${escapeHtml(item.sourceSheet)} · 第 ${item.row} 行 · 基本工资 ${money(item.baseSalary)} · 提成 ${money(item.commission)}</span>`).join('') || '<span>未匹配</span>'}<strong>预计营收</strong>${row.revenueDetails.map(item => `<span>${escapeHtml(item.sourceSheet)} · 第 ${item.row} 行 · ${escapeHtml(item.region || '待补充')} · ${money(item.expectedRevenue)}</span>`).join('') || '<span>未匹配</span>'}<strong>序时账费用</strong>${row.expenseDetails.map(item => `<span>${escapeHtml(item.companyName)} · ${escapeHtml(item.date)} · ${escapeHtml(item.voucher)} · ${escapeHtml(item.account)} · ${escapeHtml(item.summary)} · ${money(item.amount)}</span>`).join('') || '<span>无明确归属费用</span>'}</div></details>`;
-    page.innerHTML = `<div class="page-title"><div><h1>顾问投入产出比</h1><p>${escapeHtml(data.company)} · ${escapeHtml(data.period)} · 按顾问归集</p></div>${filterHtml()}</div><div class="analysis-layout-grid consultant-roi-layout"><section class="panel analysis-source" data-analysis-block="consultant_roi_source"><strong>数据来源</strong><span>工资：${escapeHtml(data.sources.payroll?.fileName || '未上传')} / ${escapeHtml(data.sources.payrollSheet || '—')}；产出：${escapeHtml(data.sources.revenue?.fileName || '未上传')} / ${escapeHtml(data.sources.revenueSheet || '—')}</span><small>${payrollFieldText ? `工资取数字段：${escapeHtml(payrollFieldText)}。` : ''}投入标签决定哪些费用计入投入合计和投入产出比；预计营收按签约顾问汇总，地区只取业绩归属。${sourceState}</small></section><section id="consultant-roi-metrics" class="card-grid consultant-roi-metrics" data-analysis-block="consultant_roi_metrics"></section><section class="panel consultant-roi-table-panel" data-analysis-block="consultant_roi_table"><div class="consultant-roi-table-toolbar"><div><h2>顾问投入产出明细</h2><div class="panel-sub"><span id="consultant-roi-count"></span> · 标签、筛选、排序与导出使用同一当前视图</div></div><div class="consultant-roi-actions"><div class="consultant-roi-tags" role="group" aria-label="选择计入投入合计的数据标签">${consultantRoiInputDefinitions.map(item => `<button type="button" data-roi-input="${item.key}"></button>`).join('')}</div><button type="button" class="button" id="consultant-roi-clear">清除筛选</button><button type="button" class="button primary" id="consultant-roi-export">导出当前视图</button></div></div><div class="table-wrap consultant-roi-table-wrap"><table class="data-table consultant-roi-table"><thead id="consultant-roi-head"></thead><tbody id="consultant-roi-body"></tbody></table></div></section></div>`;
+    page.innerHTML = `<div class="page-title"><div><h1>顾问投入产出比</h1><p>${escapeHtml(data.company)} · ${escapeHtml(data.period)} · 按顾问部门归集</p></div><div class="consultant-roi-page-actions">${filterHtml()}<div class="consultant-roi-refresh-control"><button class="button consultant-roi-refresh" id="consultant-roi-refresh" type="button"><span aria-hidden="true">↻</span>刷新数据</button><small id="consultant-roi-refresh-status" aria-live="polite">${escapeHtml(refreshedAt)} 已更新 · 每 60 秒自动检查新发布版本</small></div></div></div><div class="analysis-layout-grid consultant-roi-layout"><section class="panel analysis-source" data-analysis-block="consultant_roi_source"><strong>数据来源</strong><span>工资：${escapeHtml(data.sources.payroll?.fileName || '未上传')} / ${escapeHtml(data.sources.payrollSheet || '—')}；产出：${escapeHtml(data.sources.revenue?.fileName || '未上传')} / ${escapeHtml(data.sources.revenueSheet || '—')}</span><small>${payrollFieldText ? `工资取数字段：${escapeHtml(payrollFieldText)}。` : ''}${revenueFieldText ? `营收取数字段：${escapeHtml(revenueFieldText)}，仅取 ${escapeHtml(data.period)}。` : ''}${departmentText ? escapeHtml(departmentText) : ''}${Number(data.sources.unmatchedRevenueRows || 0) ? `另有 ${Number(data.sources.unmatchedRevenueRows)} 条营收明细因人员不在顾问部门名册中未纳入。` : ''}投入标签决定哪些费用计入投入合计和投入产出比；地区只取业绩归属。${sourceState}</small></section><section id="consultant-roi-metrics" class="card-grid consultant-roi-metrics" data-analysis-block="consultant_roi_metrics"></section><section class="panel consultant-roi-table-panel" data-analysis-block="consultant_roi_table"><div class="consultant-roi-table-toolbar"><div><h2>顾问投入产出明细</h2><div class="panel-sub"><span id="consultant-roi-count"></span> · 标签、筛选、排序与导出使用同一当前视图</div></div><div class="consultant-roi-actions"><div class="consultant-roi-tags" role="group" aria-label="选择计入投入合计的数据标签">${consultantRoiInputDefinitions.map(item => `<button type="button" data-roi-input="${item.key}"></button>`).join('')}</div><button type="button" class="button" id="consultant-roi-clear">清除筛选</button><button type="button" class="button primary" id="consultant-roi-export">导出当前视图</button></div></div><div class="table-wrap consultant-roi-table-wrap"><table class="data-table consultant-roi-table"><thead id="consultant-roi-head"></thead><tbody id="consultant-roi-body"></tbody></table></div></section></div>`;
+    page.insertAdjacentHTML('beforeend', `<div id="consultant-roi-average-modal" class="consultant-roi-average-modal hidden" role="dialog" aria-modal="true" aria-labelledby="consultant-roi-average-title"><section class="consultant-roi-average-dialog"><button type="button" class="consultant-roi-average-close" aria-label="关闭平均投入产出比">×</button><header><span>AVERAGE ROI</span><h2 id="consultant-roi-average-title">平均投入产出比</h2><p>所有顾问与业绩归属地区</p></header><div id="consultant-roi-average-body"></div></section></div>`);
     const metricCards = document.createElement('div'); metricCards.className = 'consultant-roi-metric-cards'; $('#consultant-roi-metrics').appendChild(metricCards);
     const renderView = () => {
-      const rows = consultantRoiRowsForView(rawRows); const totals = rows.reduce((sum, row) => ({ input: sum.input + row.input, output: sum.output + row.output }), { input: 0, output: 0 }); const roi = totals.input ? totals.output / totals.input : null;
+      const rows = consultantRoiRowsForView(rawRows); const totals = rows.reduce((sum, row) => ({ input: sum.input + row.input, output: sum.output + row.output }), { input: 0, output: 0 }); const roi = totals.input ? totals.output / totals.input : null; const average = consultantRoiAverageSummary(rawRows);
       const visibleColumns = consultantRoiColumns.filter(column => consultantRoiView.inputs[column.key] !== false);
-      metricCards.innerHTML = `<article class="card"><div class="metric-label">投入合计</div><div class="metric-value">${money(totals.input)}</div><div class="metric-note">当前标签与筛选范围</div></article><article class="card"><div class="metric-label">预计营收</div><div class="metric-value positive">${money(totals.output)}</div><div class="metric-note">当前筛选结果汇总</div></article><article class="card"><div class="metric-label">整体投入产出比</div><div class="metric-value">${roi == null ? '—' : `${roi.toFixed(2)} 倍`}</div><div class="metric-note">预计营收 ÷ 已选投入</div></article><article class="card"><div class="metric-label">顾问人数</div><div class="metric-value">${rows.length}</div><div class="metric-note">筛选后可见人数</div></article>`;
+      metricCards.innerHTML = `<article class="card"><div class="metric-label">投入合计</div><div class="metric-value">${money(totals.input)}</div><div class="metric-note">当前标签与筛选范围</div></article><article class="card"><div class="metric-label">预计营收</div><div class="metric-value positive">${money(totals.output)}</div><div class="metric-note">当前筛选结果汇总</div></article><article class="card"><div class="metric-label">整体投入产出比</div><div class="metric-value">${roi == null ? '—' : `${roi.toFixed(2)} 倍`}</div><div class="metric-note">预计营收 ÷ 已选投入</div></article><button type="button" class="card consultant-roi-average-card" id="consultant-roi-average-open"><div class="metric-label">顾问平均投入产出比</div><div class="metric-value">${average.averageRoi == null ? '—' : `${average.averageRoi.toFixed(2)} 倍`}</div><div class="metric-note">点击查看所有顾问及各地区</div></button><article class="card"><div class="metric-label">顾问人数</div><div class="metric-value">${rows.length}</div><div class="metric-note">工资表顾问部门名册</div></article>`;
+      $('#consultant-roi-average-body').innerHTML = `<div class="consultant-roi-average-overall"><span>所有顾问平均投入产出比</span><strong>${average.averageRoi == null ? '—' : `${average.averageRoi.toFixed(2)} 倍`}</strong><small>${average.consultantCount} 名有投入顾问的个人投入产出比算术平均</small></div><div class="consultant-roi-region-list">${average.regions.map(item => `<article><div><strong>${escapeHtml(item.region)}</strong><small>${item.consultantCount} 名顾问</small></div><b>${item.roi == null ? '—' : `${item.roi.toFixed(2)} 倍`}</b><span>投入 ${money(item.input)} · 预计营收 ${money(item.output)}</span></article>`).join('') || '<div class="empty">暂无可汇总的业绩归属地区</div>'}</div><p class="consultant-roi-average-note">跨地区顾问的投入按各地区预计营收占比分摊，避免工资与人员费用被重复计算。</p>`;
       $('#consultant-roi-count').textContent = `共 ${rawRows.length} 人，当前显示 ${rows.length} 人`;
       document.querySelectorAll('[data-roi-input]').forEach(button => { const selected = consultantRoiView.inputs[button.dataset.roiInput]; const label = consultantRoiInputDefinitions.find(item => item.key === button.dataset.roiInput)?.label || ''; button.className = `consultant-roi-tag ${selected ? 'selected' : ''}`; button.setAttribute('aria-pressed', String(selected)); button.innerHTML = `<span>${selected ? '✓' : '+'}</span>${label}`; button.onclick = () => { consultantRoiView.inputs[button.dataset.roiInput] = !selected; if (selected) { delete consultantRoiView.filters[button.dataset.roiInput]; if (consultantRoiView.sortKey === button.dataset.roiInput) { consultantRoiView.sortKey = 'input'; consultantRoiView.sortDirection = 'desc'; } } renderView(); }; });
       $('#consultant-roi-head').innerHTML = `<tr>${visibleColumns.map(column => { const active = consultantRoiView.sortKey === column.key; return `<th><button type="button" class="roi-sort ${active ? 'active' : ''}" data-roi-sort="${column.key}">${column.label}<span>${active ? (consultantRoiView.sortDirection === 'asc' ? '↑' : '↓') : '↕'}</span></button></th>`; }).join('')}</tr><tr class="roi-filter-row">${visibleColumns.map(column => `<th>${consultantRoiFilterHtml(column)}</th>`).join('')}</tr>`;
       const optionalAmountCell = (row, key) => consultantRoiView.inputs[key] ? `<td class="num">${money(row[key])}</td>` : '';
-      $('#consultant-roi-body').innerHTML = rows.map(row => `<tr><td><strong>${escapeHtml(row.name)}</strong></td><td>${escapeHtml(row.region)}</td>${optionalAmountCell(row, 'baseSalary')}${optionalAmountCell(row, 'commission')}${optionalAmountCell(row, 'journalExpense')}<td class="num">${money(row.input)}</td><td class="num">${money(row.output)}</td><td class="num roi-value">${row.roi == null ? '—' : `${row.roi.toFixed(2)} 倍`}</td><td><span class="roi-match ${row.matchStatus}">${row.matchLabel}</span></td></tr>`).join('') || `<tr><td colspan="${visibleColumns.length}" class="empty">当前标签或筛选条件下暂无顾问数据</td></tr>`;
+      $('#consultant-roi-body').innerHTML = rows.map((row, index) => `<tr><td><span class="consultant-name-cell"><strong>${escapeHtml(row.name)}</strong>${row.isNewEmployee ? `<button type="button" class="consultant-new-hire-badge" data-consultant-hire="${index}" aria-expanded="false" aria-label="${escapeHtml(row.name)}为本月新员工，查看入职时间">新</button><span class="consultant-hire-popover hidden">入职时间：${escapeHtml(row.hireDate)}</span>` : ''}</span></td><td>${escapeHtml(row.region)}</td>${optionalAmountCell(row, 'baseSalary')}${optionalAmountCell(row, 'commission')}${optionalAmountCell(row, 'journalExpense')}<td class="num">${money(row.input)}</td><td class="num">${money(row.output)}</td><td class="num roi-value">${row.roi == null ? '—' : `${row.roi.toFixed(2)} 倍`}</td><td><span class="roi-match ${row.matchStatus}">${row.matchLabel}</span></td></tr>`).join('') || `<tr><td colspan="${visibleColumns.length}" class="empty">当前标签或筛选条件下暂无顾问数据</td></tr>`;
+      document.querySelectorAll('[data-consultant-hire]').forEach(button => button.onclick = event => { event.stopPropagation(); const popover = button.nextElementSibling; const willOpen = popover.classList.contains('hidden'); page.querySelectorAll('.consultant-hire-popover').forEach(item => item.classList.add('hidden')); page.querySelectorAll('[data-consultant-hire]').forEach(item => item.setAttribute('aria-expanded', 'false')); if (willOpen) { popover.classList.remove('hidden'); button.setAttribute('aria-expanded', 'true'); } });
       document.querySelectorAll('[data-roi-sort]').forEach(button => button.onclick = () => { const key = button.dataset.roiSort; if (consultantRoiView.sortKey === key) consultantRoiView.sortDirection = consultantRoiView.sortDirection === 'asc' ? 'desc' : 'asc'; else { consultantRoiView.sortKey = key; consultantRoiView.sortDirection = consultantRoiColumns.find(column => column.key === key)?.type === 'number' ? 'desc' : 'asc'; } renderView(); });
       document.querySelectorAll('[data-roi-filter]').forEach(control => control.onchange = () => { consultantRoiView.filters[control.dataset.roiFilter] = control.value.trim(); renderView(); });
       $('#consultant-roi-clear').onclick = () => { consultantRoiView.filters = {}; renderView(); };
       $('#consultant-roi-export').onclick = () => downloadConsultantRoiCsv(rows, data.period);
+      const averageModal = $('#consultant-roi-average-modal'); const closeAverage = () => averageModal.classList.add('hidden'); $('#consultant-roi-average-open').onclick = () => averageModal.classList.remove('hidden'); page.querySelector('.consultant-roi-average-close').onclick = closeAverage; averageModal.onclick = event => { if (event.target === averageModal) closeAverage(); };
     };
-    renderView(); bindCommonFilters(); applyAnalysisBlockLayout(page.querySelector('.consultant-roi-layout'), consultantRoiModuleKey);
-  } catch (error) { page.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`; }
+    renderView(); bindCommonFilters(); $('#consultant-roi-refresh').onclick = () => renderConsultantRoiInteractive({ trigger: 'manual' }); applyAnalysisBlockLayout(page.querySelector('.consultant-roi-layout'), consultantRoiModuleKey);
+  } catch (error) {
+    if (!isCurrent()) return;
+    if (existingTable) { showNotice(`顾问投入产出数据刷新失败：${error.message}`, true); if (existingStatus) existingStatus.textContent = '刷新失败，稍后将自动重试'; }
+    else { page.innerHTML = `<div class="empty">${escapeHtml(error.message)}<br><button class="button" id="consultant-roi-retry" type="button">重新加载</button></div>`; $('#consultant-roi-retry').onclick = () => renderConsultantRoiInteractive({ trigger: 'manual' }); }
+  } finally {
+    if (existingButton?.isConnected) { existingButton.disabled = false; existingButton.classList.remove('refreshing'); existingButton.innerHTML = '<span aria-hidden="true">↻</span>刷新数据'; }
+    page.removeAttribute('aria-busy'); consultantRoiRefreshInFlight = false; if (state.page === consultantRoiModuleKey) scheduleConsultantRoiAutoRefresh();
+  }
+}
+
+async function renderIntercompanyReconciliation() {
+  const page = $('#intercompany-reconciliation-page');
+  try {
+    const data = await api(`/api/analysis/intercompany-reconciliation?company=group&period=${encodeURIComponent(state.period)}`); const pairs = data.pairs || []; const companies = data.companies || []; const metrics = data.metrics || {};
+    const pairFor = (left, right) => pairs.find(pair => [pair.companyA.key, pair.companyB.key].includes(left) && [pair.companyA.key, pair.companyB.key].includes(right));
+    const sourceChips = (data.sources || []).map(source => `<span class="intercompany-source-chip ${source.available ? 'available' : 'missing'}"><i aria-hidden="true">${source.available ? '✓' : '!'}</i><strong>${escapeHtml(source.region)}</strong><small>${source.available ? escapeHtml(source.sourceSheet || '科目余额表') : '未发布'}</small></span>`).join('');
+    const scopeWarning = !data.scopeComplete ? `<div class="intercompany-scope-warning"><strong>当前授权范围不足以形成集团完整校验</strong><span>缺少：${escapeHtml((data.missingScopeRegions || []).join('、') || '未登记公司')}；仅展示员工有权访问的公司组合。</span></div>` : '';
+    const matrixHead = companies.map(company => `<th title="${escapeHtml(company.name)}">${escapeHtml(company.region)}</th>`).join('');
+    const matrixRows = companies.map(rowCompany => `<tr><th title="${escapeHtml(rowCompany.name)}">${escapeHtml(rowCompany.region)}</th>${companies.map(columnCompany => {
+      if (rowCompany.key === columnCompany.key) return '<td class="intercompany-diagonal">—</td>';
+      const pair = pairFor(rowCompany.key, columnCompany.key); if (!pair) return '<td class="intercompany-empty-cell">暂无</td>';
+      const statusClass = intercompanyStatusClass(pair.status.key); return `<td><button type="button" class="intercompany-matrix-cell ${statusClass}" data-intercompany-pair="${escapeHtml(pair.pairKey)}" title="${escapeHtml(pair.companyA.name)} ↔ ${escapeHtml(pair.companyB.name)}：${escapeHtml(pair.status.message)}"><strong>${escapeHtml(pair.status.name)}</strong><small>${intercompanyMoney(pair.absoluteDifference)}</small></button></td>`;
+    }).join('')}</tr>`).join('');
+    const statusOptions = [...new Map(pairs.map(pair => [pair.status.key, pair.status.name])).entries()].map(([key, name]) => `<option value="${escapeHtml(key)}">${escapeHtml(name)}</option>`).join('');
+    const metricCard = (label, value, note, tone = '') => `<article class="card intercompany-metric ${tone}"><div class="metric-label">${escapeHtml(label)}</div><div class="metric-value">${escapeHtml(value)}</div><div class="metric-note">${escapeHtml(note)}</div></article>`;
+    const unmappedRows = (data.unmapped || []).map(row => `<tr><td>${escapeHtml(row.sourceCompanyName)}</td><td>${escapeHtml(row.code)}</td><td>${escapeHtml(row.name)}</td><td>${escapeHtml(row.account)}</td><td>${escapeHtml(row.reason)}</td></tr>`).join('');
+    page.innerHTML = `<div class="page-title"><div><h1>各公司往来校验</h1><p>${escapeHtml(data.company)} · ${escapeHtml(data.period)} · 七家公司双边期末余额</p></div>${filterHtml()}</div>${scopeWarning}<section class="panel intercompany-completeness"><div class="toolbar"><div><h2>数据完整性</h2><div class="panel-sub">科目余额表用于校验；序时账仅在点击组合后按权限下钻</div></div><span class="intercompany-completeness-state ${data.dataComplete ? 'complete' : 'incomplete'}">${data.dataComplete ? '7 / 7 已齐全' : `${metrics.coveredCompanies || 0} / ${data.expectedCompanyCount || 7} 已齐全`}</span></div><div class="intercompany-source-list">${sourceChips || '<span class="empty">当前授权范围内没有可校验公司</span>'}</div></section><section class="card-grid intercompany-metrics">${metricCard('覆盖公司', `${metrics.coveredCompanies || 0} / ${data.expectedCompanyCount || 7}`, '已发布科目余额表')}${metricCard('公司组合', String(metrics.combinations || 0), '唯一两两组合')}${metricCard('一致组合', String(metrics.matched || 0), `容差 ${Number(data.tolerance || .01).toFixed(2)} 元`, 'matched')}${metricCard('异常组合', String(metrics.exceptions || 0), '包含缺资料与待映射', metrics.exceptions ? 'warning' : '')}${metricCard('绝对差异合计', intercompanyMoney(metrics.absoluteDifference), '已识别净往来差异', metrics.absoluteDifference ? 'warning' : '')}${metricCard('待映射科目', String(metrics.unmappedSubjects || 0), '绝不自动算作一致', metrics.unmappedSubjects ? 'warning' : '')}</section><section class="panel intercompany-matrix-panel"><div class="toolbar"><div><h2>7 × 7 往来校验矩阵</h2><div class="panel-sub">点击任一格查看双方科目余额和序时账；最近状态按组合唯一展示</div></div><div class="intercompany-legend"><span class="matched">一致</span><span class="mismatch">金额差异</span><span class="one-sided">单边</span><span class="unmapped">待映射</span><span class="missing">缺资料</span></div></div><div class="intercompany-matrix-scroll" role="region" aria-label="各公司往来校验矩阵，可左右滑动" tabindex="0"><table class="intercompany-matrix"><thead><tr><th>公司</th>${matrixHead}</tr></thead><tbody>${matrixRows}</tbody></table></div></section><section class="panel intercompany-exception-panel"><div class="toolbar intercompany-table-toolbar"><div><h2>组合校验明细</h2><div class="panel-sub">默认仅看异常，按绝对差异从高到低</div></div><div class="intercompany-filters"><label><input id="intercompany-only-exceptions" type="checkbox" checked> 仅看异常</label><label>状态<select id="intercompany-status-filter"><option value="">全部状态</option>${statusOptions}</select></label></div></div><div class="table-wrap"><table class="data-table intercompany-pair-table"><thead><tr><th>公司组合</th><th>A 方净往来</th><th>B 方净往来</th><th>校验差异</th><th>状态</th><th>说明</th></tr></thead><tbody id="intercompany-pair-body"></tbody></table></div></section>${unmappedRows ? `<section class="panel intercompany-unmapped-panel"><div class="toolbar"><div><h2>待映射科目</h2><div class="panel-sub">名称存在歧义、疑似本公司或业务后缀未确认，均不进入一致结论</div></div><span class="role-badge">${data.unmapped.length} 项</span></div><div class="table-wrap"><table class="data-table intercompany-unmapped-table"><thead><tr><th>账套</th><th>科目编码</th><th>科目名称</th><th>科目类型</th><th>待确认原因</th></tr></thead><tbody>${unmappedRows}</tbody></table></div></section>` : ''}<div id="intercompany-pair-modal" class="intercompany-modal hidden" role="dialog" aria-modal="true" aria-labelledby="intercompany-modal-title"><section class="intercompany-dialog"><button type="button" class="intercompany-modal-close" aria-label="关闭往来明细">×</button><header><h2 id="intercompany-modal-title" class="intercompany-modal-title">往来组合明细</h2><div class="intercompany-modal-sub"></div></header><div class="intercompany-modal-body"></div></section></div>`;
+    const renderPairRows = () => {
+      const onlyExceptions = $('#intercompany-only-exceptions').checked; const status = $('#intercompany-status-filter').value;
+      const visible = pairs.filter(pair => (!onlyExceptions || pair.status.key !== 'matched') && (!status || pair.status.key === status));
+      $('#intercompany-pair-body').innerHTML = visible.map(pair => `<tr data-intercompany-pair="${escapeHtml(pair.pairKey)}"><td><button type="button" class="intercompany-pair-link" data-intercompany-pair="${escapeHtml(pair.pairKey)}"><strong>${escapeHtml(pair.companyA.region)} ↔ ${escapeHtml(pair.companyB.region)}</strong><small>查看双方明细</small></button></td><td class="num">${intercompanySignedMoney(pair.sideA.net)}</td><td class="num">${intercompanySignedMoney(pair.sideB.net)}</td><td class="num ${pair.absoluteDifference > Number(data.tolerance || .01) ? 'negative' : 'positive'}">${intercompanySignedMoney(pair.difference)}</td><td><span class="intercompany-status ${intercompanyStatusClass(pair.status.key)}">${escapeHtml(pair.status.name)}</span></td><td>${escapeHtml(pair.status.message)}</td></tr>`).join('') || '<tr><td colspan="6" class="empty">当前筛选条件下暂无组合</td></tr>';
+      page.querySelectorAll('[data-intercompany-pair]').forEach(button => button.onclick = event => { event.stopPropagation(); const [left, right] = button.dataset.intercompanyPair.split('::'); openIntercompanyPair(left, right); });
+    };
+    renderPairRows(); $('#intercompany-only-exceptions').onchange = renderPairRows; $('#intercompany-status-filter').onchange = renderPairRows;
+    const closeModal = () => $('#intercompany-pair-modal').classList.add('hidden'); page.querySelector('.intercompany-modal-close').onclick = closeModal; $('#intercompany-pair-modal').onclick = event => { if (event.target.id === 'intercompany-pair-modal') closeModal(); };
+    bindCommonFilters();
+  } catch (error) { page.innerHTML = `<div class="page-title"><div><h1>各公司往来校验</h1><p>${escapeHtml(currentCompanyName())} · ${escapeHtml(state.period)}</p></div>${filterHtml()}</div><div class="empty">${escapeHtml(error.message)}</div>`; bindCommonFilters(); }
+}
+
+const intercompanyMoney = value => Number(value || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const intercompanyStatusClass = key => ({ matched: 'matched', amount_mismatch: 'mismatch', one_sided: 'one-sided', direction_conflict: 'conflict', missing_source: 'missing', unmapped: 'unmapped', direction_abnormal: 'abnormal' }[key] || 'missing');
+const intercompanySignedMoney = value => `${Number(value || 0) > 0 ? '+' : ''}${intercompanyMoney(value)}`;
+const intercompanyBalanceTable = side => `<div class="table-wrap"><table class="data-table intercompany-balance-table"><thead><tr><th>科目编码</th><th>往来科目</th><th>分类</th><th>期末借方</th><th>期末贷方</th><th>净往来</th></tr></thead><tbody>${(side.rows || []).map(row => `<tr class="${row.directionAbnormal ? 'direction-abnormal-row' : ''}"><td>${escapeHtml(row.code)}</td><td><strong>${escapeHtml(row.account)}</strong><small>${escapeHtml(row.name)}</small></td><td>${escapeHtml(row.categoryName)}</td><td class="num">${intercompanyMoney(row.debit)}</td><td class="num">${intercompanyMoney(row.credit)}</td><td class="num ${Number(row.net) < 0 ? 'negative' : 'positive'}">${intercompanySignedMoney(row.net)}</td></tr>`).join('') || '<tr><td colspan="6" class="empty">该方向暂无已识别往来余额</td></tr>'}</tbody></table></div>`;
+const intercompanyCategoryTable = pair => `<div class="table-wrap"><table class="data-table intercompany-category-table"><thead><tr><th>业务分类</th><th>${escapeHtml(pair.companyA.name)}对${escapeHtml(pair.companyB.region)}</th><th>${escapeHtml(pair.companyB.name)}对${escapeHtml(pair.companyA.region)}</th><th>校验差异</th></tr></thead><tbody>${(pair.sideA.categories || []).map((item, index) => { const opposite = pair.sideB.categories?.[index] || {}; const difference = Number(item.net || 0) + Number(opposite.net || 0); return `<tr><td>${escapeHtml(item.name)}</td><td class="num">${intercompanySignedMoney(item.net)}</td><td class="num">${intercompanySignedMoney(opposite.net)}</td><td class="num ${Math.abs(difference) > .01 ? 'negative' : 'positive'}">${intercompanySignedMoney(difference)}</td></tr>`; }).join('')}</tbody><tfoot><tr><th>合计</th><th class="num">${intercompanySignedMoney(pair.sideA.net)}</th><th class="num">${intercompanySignedMoney(pair.sideB.net)}</th><th class="num">${intercompanySignedMoney(pair.difference)}</th></tr></tfoot></table></div>`;
+const intercompanyJournalTable = journal => {
+  if (!journal?.available) return '<div class="empty">该公司本期未发布序时账，无法下钻明细。</div>';
+  const note = journal.truncated ? `<div class="standard-hint">共 ${journal.totalRows} 条，仅展示前 500 条。</div>` : '';
+  return `${detailTableHtml(journal.rows || [], true)}${note}`;
+};
+
+async function openIntercompanyPair(companyA, companyB) {
+  const modal = $('#intercompany-pair-modal'); if (!modal) return;
+  modal.classList.remove('hidden'); modal.querySelector('.intercompany-modal-body').innerHTML = '<div class="empty">正在读取双方余额与明细…</div>';
+  try {
+    const data = await api(`/api/analysis/intercompany-reconciliation/pair?company=group&period=${encodeURIComponent(state.period)}&companyA=${encodeURIComponent(companyA)}&companyB=${encodeURIComponent(companyB)}`);
+    const pair = data.pair; const statusClass = intercompanyStatusClass(pair.status.key);
+    modal.querySelector('.intercompany-modal-title').textContent = `${pair.companyA.name} ↔ ${pair.companyB.name}`;
+    modal.querySelector('.intercompany-modal-sub').innerHTML = `<span class="intercompany-status ${statusClass}">${escapeHtml(pair.status.name)}</span><span>${escapeHtml(pair.status.message)}</span>`;
+    const sidePanel = side => `<section class="intercompany-side"><header><div><span>${escapeHtml(side.companyName)}</span><strong>对 ${escapeHtml(side.targetCompanyName)} 净往来</strong></div><b class="${Number(side.net) < 0 ? 'negative' : 'positive'}">${intercompanySignedMoney(side.net)}</b></header>${intercompanyBalanceTable(side)}</section>`;
+    const journalPanels = data.canViewJournal ? `<section class="intercompany-journal-section"><div class="toolbar"><div><h3>双方序时账明细</h3><div class="panel-sub">只读取上表科目编码；不包含结转分录</div></div></div><div class="intercompany-journal-grid"><article><h4>${escapeHtml(pair.companyA.name)}</h4>${intercompanyJournalTable(data.journals?.[pair.companyA.key])}</article><article><h4>${escapeHtml(pair.companyB.name)}</h4>${intercompanyJournalTable(data.journals?.[pair.companyB.key])}</article></div></section>` : '<section class="intercompany-detail-locked"><strong>余额明细已展示</strong><span>当前员工未同时拥有往来校验明细权限和双方序时账明细权限。</span></section>';
+    modal.querySelector('.intercompany-modal-body').innerHTML = `${intercompanyCategoryTable(pair)}<div class="intercompany-side-grid">${sidePanel(pair.sideA)}${sidePanel(pair.sideB)}</div>${journalPanels}`;
+  } catch (error) { modal.querySelector('.intercompany-modal-body').innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`; }
 }
 
 async function renderExpenseAnalysis() {
   const page = $('#expense-analysis-page');
+  const revision = pageRequestRevision; const scope = { company: state.company, period: state.period };
   try {
-    const analysis = await api(`/api/analysis/expenses?company=${encodeURIComponent(state.company)}&period=${encodeURIComponent(state.period)}&year=${encodeURIComponent(state.period.slice(0, 4))}`);
+    const analysis = await api(`/api/analysis/expenses?company=${encodeURIComponent(scope.company)}&period=${encodeURIComponent(scope.period)}&year=${encodeURIComponent(scope.period.slice(0, 4))}`);
+    if (revision !== pageRequestRevision || state.page !== 'expense_analysis' || state.company !== scope.company || state.period !== scope.period) return;
     if (analysis.finance?.source?.noData || analysis.selling?.source?.noData) { renderMissingData(page, '费用分析', '序时账'); return; }
     expenseDetailStore = new Map();
     const financeRows = analysis.finance?.rows || [];
@@ -866,7 +997,7 @@ async function renderExpenseAnalysis() {
     });
     applyAnalysisBlockLayout(layout, 'expense_analysis');
     bindCommonFilters(); bindExpenseDetail();
-  } catch (error) { page.innerHTML = `<div class="page-title"><div><h1>费用分析</h1><p>${escapeHtml(currentCompanyName())} · ${state.period}</p></div>${filterHtml()}</div><div class="empty">${escapeHtml(error.message)}</div>`; bindCommonFilters(); }
+  } catch (error) { if (revision !== pageRequestRevision || state.page !== 'expense_analysis') return; page.innerHTML = `<div class="page-title"><div><h1>费用分析</h1><p>${escapeHtml(currentCompanyName())} · ${state.period}</p></div>${filterHtml()}</div><div class="empty">${escapeHtml(error.message)}</div>`; bindCommonFilters(); }
 }
 
 const statementAmount = value => value === null || value === undefined || value === '' ? '' : Number(value).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -1019,13 +1150,21 @@ async function renderRevenueStatistics() {
 
 async function renderUploads() {
   const page = $('#uploads-page');
+  const requestRevision = ++uploadHistoryRequestRevision;
   state.uploadCompany ||= state.company;
   state.uploadPeriod ||= state.period;
   state.uploadHistoryView ||= 'pending'; state.uploadHistoryPage ||= 1;
   const historyFilters = state.uploadHistoryFilters || (state.uploadHistoryFilters = { company: state.uploadCompany, period: state.uploadPeriod, reportType: '', search: '' });
   const historyParams = new URLSearchParams({ view: state.uploadHistoryView, page: String(state.uploadHistoryPage), pageSize: '10' });
   Object.entries(historyFilters).forEach(([key, value]) => { if (value) historyParams.set(key, value); });
-  let data; try { data = await api(`/api/uploads?${historyParams}`); } catch (error) { page.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`; return; }
+  let data;
+  try {
+    data = await api(`/api/uploads?${historyParams}`, { cache: 'no-store' });
+    if (requestRevision !== uploadHistoryRequestRevision || state.page !== 'uploads') return;
+  } catch (error) {
+    if (requestRevision !== uploadHistoryRequestRevision || state.page !== 'uploads') return;
+    page.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`; return;
+  }
   const uploadTypes = [['bundle', '汇总财务报表（自动识别）'], ['consolidated_income_statement', '桉侨集团合并利润表'], [revenueProfitReportType, '（营收利润口径）合并利润表'], [revenueStatisticsReportType, '集团营收统计表'], [payrollStatementReportType, '集团每月工资表'], ['journal', '序时账'], ['trial_balance', '科目余额表'], ['balance_sheet', '资产负债表'], ['income_statement', '利润表']];
   page.innerHTML = `<div class="page-title"><div><h1>上传报表</h1><p>统一导入入口；支持单独上传，也支持一份汇总财务报表自动拆分</p></div>${filterHtml()}</div><section class="panel"><div class="toolbar"><div><h2>导入报表文件</h2><div class="panel-sub">先选择公司和报表期间；系统会按文件名、工作表名称自动匹配报表类型</div></div></div><div class="upload-target-row"><label>上传公司<select id="upload-company-select">${state.bootstrap.companies.map(item => `<option value="${item.key}" ${item.key === state.company ? 'selected' : ''}>${escapeHtml(item.name)}</option>`).join('')}</select></label><label>报表期间<select id="upload-period-select">${['2026-05', '2026-06', '2026-07'].map(item => `<option value="${item}" ${item === state.period ? 'selected' : ''}>${item}</option>`).join('')}</select></label></div><div id="folder-drop" class="folder-drop"><input id="folder-picker" type="file" webkitdirectory directory multiple hidden><input id="bundle-picker" type="file" accept=".xlsx,.xls,.json" multiple hidden><div class="folder-icon">↓</div><strong>拖动归集文件夹或汇总财务报表到这里</strong><span>支持从资源管理器拖入文件夹或汇总 Excel；系统按文件名和工作表名称自动识别</span><div class="drop-actions"><button class="button" id="choose-folder">选择归集文件夹</button><button class="button" id="choose-bundle">选择汇总文件</button><button class="button clear-selected-files" id="clear-selected-files" disabled>清空已选</button></div><div id="folder-file-list" class="folder-file-list">尚未选择文件</div></div><div class="upload-slots">${uploadTypes.map(([type, name]) => `<div class="upload-slot" data-upload-slot="${type}" aria-label="将${name}文件拖到这里"><button type="button" class="upload-slot-clear hidden" data-slot-clear="${type}" aria-label="移除${name}" title="移除当前文件">× 移除</button><div class="slot-title">${name}</div><div class="slot-file" id="slot-${type}">未选择文件</div><input class="slot-input" data-report-type="${type}" type="file" accept=".xlsx,.xls,.json"><button type="button" class="button" data-slot-choose="${type}">选择文件</button></div>`).join('')}</div><div class="upload-submit-row"><input id="upload-notes" placeholder="批次备注（可选）"><button class="button primary" id="batch-upload">上传并校验已选择报表</button></div></section><section class="panel" style="margin-top:16px"><div class="toolbar"><div><h2>上传历史</h2><div class="panel-sub">旧批次不会被覆盖；汇总文件会按识别出的每张报表分别保留批次并独立发布</div></div></div><div class="upload-history">${(data.uploads || []).map(item => `<div class="upload-item"><div><strong>${escapeHtml(item.fileName)}</strong><small>${escapeHtml(reportNames[item.reportType] || item.reportType)} · ${item.period} · ${escapeHtml(item.status)} · ${new Date(item.createdAt).toLocaleString('zh-CN')}</small></div><div class="upload-actions">${item.status === 'validated' && state.bootstrap.canPublishReports ? `<button class="button primary" data-publish="${item.uploadKey}">发布为当前版本</button>` : ''}<button class="button" data-preview-upload="${item.uploadKey}" data-preview-type="${item.reportType}">预览</button></div></div>`).join('') || '<div class="empty">暂无上传历史</div>'}</div></section>`;
   bindCommonFilters();
@@ -1093,6 +1232,13 @@ async function renderUploads() {
   page.onclick = event => { if (!event.target.closest('.upload-picker')) closeUploadPickers(); }; page.onkeydown = event => { if (event.key === 'Escape') closeUploadPickers(); };
   page.querySelectorAll('[data-preview-upload]').forEach(button => { const item = data.uploads.find(upload => upload.uploadKey === button.dataset.previewUpload); if (item) { button.dataset.previewCompany = item.companyKey; button.dataset.previewPeriod = item.period; const meta = button.closest('.upload-item')?.querySelector('small'); if (meta) meta.textContent = `${companyNameByKey(item.companyKey)} · ${meta.textContent}`; } });
   const uploadCheckboxes = [...page.querySelectorAll('.upload-select-input')]; const uploadSelectAll = $('#upload-select-all'); const publishSelectedUploads = $('#publish-selected-uploads'); const deleteSelectedUploads = $('#delete-selected-uploads');
+  const startUploadHistoryMutation = () => {
+    if (uploadHistoryMutationInFlight) { showNotice('上一项发布或删除操作仍在处理中，请稍候', true); return false; }
+    uploadHistoryMutationInFlight = true; page.setAttribute('aria-busy', 'true');
+    page.querySelectorAll('[data-publish],#publish-selected-uploads,#delete-selected-uploads').forEach(control => { control.disabled = true; });
+    return true;
+  };
+  const finishUploadHistoryMutation = () => { uploadHistoryMutationInFlight = false; page.removeAttribute('aria-busy'); };
   const updateUploadSelection = () => {
     const checked = uploadCheckboxes.filter(input => input.checked); const publishedCount = checked.filter(input => input.dataset.uploadStatus === 'published').length; $('#upload-selected-count').textContent = String(checked.length); $('#upload-delete-label').textContent = publishedCount ? '撤回并删除已选' : '删除已选'; deleteSelectedUploads.disabled = checked.length === 0; deleteSelectedUploads.classList.toggle('withdraw', publishedCount > 0);
     if (publishSelectedUploads) { const publishableCount = checked.filter(input => input.dataset.uploadPublishable === 'true').length; $('#upload-publish-count').textContent = String(publishableCount); publishSelectedUploads.disabled = !checked.length || publishableCount !== checked.length; publishSelectedUploads.title = checked.length && publishableCount !== checked.length ? '批量发布仅支持已校验且尚未发布的记录' : ''; }
@@ -1104,15 +1250,15 @@ async function renderUploads() {
   if (publishSelectedUploads) publishSelectedUploads.onclick = async () => {
     const checked = uploadCheckboxes.filter(input => input.checked); const uploadKeys = checked.map(input => input.value); if (!uploadKeys.length || checked.some(input => input.dataset.uploadPublishable !== 'true')) return showNotice('批量发布仅支持已校验且尚未发布的记录', true);
     if (!window.confirm(`确定将已选的 ${uploadKeys.length} 条记录批量发布为当前版本吗？\n\n系统会逐条核对公司、期间和报表类型；发布后，同范围原当前版本将保留为历史版本。`)) return;
-    publishSelectedUploads.disabled = true;
-    try { const result = await api('/api/uploads/bulk-publish', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ uploadKeys }) }); showNotice(`已批量发布 ${result.publishedCount} 个报表批次`); await renderUploads(); } catch (error) { showNotice(error.message, true); updateUploadSelection(); }
+    if (!startUploadHistoryMutation()) return;
+    try { const result = await api('/api/uploads/bulk-publish', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ uploadKeys }) }); showNotice(`已批量发布 ${result.publishedCount} 个报表批次`); await renderUploads(); } catch (error) { showNotice(error.message, true); updateUploadSelection(); } finally { finishUploadHistoryMutation(); }
   };
   deleteSelectedUploads.onclick = async () => {
     const checked = uploadCheckboxes.filter(input => input.checked); const uploadKeys = checked.map(input => input.value); if (!uploadKeys.length) return; const publishedCount = checked.filter(input => input.dataset.uploadStatus === 'published').length;
     const publishedWarning = publishedCount ? `\n\n其中 ${publishedCount} 条为当前发布：系统会先撤回并删除，再自动恢复上一历史版本；如无历史版本，对应报表将显示暂无数据。` : '';
     if (!window.confirm(`确定处理已选的 ${uploadKeys.length} 条记录吗？${publishedWarning}\n\n删除后无法恢复，请确认公司、期间和报表类型。`)) return;
-    deleteSelectedUploads.disabled = true;
-    try { const result = await api('/api/uploads/bulk-delete', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ uploadKeys }) }); const rollback = result.withdrawnCount ? `，撤回发布 ${result.withdrawnCount} 条${result.restoredCount ? `，恢复历史版本 ${result.restoredCount} 条` : ''}${result.noDataCount ? `，${result.noDataCount} 张报表转为暂无数据` : ''}` : ''; showNotice(`已删除 ${result.deletedCount} 条记录${rollback}`); await renderUploads(); } catch (error) { showNotice(error.message, true); updateUploadSelection(); }
+    if (!startUploadHistoryMutation()) return;
+    try { const result = await api('/api/uploads/bulk-delete', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ uploadKeys }) }); const rollback = result.withdrawnCount ? `，撤回发布 ${result.withdrawnCount} 条${result.restoredCount ? `，恢复历史版本 ${result.restoredCount} 条` : ''}${result.noDataCount ? `，${result.noDataCount} 张报表转为暂无数据` : ''}` : ''; showNotice(`已删除 ${result.deletedCount} 条记录${rollback}`); await renderUploads(); } catch (error) { showNotice(error.message, true); updateUploadSelection(); } finally { finishUploadHistoryMutation(); }
   };
   const selectedScope = files => { const list = [...files].filter(Boolean); return { periods: [...new Set(list.map(file => guessPeriod(file?.webkitRelativePath || file?.name)).filter(Boolean))], companies: [...new Set(list.flatMap(file => guessCompanies(file?.webkitRelativePath || file?.name)))] }; };
   const showSelectedScope = files => { const list = [...files].filter(file => file && file.name); const { periods, companies } = selectedScope(list); const companyMismatch = companies.length > 1 || (companies.length === 1 && companies[0] !== state.uploadCompany); const periodMismatch = periods.length > 1 || (periods.length === 1 && periods[0] !== state.uploadPeriod); const fileList = $('#folder-file-list'); if (fileList) { fileList.classList.toggle('scope-warning', companyMismatch || periodMismatch); fileList.textContent = list.length ? `${list.map(file => `${file.webkitRelativePath || file.name} → ${guessType(file.name) === 'bundle' ? '汇总财务报表（自动识别）' : reportNames[guessType(file.name)] || '未识别'}`).join('　')}　· 检测：${companies.length ? `地区 ${companies.map(companyNameByKey).join('、')}` : '未识别地区'}；${periods.length ? `期间 ${periods.join('、')}` : '未识别期间'}${companyMismatch || periodMismatch ? `（当前选择：${companyNameByKey(state.uploadCompany)} / ${state.uploadPeriod}）` : ''}` : '尚未选择文件'; } return { companyMismatch, periodMismatch, companies, periods }; };
@@ -1199,7 +1345,14 @@ async function renderUploads() {
       showNotice(`已上传并校验 ${success} 个报表批次${trimmedSheets.length ? `；已自动裁剪 ${trimmedSheets.length} 个工作表的尾部空白范围` : ''}`); await renderUploads();
     }
   };
-  page.querySelectorAll('[data-publish]').forEach(button => button.onclick = async () => { const item = (data.uploads || []).find(upload => upload.uploadKey === button.dataset.publish); if (!item) return showNotice('上传记录不存在，请刷新后重试', true); const confirmed = window.confirm(`即将发布为当前版本，请核对：\n\n文件：${item.fileName}\n地区：${companyNameByKey(item.companyKey)}\n期间：${item.period}\n报表：${reportNames[item.reportType] || item.reportType}\n\n发布后将替换同地区、同期间、同报表的当前版本，原版本保留为历史记录。确定发布？`); if (!confirmed) return; button.disabled = true; try { await api(`/api/uploads/${button.dataset.publish}/publish`, { method: 'POST' }); showNotice('已发布为当前版本'); await renderUploads(); } catch (error) { showNotice(error.message, true); button.disabled = false; } }); page.querySelectorAll('[data-preview-upload]').forEach(button => button.onclick = () => { state.company = button.dataset.previewCompany || state.company; state.period = button.dataset.previewPeriod || state.period; state.periodExplicit = true; state.page = button.dataset.previewType === payrollStatementReportType ? consultantRoiModuleKey : button.dataset.previewType; state.reportType = button.dataset.previewType; state.version = null; state.consolidatedEntityReportType = ''; state.consolidatedEntitySheet = ''; state.consolidatedExpanded = false; state.uploadKey = button.dataset.previewUpload; refresh(); });
+  page.querySelectorAll('[data-publish]').forEach(button => button.onclick = async () => {
+    const item = (data.uploads || []).find(upload => upload.uploadKey === button.dataset.publish); if (!item) return showNotice('上传记录不存在，请刷新后重试', true);
+    const confirmed = window.confirm(`即将发布为当前版本，请核对：\n\n文件：${item.fileName}\n地区：${companyNameByKey(item.companyKey)}\n期间：${item.period}\n报表：${reportNames[item.reportType] || item.reportType}\n\n发布后将替换同地区、同期间、同报表的当前版本，原版本保留为历史记录。确定发布？`); if (!confirmed || !startUploadHistoryMutation()) return;
+    try { await api(`/api/uploads/${button.dataset.publish}/publish`, { method: 'POST' }); showNotice('已发布为当前版本'); await renderUploads(); }
+    catch (error) { showNotice(error.message, true); }
+    finally { finishUploadHistoryMutation(); }
+  });
+  page.querySelectorAll('[data-preview-upload]').forEach(button => button.onclick = () => { state.company = button.dataset.previewCompany || state.company; state.period = button.dataset.previewPeriod || state.period; state.periodExplicit = true; state.page = button.dataset.previewType === payrollStatementReportType ? consultantRoiModuleKey : button.dataset.previewType; state.reportType = button.dataset.previewType; state.version = null; state.consolidatedEntityReportType = ''; state.consolidatedEntitySheet = ''; state.consolidatedExpanded = false; state.uploadKey = button.dataset.previewUpload; refresh(); });
 }
 
 async function renderDatabaseAdmin() {
@@ -1217,6 +1370,52 @@ async function renderDatabaseAdmin() {
     const refreshWith = changes => { Object.assign(filters, changes); if (!Object.prototype.hasOwnProperty.call(changes, 'page')) filters.page = 1; renderDatabaseAdmin(); };
     $('#db-company').onchange = event => refreshWith({ company: event.target.value }); $('#db-period').onchange = event => refreshWith({ period: event.target.value }); $('#db-report-type').onchange = event => refreshWith({ reportType: event.target.value }); $('#db-status').onchange = event => refreshWith({ status: event.target.value }); $('#db-search').onkeydown = event => { if (event.key === 'Enter') refreshWith({ search: event.target.value }); }; $('#db-reset').onclick = () => { state.databaseFilters = { company: state.company, period: state.period, reportType: '', status: '', search: '', page: 1 }; renderDatabaseAdmin(); }; $('#db-refresh').onclick = () => renderDatabaseAdmin(); $('#db-prev').onclick = () => refreshWith({ page: Math.max(1, batches.page - 1) }); $('#db-next').onclick = () => refreshWith({ page: batches.page + 1 });
     document.querySelectorAll('[data-db-preview]').forEach(button => button.onclick = () => { state.page = button.dataset.dbType; state.reportType = button.dataset.dbType; state.version = null; state.consolidatedEntityReportType = ''; state.consolidatedEntitySheet = ''; state.consolidatedExpanded = false; state.uploadKey = button.dataset.dbPreview; refresh(); });
+  } catch (error) { page.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`; }
+}
+
+const activityOptionHtml = (items, selected, placeholder) => `<option value="">${placeholder}</option>${items.map(item => `<option value="${escapeHtml(item.key)}" ${item.key === selected ? 'selected' : ''}>${escapeHtml(item.name)}${item.department ? ` · ${escapeHtml(item.department)}` : ''}</option>`).join('')}`;
+const activityDateBoundary = (value, end = false) => {
+  if (!value) return '';
+  const date = new Date(`${value}T00:00:00`); if (!Number.isFinite(date.getTime())) return '';
+  if (end) date.setDate(date.getDate() + 1);
+  return date.toISOString();
+};
+
+async function renderActivityLogs() {
+  const page = $('#activity-logs-page');
+  const filters = state.activityLogFilters || (state.activityLogFilters = { employeeKey: '', logType: '', action: '', moduleKey: '', companyKey: '', period: '', startDate: '', endDate: '', search: '', page: 1 });
+  const params = new URLSearchParams({ page: String(filters.page), pageSize: '20' });
+  for (const key of ['employeeKey', 'logType', 'action', 'moduleKey', 'companyKey', 'period', 'search']) if (filters[key]) params.set(key, filters[key]);
+  const startAt = activityDateBoundary(filters.startDate); const endAt = activityDateBoundary(filters.endDate, true);
+  if (startAt) params.set('startAt', startAt); if (endAt) params.set('endAt', endAt);
+  try {
+    const data = await api(`/api/admin/activity-logs?${params}`); const selected = new Set(); const totalPages = Math.max(1, Math.ceil(data.total / data.pageSize));
+    const scopeText = item => [item.moduleName, item.companyName, item.period].filter(Boolean).join(' · ') || '系统级';
+    page.innerHTML = `<div class="page-title activity-log-title"><div><h1>浏览日志</h1><p>管理员可查询所有员工的页面浏览、数据访问和操作记录</p></div><button class="button" id="activity-refresh">刷新记录</button></div>
+      <div class="activity-log-metrics"><article><span>筛选结果</span><strong>${data.stats.total}</strong><small>条日志</small></article><article class="browse"><span>浏览记录</span><strong>${data.stats.browse}</strong><small>页面与数据访问</small></article><article class="operation"><span>操作记录</span><strong>${data.stats.operation}</strong><small>上传、发布与管理</small></article></div>
+      <section class="panel activity-log-filter-panel"><div class="activity-log-filters">
+        <label><span>人员</span><select id="activity-employee">${activityOptionHtml(data.filters.employees, filters.employeeKey, '全部人员')}</select></label>
+        <label><span>类型</span><select id="activity-type"><option value="">全部类型</option><option value="browse" ${filters.logType === 'browse' ? 'selected' : ''}>浏览日志</option><option value="operation" ${filters.logType === 'operation' ? 'selected' : ''}>操作日志</option></select></label>
+        <label><span>动作</span><select id="activity-action">${activityOptionHtml(data.filters.actions, filters.action, '全部动作')}</select></label>
+        <label><span>模块</span><select id="activity-module">${activityOptionHtml(data.filters.modules, filters.moduleKey, '全部模块')}</select></label>
+        <label><span>公司</span><select id="activity-company">${activityOptionHtml(data.filters.companies, filters.companyKey, '全部公司')}</select></label>
+        <label><span>期间</span><input id="activity-period" type="month" value="${escapeHtml(filters.period)}"></label>
+        <label><span>开始日期</span><input id="activity-start" type="date" value="${escapeHtml(filters.startDate)}"></label>
+        <label><span>结束日期</span><input id="activity-end" type="date" value="${escapeHtml(filters.endDate)}"></label>
+        <label class="activity-search"><span>关键词</span><input id="activity-search" value="${escapeHtml(filters.search)}" maxlength="100" placeholder="姓名、动作、目标或详情"></label>
+      </div><div class="activity-filter-actions"><button class="button primary" id="activity-apply">应用筛选</button><button class="button" id="activity-reset">重置</button></div></section>
+      <section class="panel activity-log-list-panel"><div class="toolbar"><div><h2>日志明细</h2><div class="panel-sub">按发生时间倒序；删除后会新增一条管理员删除操作记录</div></div><button class="button danger" id="activity-delete" disabled>删除所选（0）</button></div>
+        <div class="table-wrap"><table class="data-table activity-log-table"><thead><tr><th><input id="activity-check-all" type="checkbox" aria-label="全选当前页"></th><th>时间</th><th>人员</th><th>类型 / 动作</th><th>模块 / 范围</th><th>日志详情</th></tr></thead><tbody>${data.items.map(item => `<tr><td><input class="activity-row-check" type="checkbox" value="${item.auditKey}" aria-label="选择日志 ${item.auditKey}"></td><td class="activity-time">${escapeHtml(new Date(item.createdAt).toLocaleString('zh-CN', { hour12: false }))}</td><td><strong>${escapeHtml(item.employeeName)}</strong><small>${escapeHtml(item.department || item.employeeKey)}</small></td><td><span class="activity-type-badge ${item.logType}">${item.logType === 'browse' ? '浏览' : '操作'}</span><strong>${escapeHtml(item.actionName)}</strong></td><td><strong>${escapeHtml(scopeText(item))}</strong><small>${escapeHtml(item.target)}</small></td><td><details><summary>查看详情</summary><dl><div><dt>动作代码</dt><dd>${escapeHtml(item.action)}</dd></div><div><dt>目标</dt><dd>${escapeHtml(item.target || '—')}</dd></div><div><dt>内容</dt><dd>${escapeHtml(item.detail || '—')}</dd></div><div><dt>日志编号</dt><dd>${item.auditKey}</dd></div></dl></details></td></tr>`).join('') || '<tr><td colspan="6" class="empty">当前筛选条件下暂无日志</td></tr>'}</tbody></table></div>
+        <div class="activity-pagination"><span>第 ${data.page} / ${totalPages} 页，共 ${data.total} 条</span><div><button class="button" id="activity-prev" ${data.page <= 1 ? 'disabled' : ''}>上一页</button><button class="button" id="activity-next" ${data.page >= totalPages ? 'disabled' : ''}>下一页</button></div></div></section>`;
+    const readFilters = () => ({ employeeKey: $('#activity-employee').value, logType: $('#activity-type').value, action: $('#activity-action').value, moduleKey: $('#activity-module').value, companyKey: $('#activity-company').value, period: $('#activity-period').value, startDate: $('#activity-start').value, endDate: $('#activity-end').value, search: $('#activity-search').value.trim(), page: 1 });
+    const refreshSelection = () => { const button = $('#activity-delete'); button.disabled = !selected.size; button.textContent = `删除所选（${selected.size}）`; $('#activity-check-all').checked = Boolean(data.items.length) && selected.size === data.items.length; };
+    page.querySelectorAll('.activity-row-check').forEach(input => input.onchange = () => { input.checked ? selected.add(Number(input.value)) : selected.delete(Number(input.value)); refreshSelection(); });
+    $('#activity-check-all').onchange = event => { page.querySelectorAll('.activity-row-check').forEach(input => { input.checked = event.target.checked; event.target.checked ? selected.add(Number(input.value)) : selected.delete(Number(input.value)); }); refreshSelection(); };
+    $('#activity-apply').onclick = () => { state.activityLogFilters = readFilters(); renderActivityLogs(); };
+    $('#activity-search').onkeydown = event => { if (event.key === 'Enter') $('#activity-apply').click(); };
+    $('#activity-reset').onclick = () => { state.activityLogFilters = { employeeKey: '', logType: '', action: '', moduleKey: '', companyKey: '', period: '', startDate: '', endDate: '', search: '', page: 1 }; renderActivityLogs(); };
+    $('#activity-refresh').onclick = () => renderActivityLogs(); $('#activity-prev').onclick = () => { filters.page -= 1; renderActivityLogs(); }; $('#activity-next').onclick = () => { filters.page += 1; renderActivityLogs(); };
+    $('#activity-delete').onclick = async () => { if (!selected.size || !window.confirm(`确定删除所选 ${selected.size} 条日志吗？此操作会另行留痕。`)) return; try { const result = await api('/api/admin/activity-logs', { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ auditKeys: [...selected] }) }); showNotice(`已删除 ${result.removed} 条日志，删除操作已留痕`); await renderActivityLogs(); } catch (error) { showNotice(error.message, true); } };
   } catch (error) { page.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`; }
 }
 
@@ -1326,7 +1525,7 @@ const permissionTreeHtml = (nodes, selected, baseline, depth = 0) => nodes.map(n
   return `<section class="permission-tree-node depth-${depth}"><div class="permission-tree-heading"><label><input type="checkbox" class="permission-group-input" data-permission-keys="${keys.join(',')}" ${selectedCount === keys.length ? 'checked' : ''}><span>${escapeHtml(node.name)}</span></label><span class="permission-count">${selectedCount}/${keys.length}</span></div>${node.description ? `<p>${escapeHtml(node.description)}</p>` : ''}<div class="permission-tree-children">${permissionTreeHtml(node.children || [], selected, baseline, depth + 1)}</div></section>`;
 }).join('');
 
-async function renderPermissions() {
+async function renderDeprecatedPermissionWorkbench() {
   const page = $('#permissions-page');
   try {
     const data = await api('/api/admin/roles');
@@ -1401,6 +1600,14 @@ async function renderPermissions() {
   } catch (error) { page.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`; }
 }
 
+async function renderPermissions() {
+  const page = $('#permissions-page');
+  try {
+    const data = await api('/api/admin/roles');
+    await renderPermissionCenter({ page, data, state, api, showNotice, loadBootstrap, companyNameByKey, reload: renderPermissions });
+  } catch (error) { page.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`; }
+}
+
 function applyReportWatermark() {
   const reportPages = [...reportPageTypes, revenueStatisticsReportType, financialBriefModuleKey];
   const hosts = [$('#report-page'), $('#revenue-statistics-page'), $('#financial-brief-page'), $('#detail-page')];
@@ -1414,14 +1621,28 @@ function applyReportWatermark() {
   host.classList.add('watermark-host'); host.appendChild(layer);
 }
 
+let lastPageViewSignature = '';
+const recordCurrentPageView = () => {
+  if (!state.bootstrap) return;
+  const detail = state.consolidatedEntitySheet || (state.page === revenueStatisticsReportType ? state.revenueDimension : '') || sharePageNames[state.page] || reportNames[state.page] || state.page;
+  const period = state.page === 'journal_detail' ? (state.detailPeriod || state.period) : state.period;
+  const signature = [state.employeeKey, state.page, state.company, period, detail].join('|');
+  if (signature === lastPageViewSignature) return;
+  lastPageViewSignature = signature;
+  void api('/api/activity/page-view', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ moduleKey: state.page, companyKey: state.company, period, detail }) }).catch(() => { lastPageViewSignature = ''; });
+};
+
 async function refresh({ reloadBootstrap = true } = {}) {
-  syncPageVisibility(); if (state.page !== financialBriefModuleKey) clearFinancialBriefAutoRefresh(); setActiveNav();
+  const refreshRevision = ++pageRequestRevision;
+  syncPageVisibility(); if (state.page !== financialBriefModuleKey) clearFinancialBriefAutoRefresh(); if (state.page !== consultantRoiModuleKey) clearConsultantRoiAutoRefresh(); setActiveNav();
   if (reloadBootstrap || !state.bootstrap) {
     try { await loadBootstrap(); } catch (error) { showNotice(error.message, true); return; }
   }
   syncPageVisibility();
+  const activeHost = pageHostFor(state.page); activeHost?.setAttribute('aria-busy', 'true');
   if (state.page === 'home') renderHome();
   else if (state.page === financialBriefModuleKey) await renderFinancialBrief();
+  else if (state.page === activityLogModuleKey) await renderActivityLogs();
   else if (state.page === 'permissions') await renderPermissions();
   else if (state.page === 'uploads') await renderUploads();
   else if (state.page === 'database_admin') await renderDatabaseAdmin();
@@ -1430,15 +1651,20 @@ async function refresh({ reloadBootstrap = true } = {}) {
   else if (state.page === 'expense_analysis') await renderExpenseAnalysis();
   else if (state.page === 'group_profit_analysis') await renderGroupProfitAnalysis();
   else if (state.page === consultantRoiModuleKey) await renderConsultantRoiInteractive();
+  else if (state.page === intercompanyModuleKey) await renderIntercompanyReconciliation();
   else if (state.page === revenueStatisticsReportType) await renderRevenueStatistics();
   else if (state.page === 'journal_detail') await renderJournalDetail();
   else { state.reportType = state.page; await refreshReport(); }
+  if (refreshRevision !== pageRequestRevision) return;
+  activeHost?.removeAttribute('aria-busy');
   applyReportWatermark();
+  recordCurrentPageView();
   restartPageArrival();
 }
 
 bindShareCard();
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && state.page === financialBriefModuleKey) { clearFinancialBriefAutoRefresh(); renderFinancialBrief({ trigger: 'resume' }); }
+  if (document.visibilityState === 'visible' && state.page === consultantRoiModuleKey) { clearConsultantRoiAutoRefresh(); renderConsultantRoiInteractive({ trigger: 'resume' }); }
 });
 refresh();

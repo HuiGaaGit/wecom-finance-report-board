@@ -14,7 +14,7 @@ const destination = path.join(backupDirectory, `report-board-${timestamp}.db`);
 const database = new Database(databaseFile, { fileMustExist: true });
 try {
   await database.backup(destination);
-  fs.chmodSync(destination, 0o640);
+  fs.chmodSync(destination, 0o600);
   console.log(destination);
 } finally {
   database.close();
