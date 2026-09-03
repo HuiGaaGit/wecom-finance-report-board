@@ -28,10 +28,10 @@ try {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const dataDir = path.join(__dirname, 'data');
-const appVersion = '1.1.27';
+const appVersion = '1.1.28';
 const financialBriefModuleKey = 'financial_brief';
 const financialBriefNotesPermissionKey = 'module.financial_brief.notes.manage';
-const financialBriefMetricKeys = new Set(['expectedRevenue', 'accountBalance', 'operatingRevenue', 'operatingCost', 'sellingExpense', 'managementExpense', 'financeExpense', 'netProfit', 'comprehensiveRevenueProfit']);
+const financialBriefMetricKeys = new Set(['expectedRevenue', 'accountBalance', 'operatingRevenue', 'operatingCost', 'sellingExpense', 'managementExpense', 'financeExpense', 'netProfit']);
 const consultantRoiModuleKey = 'consultant_roi_analysis';
 const intercompanyModuleKey = 'intercompany_reconciliation';
 const activityLogModuleKey = 'activity_logs';
@@ -233,6 +233,8 @@ CREATE TABLE IF NOT EXISTS financial_brief_notes (
   period TEXT NOT NULL,
   metric_key TEXT NOT NULL,
   note_text TEXT NOT NULL,
+  item_name TEXT NOT NULL DEFAULT '',
+  item_amount REAL,
   created_by TEXT NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
@@ -322,6 +324,10 @@ if (!auditLogColumns.has('log_type')) db.exec("ALTER TABLE audit_logs ADD COLUMN
 if (!auditLogColumns.has('module_key')) db.exec("ALTER TABLE audit_logs ADD COLUMN module_key TEXT NOT NULL DEFAULT ''");
 if (!auditLogColumns.has('company_key')) db.exec("ALTER TABLE audit_logs ADD COLUMN company_key TEXT NOT NULL DEFAULT ''");
 if (!auditLogColumns.has('period')) db.exec("ALTER TABLE audit_logs ADD COLUMN period TEXT NOT NULL DEFAULT ''");
+const financialBriefItemColumns = new Set(db.prepare('PRAGMA table_info(financial_brief_notes)').all().map(column => column.name));
+if (!financialBriefItemColumns.has('item_name')) db.exec("ALTER TABLE financial_brief_notes ADD COLUMN item_name TEXT NOT NULL DEFAULT ''");
+if (!financialBriefItemColumns.has('item_amount')) db.exec('ALTER TABLE financial_brief_notes ADD COLUMN item_amount REAL');
+db.prepare("UPDATE financial_brief_notes SET item_name = note_text WHERE trim(item_name) = ''").run();
 db.exec(`
 UPDATE audit_logs SET log_type = 'browse' WHERE action LIKE 'view_%' AND log_type = 'operation';
 CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at DESC);
@@ -689,9 +695,9 @@ const permissionCatalog = [
     reportPermissionNode('balance_sheet', '资产负债表'), reportPermissionNode('income_statement', '利润表'), summaryReportPermissionNode('consolidated_income_statement', '桉侨集团合并利润表'), summaryReportPermissionNode(revenueProfitReportType, '（营收利润口径）合并利润表'), summaryReportPermissionNode(revenueStatisticsReportType, '营收统计表'), reportPermissionNode('cash_flow', '现金流量表'), reportPermissionNode('trial_balance', '科目余额表'), reportPermissionNode('journal', '序时账')
   ] },
   { id: 'analysis', name: '经营分析', description: '分析页只开放聚合结果，不自动开放底层序时账', children: [
-    { id: 'financial_brief_permissions', name: '财务数据简报', description: '简报浏览与二级备注编辑分别授权', children: [
+    { id: 'financial_brief_permissions', name: '财务数据简报', description: '简报浏览与二级项目编辑分别授权', children: [
       { key: 'module.financial_brief.view', name: '浏览财务数据简报' },
-      { key: financialBriefNotesPermissionKey, name: '编辑二级项目备注' }
+      { key: financialBriefNotesPermissionKey, name: '编辑二级项目明细' }
     ] },
     analysisPermissionNode('cash_analysis'),
     analysisPermissionNode('main_business_analysis'),
@@ -963,7 +969,8 @@ const auditActionNames = new Map([
   ['set_company_order', '调整公司顺序'], ['set_module_order', '调整模块顺序'], ['set_analysis_block_order', '调整分析布局'], ['set_report_watermark', '修改员工水印'],
   ['sync_platform_directory', '同步成员目录'], ['assign_role', '分配角色'], ['save_employee_permission_profile', '保存员工权限'],
   ['copy_employee_permissions', '复制员工权限'], ['remove_employee_permissions', '移除员工授权'], ['set_account_visibility', '修改科目显示'],
-  ['set_detail_preference', '修改明细偏好'], ['create_financial_brief_note', '新增简报备注'], ['update_financial_brief_note', '修改简报备注'], ['delete_financial_brief_note', '删除简报备注'], ['delete_activity_logs', '删除日志']
+  ['set_detail_preference', '修改明细偏好'], ['create_financial_brief_note', '新增简报备注'], ['update_financial_brief_note', '修改简报备注'], ['delete_financial_brief_note', '删除简报备注'],
+  ['create_financial_brief_item', '新增简报二级项目'], ['update_financial_brief_item', '修改简报二级项目'], ['delete_financial_brief_item', '删除简报二级项目'], ['delete_activity_logs', '删除日志']
 ]);
 const auditActionName = action => auditActionNames.get(action) || action;
 const activityLogWhere = filters => {
@@ -2119,11 +2126,16 @@ const financialBriefFor = (companyKey, period) => {
   for (const [key, label] of Object.entries({ expectedRevenue: '预计营收', accountBalance: '账户余额', operatingRevenue: '营业收入', operatingCost: '营业成本', sellingExpense: '销售费用', advertisingExpense: '广宣费', managementExpense: '管理费用', financeExpense: '财务费用', netProfit: '净利润', comprehensiveRevenueProfit: '营收综合利润' })) if (metrics[key] === null && !missing.some(item => item === label || item.startsWith(`${label}来源`))) missing.push(label);
   return { company: company.company_name, companyKey, period, scopeLabel: companyKey === 'group' ? '集团方面' : `${company.company_name}方面`, metrics, sources, missing: [...new Set(missing)], complete: missing.length === 0 };
 };
-const financialBriefNoteRow = noteKey => db.prepare(`SELECT n.note_key AS noteKey, n.company_key AS companyKey, n.period, n.metric_key AS metricKey, n.note_text AS text, n.created_by AS createdBy, e.display_name AS authorName, n.created_at AS createdAt, n.updated_at AS updatedAt
-  FROM financial_brief_notes n JOIN employees e ON e.employee_key = n.created_by WHERE n.note_key = ?`).get(noteKey);
-const financialBriefNotesFor = (companyKey, period) => db.prepare(`SELECT n.note_key AS noteKey, n.metric_key AS metricKey, n.note_text AS text, n.created_by AS createdBy, e.display_name AS authorName, n.created_at AS createdAt, n.updated_at AS updatedAt
-  FROM financial_brief_notes n JOIN employees e ON e.employee_key = n.created_by WHERE n.company_key = ? AND n.period = ? ORDER BY n.metric_key, n.created_at, n.note_key`).all(companyKey, period);
-const normalizeFinancialBriefNote = value => String(value || '').replace(/\s+/g, ' ').trim();
+const financialBriefItemRow = itemKey => db.prepare(`SELECT n.note_key AS itemKey, n.company_key AS companyKey, n.period, n.metric_key AS metricKey, n.item_name AS name, n.item_amount AS amount, n.created_by AS createdBy, e.display_name AS authorName, n.created_at AS createdAt, n.updated_at AS updatedAt
+  FROM financial_brief_notes n JOIN employees e ON e.employee_key = n.created_by WHERE n.note_key = ?`).get(itemKey);
+const financialBriefItemsFor = (companyKey, period) => db.prepare(`SELECT n.note_key AS itemKey, n.metric_key AS metricKey, n.item_name AS name, n.item_amount AS amount, n.created_by AS createdBy, e.display_name AS authorName, n.created_at AS createdAt, n.updated_at AS updatedAt
+  FROM financial_brief_notes n JOIN employees e ON e.employee_key = n.created_by WHERE n.company_key = ? AND n.period = ? AND n.metric_key != 'comprehensiveRevenueProfit' ORDER BY n.metric_key, n.created_at, n.note_key`).all(companyKey, period);
+const normalizeFinancialBriefItemName = value => String(value || '').replace(/\s+/g, ' ').trim();
+const normalizeFinancialBriefItemAmount = value => {
+  if (value === null || value === undefined || String(value).trim() === '') return null;
+  const amount = Number(String(value).replace(/[,，\s￥¥元]/g, ''));
+  return Number.isFinite(amount) && Math.abs(amount) <= 1_000_000_000_000_000 ? Number(amount.toFixed(2)) : null;
+};
 const sendStatic = (req, res, pathname) => {
   const safe = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, ''); const file = path.resolve(publicDir, safe);
   const relative = path.relative(publicDir, file);
@@ -2453,35 +2465,38 @@ const server = http.createServer(async (req, res) => {
       if (!companyRow(companyKey)) return bad(res, 404, '公司不存在');
       const employee = requireEmployee(req, res); if (!employee) return;
       if (!hasAnalysis(employee.employee_key, financialBriefModuleKey, companyKey, period)) return bad(res, 403, '当前员工没有财务数据简报权限');
-      const brief = financialBriefFor(companyKey, period); const notes = financialBriefNotesFor(companyKey, period); const canManageNotes = hasPermissionKey(employee.employee_key, financialBriefNotesPermissionKey, companyKey, period);
+      const brief = financialBriefFor(companyKey, period); const secondaryItems = financialBriefItemsFor(companyKey, period); const canManageSecondaryItems = hasPermissionKey(employee.employee_key, financialBriefNotesPermissionKey, companyKey, period);
       log(employee.employee_key, 'view_financial_brief', financialBriefModuleKey, `${companyKey}/${period}`, { moduleKey: financialBriefModuleKey, companyKey, period });
-      return json(res, 200, { ...brief, notes, canManageNotes });
+      return json(res, 200, { ...brief, secondaryItems, canManageSecondaryItems });
     }
-    if (url.pathname === '/api/analysis/financial-brief/notes' && ['POST', 'PUT', 'DELETE'].includes(req.method)) {
+    if (['/api/analysis/financial-brief/secondary-items', '/api/analysis/financial-brief/notes'].includes(url.pathname) && ['POST', 'PUT', 'DELETE'].includes(req.method)) {
       const employee = requireEmployee(req, res); if (!employee) return;
-      const body = await parseBody(req); const noteKey = String(body.noteKey || '');
+      const body = await parseBody(req); const itemKey = String(body.itemKey || body.noteKey || '');
       if (req.method === 'POST') {
-        const companyKey = String(body.companyKey || ''); const period = String(body.period || ''); const metricKey = String(body.metricKey || ''); const noteText = normalizeFinancialBriefNote(body.text);
+        const companyKey = String(body.companyKey || ''); const period = String(body.period || ''); const metricKey = String(body.metricKey || ''); const itemName = normalizeFinancialBriefItemName(body.name); const itemAmount = normalizeFinancialBriefItemAmount(body.amount);
         if (!companyRow(companyKey)) return bad(res, 404, '公司不存在');
         if (!/^\d{4}-(?:0[1-9]|1[0-2])$/.test(period)) return bad(res, 400, '会计期间格式无效');
-        if (!financialBriefMetricKeys.has(metricKey)) return bad(res, 400, '简报项目无效');
-        if (!noteText || noteText.length > 300) return bad(res, 400, '备注内容应为 1 至 300 个字符');
-        if (!hasAnalysis(employee.employee_key, financialBriefModuleKey, companyKey, period) || !hasPermissionKey(employee.employee_key, financialBriefNotesPermissionKey, companyKey, period)) return bad(res, 403, '当前员工没有简报备注编辑权限');
+        if (!financialBriefMetricKeys.has(metricKey)) return bad(res, 400, metricKey === 'comprehensiveRevenueProfit' ? '营收综合利润不支持二级项目' : '简报项目无效');
+        if (!itemName || itemName.length > 80) return bad(res, 400, '二级项目名称应为 1 至 80 个字符');
+        if (itemAmount === null) return bad(res, 400, '二级项目金额格式无效');
+        if (!hasAnalysis(employee.employee_key, financialBriefModuleKey, companyKey, period) || !hasPermissionKey(employee.employee_key, financialBriefNotesPermissionKey, companyKey, period)) return bad(res, 403, '当前员工没有简报二级项目编辑权限');
         const createdAt = now(); const createdKey = `fbn-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
-        db.prepare('INSERT INTO financial_brief_notes(note_key, company_key, period, metric_key, note_text, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(createdKey, companyKey, period, metricKey, noteText, employee.employee_key, createdAt, createdAt);
-        log(employee.employee_key, 'create_financial_brief_note', createdKey, `${metricKey}:${noteText}`, { moduleKey: financialBriefModuleKey, companyKey, period });
-        return json(res, 201, { ok: true, note: financialBriefNoteRow(createdKey) });
+        db.prepare('INSERT INTO financial_brief_notes(note_key, company_key, period, metric_key, note_text, item_name, item_amount, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(createdKey, companyKey, period, metricKey, itemName, itemName, itemAmount, employee.employee_key, createdAt, createdAt);
+        log(employee.employee_key, 'create_financial_brief_item', createdKey, `${metricKey}:${itemName}:${itemAmount}`, { moduleKey: financialBriefModuleKey, companyKey, period });
+        return json(res, 201, { ok: true, item: financialBriefItemRow(createdKey) });
       }
-      const existing = financialBriefNoteRow(noteKey); if (!existing) return bad(res, 404, '简报备注不存在');
-      if (!hasAnalysis(employee.employee_key, financialBriefModuleKey, existing.companyKey, existing.period) || !hasPermissionKey(employee.employee_key, financialBriefNotesPermissionKey, existing.companyKey, existing.period)) return bad(res, 403, '当前员工没有简报备注编辑权限');
+      const existing = financialBriefItemRow(itemKey); if (!existing) return bad(res, 404, '简报二级项目不存在');
+      if (!hasAnalysis(employee.employee_key, financialBriefModuleKey, existing.companyKey, existing.period) || !hasPermissionKey(employee.employee_key, financialBriefNotesPermissionKey, existing.companyKey, existing.period)) return bad(res, 403, '当前员工没有简报二级项目编辑权限');
       if (req.method === 'PUT') {
-        const noteText = normalizeFinancialBriefNote(body.text); if (!noteText || noteText.length > 300) return bad(res, 400, '备注内容应为 1 至 300 个字符');
-        db.prepare('UPDATE financial_brief_notes SET note_text = ?, updated_at = ? WHERE note_key = ?').run(noteText, now(), noteKey);
-        log(employee.employee_key, 'update_financial_brief_note', noteKey, noteText, { moduleKey: financialBriefModuleKey, companyKey: existing.companyKey, period: existing.period });
-        return json(res, 200, { ok: true, note: financialBriefNoteRow(noteKey) });
+        const itemName = normalizeFinancialBriefItemName(body.name); const itemAmount = normalizeFinancialBriefItemAmount(body.amount);
+        if (!itemName || itemName.length > 80) return bad(res, 400, '二级项目名称应为 1 至 80 个字符');
+        if (itemAmount === null) return bad(res, 400, '二级项目金额格式无效');
+        db.prepare('UPDATE financial_brief_notes SET note_text = ?, item_name = ?, item_amount = ?, updated_at = ? WHERE note_key = ?').run(itemName, itemName, itemAmount, now(), itemKey);
+        log(employee.employee_key, 'update_financial_brief_item', itemKey, `${itemName}:${itemAmount}`, { moduleKey: financialBriefModuleKey, companyKey: existing.companyKey, period: existing.period });
+        return json(res, 200, { ok: true, item: financialBriefItemRow(itemKey) });
       }
-      db.prepare('DELETE FROM financial_brief_notes WHERE note_key = ?').run(noteKey);
-      log(employee.employee_key, 'delete_financial_brief_note', noteKey, `${existing.metricKey}:${existing.text}`, { moduleKey: financialBriefModuleKey, companyKey: existing.companyKey, period: existing.period });
+      db.prepare('DELETE FROM financial_brief_notes WHERE note_key = ?').run(itemKey);
+      log(employee.employee_key, 'delete_financial_brief_item', itemKey, `${existing.metricKey}:${existing.name}:${existing.amount}`, { moduleKey: financialBriefModuleKey, companyKey: existing.companyKey, period: existing.period });
       return json(res, 200, { ok: true, removed: 1 });
     }
     if (url.pathname === '/api/analysis/group-profit-trends' && req.method === 'GET') {
@@ -2713,7 +2728,7 @@ const server = http.createServer(async (req, res) => {
         const parentKey = `module.${pageKey}.view`;
         if (analysisBlockPermissionKeys(pageKey).some(key => permissionKeys.includes(key)) && !permissionKeys.includes(parentKey)) return bad(res, 400, `查看${definition.pageName}子模块前，需先开启${definition.pageName}浏览权限`);
       }
-      if (permissionKeys.includes(financialBriefNotesPermissionKey) && !permissionKeys.includes('module.financial_brief.view')) return bad(res, 400, '编辑简报二级备注前，需先开启财务数据简报浏览权限');
+      if (permissionKeys.includes(financialBriefNotesPermissionKey) && !permissionKeys.includes('module.financial_brief.view')) return bad(res, 400, '编辑简报二级项目前，需先开启财务数据简报浏览权限');
       if (permissionKeys.includes(intercompanyDetailPermissionKey) && !permissionKeys.includes(intercompanyViewPermissionKey)) return bad(res, 400, '查看双方序时账明细前，需先开启各公司往来校验浏览权限');
       if (!Array.isArray(body.companyKeys) || companyKeys.some(key => key !== '*' && !db.prepare('SELECT 1 FROM companies WHERE company_key = ?').get(key))) return bad(res, 400, '请选择有效的公司范围');
       if (!/^\d{4}-\d{2}$/.test(fromPeriod) || !/^\d{4}-\d{2}$/.test(toPeriod) || fromPeriod > toPeriod) return bad(res, 400, '期间范围无效');

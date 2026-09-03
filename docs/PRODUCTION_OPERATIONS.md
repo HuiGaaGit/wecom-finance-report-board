@@ -1,8 +1,8 @@
 # 桉侨财务模块生产说明
 
 更新日期：2026-09-03
-当前生产版本：1.1.25
-最近发布包：1.1.25（已部署）
+当前生产版本：1.1.27
+最近发布包：1.1.27（已部署）
 正式地址：<https://anqiaoyiminxq.com/platform/finance/>
 
 ## 1. 系统归属与隔离
@@ -75,7 +75,7 @@ ssh -F deploy/ssh_config wecom-finance-prod "hostname && whoami"
 
 - Compose 项目：`wecom-finance-report-board`
 - 容器：`wecom-finance-report-board`
-- 当前镜像：`aqllm/finance-report-board:1.1.25`
+- 当前镜像：`aqllm/finance-report-board:1.1.27`
 - 容器运行用户：`20117:20117`
 - 容器端口：`3180`
 - 主机监听：`127.0.0.1:3180`
@@ -300,3 +300,10 @@ cat /data/data/wecom-finance-report-board/backups/offsite-last-success.meta
 - SQLite 完整性为 `ok`；核心业务事实保持 8 家公司、88 个上传批次、88 份报表快照和 4,635 条报表行。新增 `financial_brief_notes` 表当前为 0 行，发布未改写历史报表数据。
 - 发布前数据库备份：`/data/data/wecom-finance-report-board/backups/report-board-20260903T044128Z.db`；SHA256：`3003f60691d99920cf1bd9a744f4cbe301f441546ccb818fd4793f1c6c643f90`。发布后数据库备份：`/data/data/wecom-finance-report-board/backups/report-board-20260903T050045Z.db`；SHA256：`a7c012afea1440aa8e81b602ab419d84d793ffa10012f93491c2d22ad659b0b6`。两份备份权限均为 `0600`。
 - 发布前源码与 Compose 回滚快照：`/data/backups/wecom-finance-report-board/pre-1.1.27-20260903T044128Z`。回滚时恢复该快照中的 Compose，并重新执行 `docker compose up -d --no-build`；除非数据库完整性失败，不得用旧数据库覆盖当前业务数据。
+
+## 18. 财务简报二级项目明细行候选（1.1.28，待部署）
+
+- 原自由文字备注卡片改为一级项目下方的二级项目明细行，每行包含项目名称与金额，沿用一级项目的列对齐并缩小一号字体，不显示“备注”标签、作者或独立卡片边框。
+- 新增与编辑表单分别录入二级项目名称和金额；纯文字复制时二级项目紧跟所属一级项目，全部项目之间不插入空行。
+- “营收综合利润”作为最终结果固定不提供二级项目，前端不显示入口，后端也拒绝绕过界面新增。
+- 权限键保持 `module.financial_brief.notes.manage` 以兼容现有授权，权限中心展示名称更新为“编辑二级项目明细”。SQLite 继续复用 `financial_brief_notes` 表并增量增加名称、金额字段，不重建数据库；若历史备注存在，会把原文字兼容迁移为二级项目名称。
