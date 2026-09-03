@@ -1,8 +1,8 @@
 # 桉侨财务模块生产说明
 
 更新日期：2026-09-03
-当前生产版本：1.1.35
-最近发布包：1.1.35（已部署）
+当前生产版本：1.1.47
+最近发布包：1.1.47（已部署）
 正式地址：<https://anqiaoyiminxq.com/platform/finance/>
 
 ## 1. 系统归属与隔离
@@ -453,3 +453,13 @@ cat /data/data/wecom-finance-report-board/backups/offsite-last-success.meta
 - 用户样表“26年7月顾问消耗-营收表.xlsx”本地隔离验收识别“汇总”表 29 名顾问，个人投流消耗合计 `488,831.69` 元；排除“市场部分给渠道部”公共费用 `6,457.50` 元，与表内总额 `495,289.19` 元勾稽一致。
 - 完整自动化回归 `98/98`、服务端和前端语法检查、部署配置检查及差异检查均通过。`1280×720` 浏览器中表格和容器同为 `913px`、无横向滚动；`390×844` 下整页宽度为 `375/375`，仅表格内部保留最低可读宽度滚动，控制台无警告或错误。
 - 本候选完整保留 `1.1.46` 的 Docker 原生依赖构建加固、资产负债分析修复及 `1.1.45` 动态往来公司矩阵。生产仍运行 `1.1.35`；上线前须创建 SQLite 一致性备份，再依次执行测试镜像、正式镜像、Nginx、Compose、运行时隔离和公网验收。回滚只需恢复上一镜像与 Compose；本版本没有数据库结构迁移，新数据源批次可保留，旧版本不会读取。
+
+## 36. 顾问投流消耗费用生产发布（1.1.47）
+
+- `2026-09-03 19:37 CST` 使用提交 `b5fbf34` 的固定候选包完成生产发布；包 SHA256 为 `F535E0E11CC924F73A3655410D0A143EF48B09C2921B0A545FAAE455AFA2309D`。服务器 Docker tests 为 `98/98`，正式镜像为 `aqllm/finance-report-board:1.1.47`，镜像 ID 为 `sha256:2f647fe974b6373ad45cc3b5994fd110ceef9167142c38a878a477b359be589e`。
+- 容器为 `healthy`，回环和公网健康接口均返回 `1.1.47/platform`；运行时隔离检查、Nginx 配置检查、同源配置一致性及公网页面登录验收通过。正式页面显示新上传入口“集团顾问消耗-营收表”，控制台无警告或错误。
+- SQLite 完整性发布前后均为 `ok`；核心业务事实保持 8 家公司、235 个上传批次、235 份报表快照和 13,061 条报表行。首次启动新增两种分析专用报表类型及相应全局模块顺序，共使 `report_types` 从 9 增至 11、`dashboard_module_order` 从 20 增至 22；浏览验收新增 5 条审计日志，不涉及上传、快照或报表行变更。
+- 发布前数据库备份：`/data/data/wecom-finance-report-board/backups/report-board-20260903T112454Z.db`，SHA256：`383DD186EE811CB68913960BC4B840089A5606DB6CDA987EB9BCB2AC6DDC99C1`；发布后备份：`/data/data/wecom-finance-report-board/backups/report-board-20260903T114402Z.db`，SHA256：`3B2E64A4C503DBE4AC849F6D66ED6A79FAD8B30EC9AA89B82E920D7484349589`。两者权限均为 `0600`、所有者均为 `20117:20117`。
+- 发布前 Compose、受限环境配置、Nginx、容器/镜像信息及源码归档位于 `/data/backups/wecom-finance-report-board/pre-1.1.47-20260903T112900Z`；旧源码目录保留为 `/data/repos/wecom-finance-report-board-pre-1.1.47-20260903T112900Z`，旧镜像 `1.1.35` 未删除。
+- 顾问人事同步 service 已安装并完成宿主机 Node 22 原生依赖准备；当前服务器尚未完成 `wecom-cli` 授权，手工验证按设计写入 `auth_required` 状态及界面操作指引。为避免反复失败，`.path` 与 `.timer` 保持禁用；管理员完成 `wecom-cli auth init` 并手工验证同步成功后，方可启用这两个单元。
+- 回滚时先保持顾问同步 `.path/.timer` 禁用，恢复本节回滚快照中的 Compose、环境与源码并启动 `aqllm/finance-report-board:1.1.35`；数据库完整性正常时不得用旧备份覆盖生产数据。
