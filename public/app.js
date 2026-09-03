@@ -555,6 +555,12 @@ function renderRawReport(data) {
 }
 
 const financialBriefAmountText = amount => amount === null || amount === undefined ? '—' : Number(amount).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const financialBriefSecondaryText = item => {
+  const text = String(item?.text || '').replace(/\s+/g, ' ').trim();
+  if (text) return text;
+  const name = String(item?.name || '').replace(/\s+/g, ' ').trim();
+  return item?.amount === null || item?.amount === undefined ? name : `${name} ${financialBriefAmountText(item.amount)}`.trim();
+};
 const financialBriefMetricRows = brief => {
   const m = brief.metrics || {}; const value = financialBriefAmountText;
   return [
@@ -576,25 +582,25 @@ const financialBriefPlainText = brief => {
     brief.scopeLabel || '',
     ...financialBriefMetricRows(brief).flatMap(row => [
       `${row.label}${row.plainGap || ''}${row.amount}${row.plainDescription ?? row.description ?? ''}`,
-      ...secondaryItems.filter(item => item.metricKey === row.key).map(item => `  ${String(item.name || '').replace(/\s+/g, ' ').trim()} ${financialBriefAmountText(item.amount)}`)
+      ...secondaryItems.filter(item => item.metricKey === row.key).map(item => `  ${financialBriefSecondaryText(item)}`)
     ])
   ].join('\n');
 };
 const financialBriefRowsHtml = brief => financialBriefMetricRows(brief).map(row => {
   const secondaryItems = (brief.secondaryItems || []).filter(item => item.metricKey === row.key);
-  const secondaryHtml = secondaryItems.map(item => `<div class="financial-brief-subrow" data-item-key="${escapeHtml(item.itemKey)}"><span>${escapeHtml(item.name)}</span><b>${escapeHtml(financialBriefAmountText(item.amount))}</b>${brief.canManageSecondaryItems ? `<div class="financial-brief-subrow-actions"><button type="button" class="financial-brief-item-edit" data-item-key="${escapeHtml(item.itemKey)}">编辑</button><button type="button" class="financial-brief-item-delete" data-item-key="${escapeHtml(item.itemKey)}">删除</button></div>` : ''}</div>`).join('');
+  const secondaryHtml = secondaryItems.map(item => { const text = financialBriefSecondaryText(item); return `<div class="financial-brief-subrow" data-item-key="${escapeHtml(item.itemKey)}"><span>${escapeHtml(text)}</span>${brief.canManageSecondaryItems ? `<div class="financial-brief-subrow-actions"><button type="button" class="financial-brief-item-edit" data-item-key="${escapeHtml(item.itemKey)}" aria-label="编辑二级说明：${escapeHtml(text)}">编辑</button><button type="button" class="financial-brief-item-delete" data-item-key="${escapeHtml(item.itemKey)}" aria-label="删除二级说明：${escapeHtml(text)}">删除</button></div>` : ''}</div>`; }).join('');
   const canAddSecondaryItem = brief.canManageSecondaryItems && row.key !== 'comprehensiveRevenueProfit';
-  return `<section class="financial-brief-item ${row.result ? 'result' : ''}" data-metric-key="${escapeHtml(row.key)}">${canAddSecondaryItem ? `<button type="button" class="financial-brief-item-add" data-metric-key="${escapeHtml(row.key)}" aria-label="在${escapeHtml(row.label)}下添加二级项目" title="添加二级项目">+</button>` : ''}<p class="${row.result ? 'financial-brief-result' : ''}"><strong>${escapeHtml(row.label)}</strong><b>${escapeHtml(row.amount)}</b>${row.description ? `<span>${escapeHtml(row.description)}</span>` : ''}</p>${secondaryHtml ? `<div class="financial-brief-subrows">${secondaryHtml}</div>` : ''}</section>`;
+  return `<section class="financial-brief-item ${row.result ? 'result' : ''}" data-metric-key="${escapeHtml(row.key)}">${canAddSecondaryItem ? `<button type="button" class="financial-brief-item-add" data-metric-key="${escapeHtml(row.key)}" aria-label="在${escapeHtml(row.label)}下添加二级说明" title="添加二级说明">+</button>` : ''}<p class="${row.result ? 'financial-brief-result' : ''}"><strong>${escapeHtml(row.label)}</strong><b>${escapeHtml(row.amount)}</b>${row.description ? `<span>${escapeHtml(row.description)}</span>` : ''}</p>${secondaryHtml ? `<div class="financial-brief-subrows">${secondaryHtml}</div>` : ''}</section>`;
 }).join('');
 const openFinancialBriefItemEditor = (brief, button, secondaryItem = null) => {
   clearFinancialBriefAutoRefresh(); document.querySelector('.financial-brief-item.is-editing')?.classList.remove('is-editing'); document.querySelector('.financial-brief-item-editor')?.remove();
   const item = button.closest('.financial-brief-item'); const editor = document.createElement('form'); editor.className = 'financial-brief-item-editor';
-  editor.innerHTML = `<input maxlength="80" required aria-label="二级项目名称" placeholder="二级项目名称" value="${escapeHtml(secondaryItem?.name || '')}"><input required inputmode="decimal" aria-label="二级项目金额" placeholder="金额" value="${escapeHtml(secondaryItem?.amount ?? '')}"><div><button type="submit" class="button primary compact">保存</button><button type="button" class="button compact" data-cancel>取消</button></div>`;
-  item.classList.add('is-editing'); item.appendChild(editor); const [nameInput, amountInput] = editor.querySelectorAll('input'); nameInput.focus(); nameInput.setSelectionRange(nameInput.value.length, nameInput.value.length);
+  editor.innerHTML = `<input maxlength="300" required aria-label="二级说明" placeholder="自由填写说明文字" value="${escapeHtml(financialBriefSecondaryText(secondaryItem))}"><div><button type="submit" class="button primary compact">保存</button><button type="button" class="button compact" data-cancel>取消</button></div>`;
+  item.classList.add('is-editing'); item.appendChild(editor); const textInput = editor.querySelector('input'); textInput.focus(); textInput.setSelectionRange(textInput.value.length, textInput.value.length);
   editor.querySelector('[data-cancel]').onclick = () => { item.classList.remove('is-editing'); editor.remove(); scheduleFinancialBriefAutoRefresh(); };
-  editor.onsubmit = async event => { event.preventDefault(); const name = nameInput.value.replace(/\s+/g, ' ').trim(); const amount = amountInput.value.replace(/[,，\s￥¥元]/g, ''); if (!name) return showNotice('请输入二级项目名称', true); if (amount === '' || !Number.isFinite(Number(amount))) return showNotice('请输入正确的二级项目金额', true); const save = editor.querySelector('[type="submit"]'); save.disabled = true;
-    const payload = secondaryItem ? { itemKey: secondaryItem.itemKey, name, amount } : { companyKey: brief.companyKey, period: brief.period, metricKey: button.dataset.metricKey, name, amount };
-    try { await api('/api/analysis/financial-brief/secondary-items', { method: secondaryItem ? 'PUT' : 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) }); showNotice(secondaryItem ? '二级项目已更新' : '二级项目已添加'); await renderFinancialBrief({ trigger: 'secondary-items' }); }
+  editor.onsubmit = async event => { event.preventDefault(); const text = textInput.value.replace(/\s+/g, ' ').trim(); if (!text) return showNotice('请输入二级说明', true); const save = editor.querySelector('[type="submit"]'); save.disabled = true;
+    const payload = secondaryItem ? { itemKey: secondaryItem.itemKey, text } : { companyKey: brief.companyKey, period: brief.period, metricKey: button.dataset.metricKey, text };
+    try { await api('/api/analysis/financial-brief/secondary-items', { method: secondaryItem ? 'PUT' : 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) }); showNotice(secondaryItem ? '二级说明已更新' : '二级说明已添加'); await renderFinancialBrief({ trigger: 'secondary-items' }); }
     catch (error) { save.disabled = false; showNotice(error.message, true); }
   };
 };
@@ -603,7 +609,7 @@ const bindFinancialBriefActions = brief => {
   $('#financial-brief-copy-button').onclick = async event => { const button = event.currentTarget; button.disabled = true; try { await writeClipboardText(financialBriefPlainText(brief)); showNotice('简报纯文字已复制，可直接粘贴'); } catch (error) { showNotice(error.message, true); } finally { button.disabled = false; } };
   document.querySelectorAll('.financial-brief-item-add').forEach(button => button.onclick = () => openFinancialBriefItemEditor(brief, button));
   document.querySelectorAll('.financial-brief-item-edit').forEach(button => button.onclick = () => { const secondaryItem = (brief.secondaryItems || []).find(item => item.itemKey === button.dataset.itemKey); if (secondaryItem) { button.dataset.metricKey = secondaryItem.metricKey; openFinancialBriefItemEditor(brief, button, secondaryItem); } });
-  document.querySelectorAll('.financial-brief-item-delete').forEach(button => button.onclick = async () => { const secondaryItem = (brief.secondaryItems || []).find(item => item.itemKey === button.dataset.itemKey); if (!secondaryItem || !window.confirm(`确定删除二级项目“${secondaryItem.name}”吗？`)) return; button.disabled = true; try { await api('/api/analysis/financial-brief/secondary-items', { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ itemKey: secondaryItem.itemKey }) }); showNotice('二级项目已删除'); await renderFinancialBrief({ trigger: 'secondary-items' }); } catch (error) { button.disabled = false; showNotice(error.message, true); } });
+  document.querySelectorAll('.financial-brief-item-delete').forEach(button => button.onclick = async () => { const secondaryItem = (brief.secondaryItems || []).find(item => item.itemKey === button.dataset.itemKey); const text = financialBriefSecondaryText(secondaryItem); if (!secondaryItem || !window.confirm(`确定删除二级说明“${text}”吗？`)) return; button.disabled = true; try { await api('/api/analysis/financial-brief/secondary-items', { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ itemKey: secondaryItem.itemKey }) }); showNotice('二级说明已删除'); await renderFinancialBrief({ trigger: 'secondary-items' }); } catch (error) { button.disabled = false; showNotice(error.message, true); } });
 };
 const clearFinancialBriefAutoRefresh = () => { window.clearTimeout(financialBriefRefreshTimer); financialBriefRefreshTimer = null; };
 const scheduleFinancialBriefAutoRefresh = () => {
