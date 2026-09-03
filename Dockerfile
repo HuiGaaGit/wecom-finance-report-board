@@ -6,7 +6,7 @@ RUN npm ci --omit=dev && npm cache clean --force
 
 FROM dependencies AS tests
 
-COPY package.json package-lock.json app.mjs app.test.mjs permission-center.test.mjs platform-auth.mjs platform-auth.test.mjs Dockerfile ./
+COPY package.json package-lock.json app.mjs app.test.mjs asset-liability-analysis.mjs asset-liability-analysis.test.mjs permission-center.test.mjs platform-auth.mjs platform-auth.test.mjs Dockerfile ./
 COPY public ./public
 COPY data/raw-reports-demo.json ./data/raw-reports-demo.json
 COPY deploy ./deploy
@@ -23,7 +23,7 @@ RUN groupadd --gid ${APP_GID} financeapp \
   && useradd --uid ${APP_UID} --gid ${APP_GID} --no-create-home --no-log-init --shell /usr/sbin/nologin financeapp
 
 COPY --from=dependencies /app/node_modules ./node_modules
-COPY --chown=${APP_UID}:${APP_GID} package.json package-lock.json app.mjs platform-auth.mjs ./
+COPY --chown=${APP_UID}:${APP_GID} package.json package-lock.json app.mjs asset-liability-analysis.mjs platform-auth.mjs ./
 COPY --chown=${APP_UID}:${APP_GID} public ./public
 COPY --chown=${APP_UID}:${APP_GID} deploy/database-summary.mjs deploy/backup-database.mjs ./deploy/
 

@@ -842,10 +842,10 @@ test('上传页使用独立公司期间选择器且移除全局范围锁定', ()
 test('页面与后台运行版本一致且旧响应不能覆盖上传操作后的列表', async () => {
   const bootstrap = await request('/api/bootstrap?company=gz&period=2026-06');
   assert.equal(bootstrap.response.status, 200);
-  assert.equal(bootstrap.payload.appVersion, '1.1.26');
+  assert.equal(bootstrap.payload.appVersion, '1.1.27');
   const index = fs.readFileSync(path.join(projectDir, 'public', 'index.html'), 'utf8');
   const frontend = fs.readFileSync(path.join(projectDir, 'public', 'app.js'), 'utf8');
-  assert.match(index, /<meta name="app-version" content="1\.1\.26">/);
+  assert.match(index, /<meta name="app-version" content="1\.1\.27">/);
   assert.match(frontend, /const expectedAppVersion = document\.querySelector\('meta\[name="app-version"\]'\)/);
   assert.match(frontend, /bootstrap\?\.appVersion === expectedAppVersion/);
   assert.match(frontend, /APP_VERSION_MISMATCH/);
@@ -2016,4 +2016,48 @@ test('管理员浏览日志支持全员采集、多条件筛选和删除留痕',
   const html = fs.readFileSync(path.join(projectDir, 'public', 'index.html'), 'utf8');
   assert.match(frontend, /renderActivityLogs/); assert.match(frontend, /recordCurrentPageView/); assert.match(frontend, /\/api\/admin\/activity-logs/);
   assert.match(stylesheet, /\.activity-log-filters/); assert.match(stylesheet, /\.activity-log-table/); assert.match(html, /id="activity-logs-page"/);
+});
+
+test('资产负债分析读取当前发布批次并在新版本发布后即时切换', async () => {
+  const period = '2027-05';
+  const analysisRaw = (sourceTotal, destinationTotal = sourceTotal) => ({
+    balance_sheet: {
+      sourceSheet: '资产负债表', maxRow: 9, maxCol: 13, rows: [
+        { row: 1, cells: ['资产负债表'] },
+        { row: 3, cells: ['项目', '期末余额', '年初余额', '负债和所有者权益（或股东权益）', '期末余额', '年初余额'] },
+        { row: 4, cells: ['货币资金', destinationTotal, 80, '实收资本', sourceTotal, 80, '资产负债分析'] },
+        { row: 5, cells: [null, null, null, null, null, null, '2027年负债、资产-钱的来源', null, null, null, '2027年钱的去向'] },
+        { row: 6, cells: [null, null, null, null, null, null, '项目', null, '金额', null, '项目', null, '金额'] },
+        { row: 7, cells: [null, null, null, null, null, null, '投资款', null, sourceTotal, null, '银行存款', null, destinationTotal] },
+        { row: 8, cells: [null, null, null, null, null, null, '合计', null, sourceTotal, null, '合计', null, destinationTotal] }
+      ]
+    }
+  });
+  const uploadAndPublish = async (amount, versionName) => {
+    const uploaded = await post('/api/uploads', { companyKey: 'gz', period, reportType: 'balance_sheet', fileName: `广州桉侨-${period}-资产负债表-${versionName}.json`, fileType: 'application/json', contentBase64: Buffer.from(JSON.stringify(analysisRaw(amount))).toString('base64') });
+    assert.equal(uploaded.response.status, 201, JSON.stringify(uploaded.payload));
+    const published = await post(`/api/uploads/${uploaded.payload.uploadKey}/publish`, {});
+    assert.equal(published.response.status, 200, JSON.stringify(published.payload));
+    return { uploadKey: uploaded.payload.uploadKey, version: published.payload.version };
+  };
+
+  const first = await uploadAndPublish(100, '第一版');
+  const firstAnalysis = await request(`/api/reports/balance_sheet/analysis?company=gz&period=${period}`);
+  assert.equal(firstAnalysis.response.status, 200); assert.equal(firstAnalysis.response.headers.get('cache-control'), 'no-store');
+  assert.equal(firstAnalysis.payload.meta.uploadKey, first.uploadKey); assert.equal(firstAnalysis.payload.meta.version, first.version);
+  assert.equal(firstAnalysis.payload.source.items[0].key, 'investment_funds'); assert.equal(firstAnalysis.payload.destination.items[0].key, 'bank_deposits');
+  assert.equal(firstAnalysis.payload.source.total, 100); assert.equal(firstAnalysis.payload.balanced, true);
+  assert.equal((await request(`/api/reports/balance_sheet/analysis?company=gz&period=${period}`, 'viewer')).response.status, 403);
+
+  const second = await uploadAndPublish(250, '第二版');
+  const refreshed = await request(`/api/reports/balance_sheet/analysis?company=gz&period=${period}`);
+  assert.equal(refreshed.payload.meta.uploadKey, second.uploadKey); assert.equal(refreshed.payload.meta.version, second.version);
+  assert.notEqual(refreshed.payload.meta.uploadKey, firstAnalysis.payload.meta.uploadKey); assert.equal(refreshed.payload.source.total, 250);
+
+  const frontend = fs.readFileSync(path.join(projectDir, 'public', 'app.js'), 'utf8');
+  const feature = fs.readFileSync(path.join(projectDir, 'public', 'asset-liability-analysis.js'), 'utf8');
+  const featureStyle = fs.readFileSync(path.join(projectDir, 'public', 'asset-liability-analysis.css'), 'utf8');
+  assert.match(frontend, /assetLiabilityAnalysisButtonHtml/); assert.match(frontend, /bindAssetLiabilityAnalysis/);
+  assert.match(feature, /\/api\/reports\/balance_sheet\/analysis/); assert.match(feature, /setInterval\(\(\) => load\(\{ quiet: true \}\), 60000\)/);
+  assert.match(feature, /setAttribute\('role', 'dialog'\)/); assert.match(feature, /assetLiabilityChartSegments/); assert.match(featureStyle, /asset-liability-donut/);
 });

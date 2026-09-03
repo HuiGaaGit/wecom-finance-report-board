@@ -11,6 +11,7 @@ import {
   platformDirectoryMembers,
   unwrapPlatformData,
 } from './platform-auth.mjs';
+import { parseAssetLiabilityAnalysis } from './asset-liability-analysis.mjs';
 
 // 财务文件、SQLite WAL/SHM 与临时解析产物默认仅允许当前专用运行用户访问。
 process.umask(0o077);
@@ -27,7 +28,7 @@ try {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const dataDir = path.join(__dirname, 'data');
-const appVersion = '1.1.26';
+const appVersion = '1.1.27';
 const financialBriefModuleKey = 'financial_brief';
 const financialBriefNotesPermissionKey = 'module.financial_brief.notes.manage';
 const financialBriefMetricKeys = new Set(['expectedRevenue', 'accountBalance', 'operatingRevenue', 'operatingCost', 'sellingExpense', 'managementExpense', 'financeExpense', 'netProfit', 'comprehensiveRevenueProfit']);
@@ -954,7 +955,7 @@ const log = (employeeKey, action, target, detail, context = {}) => {
 };
 const auditActionNames = new Map([
   ['browse_page', '浏览页面'], ['platform_login', '登录财务看板'], ['view_report', '浏览报表'], ['view_raw_report', '浏览原始报表'], ['export_report', '导出报表'],
-  ['view_financial_brief', '浏览财务数据简报'], ['view_group_profit_analysis', '浏览集团利润趋势'], ['view_consultant_roi_analysis', '浏览顾问投入产出'],
+  ['view_financial_brief', '浏览财务数据简报'], ['view_asset_liability_analysis', '浏览资产负债分析'], ['view_group_profit_analysis', '浏览集团利润趋势'], ['view_consultant_roi_analysis', '浏览顾问投入产出'],
   ['view_intercompany_reconciliation', '浏览公司往来校验'], ['view_intercompany_pair', '查看往来组合'], ['view_intercompany_unmapped', '查看待映射往来'],
   ['view_cash_flow_analysis', '浏览资产净额分析'], ['view_main_business_analysis', '浏览主营业务分析'], ['view_expense_analysis', '浏览费用分析'],
   ['upload_report', '上传报表'], ['validate_upload', '校验上传批次'], ['publish_upload', '发布报表版本'], ['withdraw_published_upload', '撤回已发布版本'],
@@ -2425,6 +2426,16 @@ const server = http.createServer(async (req, res) => {
       db.prepare("UPDATE report_snapshots SET status = 'superseded' WHERE company_key = ? AND period = ? AND report_type = ? AND status = 'published'").run(upload.company_key, upload.period, upload.report_type);
       db.prepare("UPDATE report_snapshots SET status = 'published' WHERE snapshot_key = ?").run(snapshot.snapshot_key);
       db.prepare("UPDATE upload_batches SET status = 'published', published_at = ? WHERE upload_key = ?").run(now(), uploadKey); log(employee.employee_key, 'publish_upload', uploadKey, `${upload.company_key}/${upload.period}/${upload.report_type}`, { moduleKey: 'uploads', companyKey: upload.company_key, period: upload.period }); return json(res, 200, { ok: true, status: 'published', version: snapshot.version });
+    }
+    if (url.pathname === '/api/reports/balance_sheet/analysis' && req.method === 'GET') {
+      const companyKey = url.searchParams.get('company') || 'gz'; const period = url.searchParams.get('period') || '2026-06';
+      if (!companyRow(companyKey)) return bad(res, 404, '公司不存在');
+      const employee = requireReport(req, res, 'balance_sheet', 'summary', 'view', companyKey, period); if (!employee) return;
+      const source = rawReportFor('balance_sheet', companyKey, period);
+      const snapshot = source.meta.uploadKey ? db.prepare("SELECT version, status FROM report_snapshots WHERE company_key = ? AND period = ? AND report_type = 'balance_sheet' AND snapshot_key LIKE ? ORDER BY version DESC LIMIT 1").get(companyKey, period, `%${source.meta.uploadKey}`) : null;
+      const analysis = parseAssetLiabilityAnalysis(source.raw);
+      log(employee.employee_key, 'view_asset_liability_analysis', 'balance_sheet:analysis', `${companyKey}/${period}`, { moduleKey: 'balance_sheet', companyKey, period });
+      return json(res, 200, { ...analysis, company: companyRow(companyKey).company_name, period, meta: { ...source.meta, version: snapshot?.version || null, snapshotStatus: snapshot?.status || source.meta.status } });
     }
     const rawMatch = url.pathname.match(/^\/api\/reports\/([^/]+)\/raw$/);
     if (rawMatch && req.method === 'GET') {

@@ -1,0 +1,27 @@
+.original-heading .asset-liability-analysis-trigger {
+  right: 10px;
+  top: 8px;
+}
+
+.original-heading.asset-liability-analysis-heading {
+  padding-right: 205px;
+}
+
+@media (max-width: 880px) {
+  .original-heading.asset-liability-analysis-heading {
+    display: block;
+    padding-right: 14px;
+  }
+
+  .original-heading .asset-liability-analysis-trigger {
+    position: static;
+    width: max-content;
+    margin: 9px 0 0 auto;
+  }
+}
+
+@media (max-width: 560px) {
+  .asset-liability-analysis-trigger span small {
+    display: none;
+  }
+}
