@@ -111,6 +111,7 @@
 
 ## GitHub 展示参考
 
+- [apache/echarts-examples](https://github.com/apache/echarts-examples)：借鉴饼图外置标签、边缘对齐引导线和悬停强调，本项目以无依赖 SVG 实现并增加同侧标签防碰撞。
 - [shadcn-ui/ui](https://github.com/shadcn-ui/ui)：借鉴日期范围示例中整块触发器、清晰选中态和弹层信息层级，转化为首页公司卡片与月份按钮。
 - [tremorlabs/tremor](https://github.com/tremorlabs/tremor)：借鉴 DateRangePicker 的期间预设和受控选择模式，用于首页可用期间快速选择。
 - [satnaing/shadcn-admin](https://github.com/satnaing/shadcn-admin)：借鉴管理后台 Select 的加载、禁用和选中反馈，以及 TasksTable 的筛选工具栏、分页、行选择和批量操作分层；应用于上传范围选择与上传记录管理。

@@ -1,8 +1,8 @@
 # 桉侨财务模块生产说明
 
 更新日期：2026-09-03
-当前生产版本：1.1.34
-最近发布包：1.1.34（已部署）
+当前生产版本：1.1.35
+最近发布包：1.1.35（已部署）
 正式地址：<https://anqiaoyiminxq.com/platform/finance/>
 
 ## 1. 系统归属与隔离
@@ -75,7 +75,7 @@ ssh -F deploy/ssh_config wecom-finance-prod "hostname && whoami"
 
 - Compose 项目：`wecom-finance-report-board`
 - 容器：`wecom-finance-report-board`
-- 当前镜像：`aqllm/finance-report-board:1.1.34`
+- 当前镜像：`aqllm/finance-report-board:1.1.35`
 - 容器运行用户：`20117:20117`
 - 容器端口：`3180`
 - 主机监听：`127.0.0.1:3180`
@@ -361,3 +361,14 @@ cat /data/data/wecom-finance-report-board/backups/offsite-last-success.meta
 - 本次发布后共有 235 个上传批次、235 份报表快照和 13,061 条报表行，SQLite 完整性为 `ok`；任务开始前遗留的 10 个广州 2026-06 待处理重复批次保持未发布，不属于本次补录。
 - 首页刷新后广州、深圳、集团分别有 17、12、12 个可用期间。生产抽查广州 2025-02 利润表与错月序时账空态、广州 2025-05 科目余额表、深圳 2025-08 资产负债表、集团 2025-08 普通合并利润表、集团 2026-02 营收利润口径以及 2026-01 至 2026-07 七个月工资批次，来源文件、期间和报表类型均正确。
 - 正式上传前一致性备份：`/data/data/wecom-finance-report-board/backups/report-board-20260903T084130Z.db`；发布后备份：`/data/data/wecom-finance-report-board/backups/report-board-20260903T085520Z.db`。当前容器保持 `aqllm/finance-report-board:1.1.34`、`healthy`，回环与公网健康接口均返回 `1.1.34/platform`。
+
+## 24. 资产负债分析滑动表图发布（1.1.35）
+
+- 移除“源表项目与金额”冗余说明；钱的来源与钱的去向不再并排显示，改为左侧页签控制表格和图表同步滑动切换。
+- 左侧按上传原顺序显示紧凑项目/金额表，右侧扩大环形图空间；每个正数色块都用防碰撞引导线直接标注项目名称和比例。点击表格行、色块或标签会同步高亮、动画放大并在圆心显示比例和金额；自动刷新后保留当前来源/去向页签。
+- 功能提交为 `6fd8d27`；发布包为 `artifacts/wecom-finance-report-board-1.1.35.zip`，SHA256 为 `95F4F307AAAEE7C0F21462803F46D7AB5DD54169FD5CD94B940AF59F36A27528`，服务器上传副本核验一致。
+- 本地与服务器 Docker tests 完整回归均为 `94/94`；正式镜像为 `aqllm/finance-report-board:1.1.35`，镜像 ID 为 `sha256:4e2782a06d5b06b409e4304dbcd79299ccbbbcbf01267e6e3d9c66feaa9b24a5`。
+- 生产已于 `2026-09-03 17:13 CST` 从 `1.1.34` 切换到 `1.1.35`。容器为 `healthy`，回环和公网健康接口返回 `1.1.35/platform`；Nginx、运行时隔离、正式页面及三份资产负债分析静态资源一致性检查通过。
+- SQLite 完整性为 `ok`；核心业务事实保持 8 家公司、235 个上传批次、235 份报表快照和 13,061 条报表行，二级说明表仍为 0 行。
+- 发布前数据库备份：`/data/data/wecom-finance-report-board/backups/report-board-20260903T090254Z.db`，SHA256：`8a10d0b6616b5da22c09ffcc8493dcf31bec7d9a122055770a3465b59e67539a`；发布后备份：`/data/data/wecom-finance-report-board/backups/report-board-20260903T091416Z.db`，SHA256：`80643bdd54290a325364d9dcd135feef4efae96ca07a051298aca239c20e24b8`，两者权限均为 `0600`。
+- 发布前源码、Compose、Nginx 和受限环境配置回滚快照：`/data/backups/wecom-finance-report-board/pre-1.1.35-20260903T090245Z`。回滚时恢复快照并重新启动上一镜像；除非数据库完整性失败，不得用旧备份覆盖正常业务数据。
