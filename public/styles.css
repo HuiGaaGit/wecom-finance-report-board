@@ -317,3 +317,7 @@ select{min-height:42px;padding:9px 40px 9px 12px;background-position:right 13px 
 .intercompany-matrix{min-width:max(790px,calc(78px + var(--intercompany-company-count,7) * 110px))}
 @media(max-width:760px){.intercompany-source-list{grid-template-columns:repeat(2,minmax(110px,1fr))}}
 @media(max-width:460px){.intercompany-source-list{grid-template-columns:1fr}}
+
+/* v1.1.47 · 顾问投流消耗费用加入后仍在桌面模块内完整铺开。 */
+.consultant-roi-table col.roi-col-name{width:9%}.consultant-roi-table col.roi-col-hireDate{width:7%}.consultant-roi-table col.roi-col-englishName{width:7%}.consultant-roi-table col.roi-col-region{width:7%}.consultant-roi-table col.roi-col-baseSalary{width:7.5%}.consultant-roi-table col.roi-col-commission{width:6.5%}.consultant-roi-table col.roi-col-journalExpense{width:8%}.consultant-roi-table col.roi-col-trafficSpend{width:9%}.consultant-roi-table col.roi-col-input{width:8.5%}.consultant-roi-table col.roi-col-output{width:9.5%}.consultant-roi-table col.roi-col-roi{width:10%}.consultant-roi-table col.roi-col-matchLabel{width:11%}
+@media(max-width:900px){.consultant-roi-table{min-width:1120px!important}}

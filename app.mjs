@@ -28,7 +28,7 @@ try {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const dataDir = path.join(__dirname, 'data');
-const appVersion = '1.1.45';
+const appVersion = '1.1.47';
 const financialBriefModuleKey = 'financial_brief';
 const financialBriefNotesPermissionKey = 'module.financial_brief.notes.manage';
 const financialBriefMetricKeys = new Set(['expectedRevenue', 'accountBalance', 'operatingRevenue', 'operatingCost', 'sellingExpense', 'managementExpense', 'financeExpense', 'netProfit']);
@@ -77,10 +77,11 @@ const payrollStatementReportType = 'payroll_statement';
 const revenueProfitReportType = 'revenue_profit_consolidated_income_statement';
 const revenueStatisticsReportType = 'revenue_statistics';
 const quotationLedgerReportType = 'quotation_ledger';
+const consultantSpendRevenueReportType = 'consultant_spend_revenue';
 const quotationLedgerPeriod = 'all-history';
 const groupStatementReportTypes = new Set(['consolidated_income_statement', revenueProfitReportType]);
-const groupOnlyReportTypes = new Set([...groupStatementReportTypes, revenueStatisticsReportType, payrollStatementReportType, quotationLedgerReportType]);
-const sourceOnlyReportTypes = new Set([payrollStatementReportType, quotationLedgerReportType]);
+const groupOnlyReportTypes = new Set([...groupStatementReportTypes, revenueStatisticsReportType, payrollStatementReportType, quotationLedgerReportType, consultantSpendRevenueReportType]);
+const sourceOnlyReportTypes = new Set([payrollStatementReportType, quotationLedgerReportType, consultantSpendRevenueReportType]);
 const authMode = String(process.env.AUTH_MODE || (process.env.NODE_ENV === 'production' ? 'platform' : 'demo')).trim().toLowerCase();
 const accessDeniedMessage = '当前账号不在财务模块授权范围内，请联系管理员加入总经理、管理员或财务组';
 const publicBaseUrl = String(process.env.PUBLIC_BASE_URL || '').trim().replace(/\/+$/, '');
@@ -370,7 +371,7 @@ const seed = db.transaction(() => {
   const addCompany = db.prepare('INSERT INTO companies(company_key, company_name) VALUES (?, ?)');
   [['group', '桉侨集团'], ['gz', '广州桉侨'], ['sz', '深圳桉侨'], ['qd', '青岛桉侨']].forEach(row => addCompany.run(...row));
   const addType = db.prepare('INSERT INTO report_types(report_type, report_name) VALUES (?, ?)');
-  [['balance_sheet', '资产负债表'], ['income_statement', '利润表'], ['consolidated_income_statement', '桉侨集团合并利润表'], [revenueProfitReportType, '（营收利润口径）合并利润表'], [revenueStatisticsReportType, '营收统计表'], [payrollStatementReportType, '每月工资表'], [quotationLedgerReportType, '集团报单表'], ['cash_flow', '现金流量表']].forEach(row => addType.run(...row));
+  [['balance_sheet', '资产负债表'], ['income_statement', '利润表'], ['consolidated_income_statement', '桉侨集团合并利润表'], [revenueProfitReportType, '（营收利润口径）合并利润表'], [revenueStatisticsReportType, '营收统计表'], [payrollStatementReportType, '每月工资表'], [quotationLedgerReportType, '集团报单表'], [consultantSpendRevenueReportType, '顾问消耗-营收表'], ['cash_flow', '现金流量表']].forEach(row => addType.run(...row));
   const addEmployeeRole = db.prepare('INSERT INTO employee_roles(employee_key, role_key) VALUES (?, ?)');
   if (authMode === 'demo') [['admin', 'admin'], ['manager', 'manager'], ['accountant', 'accountant'], ['viewer', 'viewer']].forEach(row => addEmployeeRole.run(...row));
   const addPermission = db.prepare('INSERT INTO role_permissions(role_key, module_key, action) VALUES (?, ?, ?)');
@@ -458,6 +459,7 @@ db.prepare('INSERT OR IGNORE INTO report_types(report_type, report_name) VALUES 
 db.prepare('INSERT OR IGNORE INTO report_types(report_type, report_name) VALUES (?, ?)').run(revenueStatisticsReportType, '营收统计表');
 db.prepare('INSERT OR IGNORE INTO report_types(report_type, report_name) VALUES (?, ?)').run(payrollStatementReportType, '每月工资表');
 db.prepare('INSERT OR IGNORE INTO report_types(report_type, report_name) VALUES (?, ?)').run(quotationLedgerReportType, '集团报单表');
+db.prepare('INSERT OR IGNORE INTO report_types(report_type, report_name) VALUES (?, ?)').run(consultantSpendRevenueReportType, '顾问消耗-营收表');
 for (const role of ['admin', 'manager', 'viewer']) for (const type of groupOnlyReportTypes) {
   if (sourceOnlyReportTypes.has(type)) continue;
   for (const action of role === 'viewer' ? ['view'] : ['view', 'export']) db.prepare('INSERT OR IGNORE INTO role_report_scopes(role_key, report_type, access_level, action, company_key, from_period, to_period) VALUES (?, ?, ?, ?, ?, ?, ?)').run(role, type, 'summary', action, 'group', '2020-01', '2099-12');
@@ -1697,6 +1699,7 @@ const consultantCanonicalName = value => {
   const chinese = text.match(/[\u4e00-\u9fa5]{2,6}/g)?.at(-1) || '';
   return chinese || text.replace(/[^A-Za-z0-9]/g, '').toLowerCase();
 };
+const consultantEnglishKey = value => String(value || '').normalize('NFKC').trim().toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]/g, '');
 const consultantDirectorySnapshot = () => {
   const empty = (reason = '') => ({ available: false, revision: 'missing', generatedAt: '', records: new Map(), reason });
   if (!fs.existsSync(consultantDirectoryFile)) return empty('尚未同步企业微信花名册与通讯录');
@@ -1881,6 +1884,51 @@ const parsePayrollSheet = (workbook, sheetName) => {
   const fieldMapping = { company: companyIndex >= 0 ? String(headers[companyIndex] || '').trim() : '', department: departmentIndex >= 0 ? String(headers[departmentIndex] || '').trim() : '', name: String(headers[nameIndex] || '').trim(), hireDate: hireDateIndex >= 0 ? String(headers[hireDateIndex] || '').trim() : '', baseSalary: salaryIndexes.map(index => String(headers[index] || '').trim()).filter(Boolean), commission: String(headers[commissionIndex] || '').trim() };
   return { sourceSheet: sheetName, hidden: Boolean(sheetMeta?.Hidden), maxRow: rows.length, maxCol: sheetRows.maxCol, declaredRange: sheetRows.declaredRange, effectiveRange: sheetRows.effectiveRange, rangeTrimmed: sheetRows.rangeTrimmed, headerRow: headerRowIndex + 1, fieldMapping, payrollRows, rows: payrollRows.map(item => ({ row: item.row, cells: [item.company, item.department, item.name, item.hireDate, item.baseSalary, item.commission] })) };
 };
+const consultantSpendSheetFor = workbook => workbook.SheetNames.find(name => normalizedHeader(name) === '汇总') || '';
+const parseConsultantSpendSheet = (workbook, sheetName) => {
+  const sheet = workbook.Sheets[sheetName]; const sheetRows = uploadSheetRows(sheet, sheetName); const rows = sheetRows.rows;
+  const rangeStart = XLSX.utils.decode_range(sheetRows.effectiveRange).s;
+  let spendHeaderRowIndex = -1; let spendIndex = -1;
+  for (let rowIndex = 0; rowIndex < Math.min(rows.length, 40); rowIndex += 1) {
+    const found = findHeaderIndex(rows[rowIndex] || [], [/^总消耗(?:\/元|元)?$/, /^投流消耗(?:\/元|元)?$/, /^消耗合计(?:\/元|元)?$/]);
+    if (found >= 0) { spendHeaderRowIndex = rowIndex; spendIndex = found; break; }
+  }
+  if (spendHeaderRowIndex < 0) throw new Error(`顾问消耗-营收表工作表“${sheetName}”未找到“总消耗/元”列`);
+  let englishHeaderRowIndex = -1; let englishNameIndex = -1; let regionIndex = -1; let mergedConsultantLabel = false;
+  for (let rowIndex = 0; rowIndex <= spendHeaderRowIndex; rowIndex += 1) {
+    const found = findHeaderIndex(rows[rowIndex] || [], [/^(?:顾问英文名|英文名|EnglishName)$/i]);
+    if (found >= 0) { englishHeaderRowIndex = rowIndex; englishNameIndex = found; break; }
+  }
+  if (englishNameIndex < 0) {
+    for (const merge of sheet?.['!merges'] || []) {
+      const label = normalizedHeader(sheet?.[XLSX.utils.encode_cell(merge.s)]?.v);
+      if (!/^顾问(?:姓名)?$/.test(label) || merge.e.c <= merge.s.c) continue;
+      const localEndColumn = merge.e.c - rangeStart.c; const localStartColumn = merge.s.c - rangeStart.c;
+      if (localEndColumn < 0 || localEndColumn >= spendIndex) continue;
+      englishNameIndex = localEndColumn; regionIndex = Math.max(0, localStartColumn); englishHeaderRowIndex = Math.max(0, merge.e.r - rangeStart.r); mergedConsultantLabel = true; break;
+    }
+  }
+  if (englishNameIndex < 0) {
+    const candidates = Array.from({ length: spendIndex }, (_, column) => ({ column, score: rows.slice(spendHeaderRowIndex + 1, spendHeaderRowIndex + 25).filter(row => /[A-Za-z]/.test(String(row?.[column] || ''))).length })).sort((a, b) => b.score - a.score || b.column - a.column);
+    if (candidates[0]?.score) { englishNameIndex = candidates[0].column; regionIndex = Math.max(0, englishNameIndex - 1); englishHeaderRowIndex = spendHeaderRowIndex; }
+  }
+  if (englishNameIndex < 0) throw new Error(`顾问消耗-营收表工作表“${sheetName}”未找到可识别的顾问英文名列`);
+  if (regionIndex < 0) regionIndex = Math.max(0, englishNameIndex - 1);
+  const dataStartIndex = Math.max(spendHeaderRowIndex, englishHeaderRowIndex) + 1; const spendRows = []; let currentRegion = '';
+  for (let rowIndex = dataStartIndex; rowIndex < rows.length; rowIndex += 1) {
+    const cells = rows[rowIndex] || []; const regionText = String(cells[regionIndex] ?? '').trim();
+    if (regionText && !/汇总|合计/.test(regionText)) currentRegion = regionText;
+    const englishName = String(cells[englishNameIndex] ?? '').trim(); const englishKey = consultantEnglishKey(englishName);
+    if (!englishKey || !/[a-z]/.test(englishKey) || /汇总|合计|市场部分|渠道部|市场部/.test(englishName)) continue;
+    spendRows.push({ row: rangeStart.r + rowIndex + 1, englishName, englishKey, region: currentRegion, trafficSpend: roundedAmount(amountCell(cells[spendIndex])) });
+  }
+  if (!spendRows.length) throw new Error('顾问消耗-营收表未识别到包含英文名的顾问数据');
+  return {
+    sourceSheet: sheetName, maxRow: rows.length, maxCol: sheetRows.maxCol, declaredRange: sheetRows.declaredRange, effectiveRange: sheetRows.effectiveRange, rangeTrimmed: sheetRows.rangeTrimmed,
+    headerRow: rangeStart.r + spendHeaderRowIndex + 1, fieldMapping: { englishName: mergedConsultantLabel ? '顾问（合并表头末列）' : String(rows[englishHeaderRowIndex]?.[englishNameIndex] || '英文名').trim(), trafficSpend: String(rows[spendHeaderRowIndex]?.[spendIndex] || '').trim() },
+    spendRows, totalTrafficSpend: roundedAmount(spendRows.reduce((sum, item) => sum + item.trafficSpend, 0)), rows: spendRows.map(item => ({ row: item.row, cells: [item.region, item.englishName, item.trafficSpend] }))
+  };
+};
 const revenuePeriodForValue = (value, selectedPeriod) => {
   if (typeof value === 'number' && value > 30000 && value < 100000) {
     const parsed = XLSX.SSF.parse_date_code(value);
@@ -2063,7 +2111,7 @@ const trialPeriodsFromMetadata = (rows, sheetName) => {
 const parseUploadedFile = (buffer, fileName, fileType, options = {}) => {
   if (fileType === 'application/json' || fileName.toLowerCase().endsWith('.json')) {
     const parsed = JSON.parse(buffer.toString('utf8'));
-    return ['balance_sheet', 'income_statement', 'consolidated_income_statement', revenueProfitReportType, revenueStatisticsReportType, payrollStatementReportType, quotationLedgerReportType, 'cash_flow', 'trial_balance', 'journal'].some(type => parsed[type]) ? parsed : { uploaded: parsed };
+    return ['balance_sheet', 'income_statement', 'consolidated_income_statement', revenueProfitReportType, revenueStatisticsReportType, payrollStatementReportType, quotationLedgerReportType, consultantSpendRevenueReportType, 'cash_flow', 'trial_balance', 'journal'].some(type => parsed[type]) ? parsed : { uploaded: parsed };
   }
   const workbook = XLSX.read(buffer, { type: 'buffer', cellDates: false });
   const reports = {};
@@ -2076,6 +2124,7 @@ const parseUploadedFile = (buffer, fileName, fileType, options = {}) => {
     [revenueStatisticsReportType]: /^(?:20\d{2}年)?数据统计汇总表[（(]?mia[）)]?$/i,
     [payrollStatementReportType]: /工资|薪酬明细/,
     [quotationLedgerReportType]: /^(?:集团)?(?:报价单|报价表|报单表|报价单台账)$/,
+    [consultantSpendRevenueReportType]: /^汇总$/,
     cash_flow: /^(?:(?:20\d{2}年)?\d{1,2}月)?现金流量表(?:-钱去向)?$/,
     trial_balance: /^(?:(?:20\d{2}年)?\d{1,2}月)?科目余额表$/,
     journal: /^(?:(?:20\d{2}年)?\d{1,2}月)?序时账$/
@@ -2083,14 +2132,19 @@ const parseUploadedFile = (buffer, fileName, fileType, options = {}) => {
   for (const [type, pattern] of Object.entries(reportSheetPatterns)) {
     const requestedGroupType = groupStatementReportTypes.has(options.requestedReportType) ? options.requestedReportType : '';
     if (requestedGroupType && ((type === 'income_statement') || (groupStatementReportTypes.has(type) && type !== requestedGroupType))) continue;
+    if (type === consultantSpendRevenueReportType && options.requestedReportType !== consultantSpendRevenueReportType) continue;
     let sheetName = type === payrollStatementReportType
       ? payrollSheetFor(workbook, options.selectedPeriod, options.requestedReportType === payrollStatementReportType)
+      : type === consultantSpendRevenueReportType
+        ? consultantSpendSheetFor(workbook)
       : workbook.SheetNames.find(name => pattern.test(String(name).replace(/\s+/g, '')));
+    if (!sheetName && type === consultantSpendRevenueReportType && options.requestedReportType === consultantSpendRevenueReportType) throw new Error('顾问消耗-营收表未找到“汇总”工作表');
     if (!sheetName && type === requestedGroupType) sheetName = workbook.SheetNames.find(name => /^利润表$/.test(String(name).replace(/\s+/g, '')));
     if (!sheetName) continue;
     if (type === revenueStatisticsReportType) { reports[type] = parseRevenueStatisticsSheet(workbook, sheetName, options.selectedPeriod); continue; }
     if (type === payrollStatementReportType) { reports[type] = parsePayrollSheet(workbook, sheetName); continue; }
     if (type === quotationLedgerReportType) { reports[type] = parseQuotationLedgerSheet(workbook, sheetName); continue; }
+    if (type === consultantSpendRevenueReportType) { reports[type] = parseConsultantSpendSheet(workbook, sheetName); continue; }
     const sheetRows = uploadSheetRows(workbook.Sheets[sheetName], sheetName); let rows = sheetRows.rows;
     if (type === 'journal') {
       const periodCheck = journalRowsForSelectedPeriod(rows, options.selectedPeriod);
@@ -2146,7 +2200,7 @@ const parseUploadedFile = (buffer, fileName, fileType, options = {}) => {
     reports.cash_flow_workpaper = { sourceSheet: cashFlowWorkpaperName, hidden: Boolean(sheetMeta?.Hidden), maxRow: rows.length, maxCol, declaredRange: sheetRows.declaredRange, effectiveRange: sheetRows.effectiveRange, rangeTrimmed: sheetRows.rangeTrimmed, rows: rows.map((cells, index) => ({ row: index + 1, cells })) };
   }
   Object.defineProperty(reports, 'periodExcludedReports', { value: periodExcludedReports, enumerable: false });
-  if (!Object.keys(reports).length && !periodExcludedReports.length) throw new Error('未找到可识别的资产负债表、利润表、集团合并利润表、营收利润口径合并利润表、营收统计汇总表、工资表、报单表、现金流量表、科目余额表或序时账工作表');
+  if (!Object.keys(reports).length && !periodExcludedReports.length) throw new Error('未找到可识别的资产负债表、利润表、集团合并利润表、营收利润口径合并利润表、营收统计汇总表、工资表、顾问消耗-营收表、报单表、现金流量表、科目余额表或序时账工作表');
   return reports;
 };
 const uploadPeriodHint = (fileName, reports, selectedPeriod) => {
@@ -2300,11 +2354,11 @@ const refreshedConsultantPayrollRawFor = (payroll, period) => {
   consultantPayrollRefreshCache.set(payroll.meta.uploadKey, refreshed); return refreshed;
 };
 const consultantRoiAnalysisFor = (employeeKey, period) => {
-  const payroll = rawReportFor(payrollStatementReportType, 'group', period); const revenue = rawReportFor(revenueStatisticsReportType, 'group', period);
+  const payroll = rawReportFor(payrollStatementReportType, 'group', period); const revenue = rawReportFor(revenueStatisticsReportType, 'group', period); const spend = rawReportFor(consultantSpendRevenueReportType, 'group', period);
   const directory = consultantDirectorySnapshot(); const directorySync = consultantDirectorySyncStatus();
-  const payrollRaw = refreshedConsultantPayrollRawFor(payroll, period); const payrollRows = payrollRaw?.payrollRows || []; const consultantPayrollRows = payrollRows.filter(item => consultantDepartmentMatches(item.department)); const revenueRaw = refreshedRevenueStatisticsRawFor(revenue, period); const revenueRows = revenueRaw?.consultantRevenue?.rows || [];
+  const payrollRaw = refreshedConsultantPayrollRawFor(payroll, period); const payrollRows = payrollRaw?.payrollRows || []; const consultantPayrollRows = payrollRows.filter(item => consultantDepartmentMatches(item.department)); const revenueRaw = refreshedRevenueStatisticsRawFor(revenue, period); const revenueRows = revenueRaw?.consultantRevenue?.rows || []; const spendRows = spend.raw?.spendRows || [];
   const consultants = new Map();
-  const ensure = (canonicalName, displayName) => { if (!consultants.has(canonicalName)) consultants.set(canonicalName, { canonicalName, name: displayName || canonicalName, regions: new Set(), hireDates: new Set(), baseSalary: 0, commission: 0, journalExpense: 0, expectedRevenue: 0, payrollDetails: [], revenueDetails: [], expenseDetails: [] }); return consultants.get(canonicalName); };
+  const ensure = (canonicalName, displayName) => { if (!consultants.has(canonicalName)) consultants.set(canonicalName, { canonicalName, name: displayName || canonicalName, regions: new Set(), hireDates: new Set(), baseSalary: 0, commission: 0, journalExpense: 0, trafficSpend: 0, expectedRevenue: 0, payrollDetails: [], revenueDetails: [], expenseDetails: [], spendDetails: [] }); return consultants.get(canonicalName); };
   for (const item of consultantPayrollRows) {
     const row = ensure(item.canonicalName || consultantCanonicalName(item.name), item.name);
     row.baseSalary += Number(item.baseSalary || 0); row.commission += Number(item.commission || 0); if (item.hireDate) row.hireDates.add(item.hireDate);
@@ -2315,6 +2369,20 @@ const consultantRoiAnalysisFor = (employeeKey, period) => {
     const row = consultants.get(item.canonicalName || consultantCanonicalName(item.consultant));
     if (!row) { unmatchedRevenueRows += 1; unmatchedRevenueAmount += Number(item.expectedRevenue || 0); continue; }
     row.expectedRevenue += Number(item.expectedRevenue || 0); if (item.region) row.regions.add(item.region); row.revenueDetails.push({ sourceSheet: revenueRaw.consultantRevenue?.sourceSheet, row: item.row, expectedRevenue: item.expectedRevenue, region: item.region, sourcePeriod: item.sourcePeriod || period });
+  }
+  const consultantsByEnglish = new Map();
+  for (const item of consultants.values()) {
+    const englishName = directory.records.get(item.canonicalName)?.englishName || ''; const englishKey = consultantEnglishKey(englishName);
+    if (!englishKey) continue;
+    if (!consultantsByEnglish.has(englishKey)) consultantsByEnglish.set(englishKey, []);
+    consultantsByEnglish.get(englishKey).push(item);
+  }
+  let matchedSpendRows = 0; let unmatchedSpendRows = 0; let ambiguousSpendRows = 0; let unmatchedSpendAmount = 0;
+  for (const item of spendRows) {
+    const matches = consultantsByEnglish.get(item.englishKey || consultantEnglishKey(item.englishName)) || [];
+    if (matches.length !== 1) { unmatchedSpendRows += 1; unmatchedSpendAmount += Number(item.trafficSpend || 0); if (matches.length > 1) ambiguousSpendRows += 1; continue; }
+    const row = matches[0]; row.trafficSpend += Number(item.trafficSpend || 0); matchedSpendRows += 1;
+    row.spendDetails.push({ sourceSheet: spend.raw?.sourceSheet || '汇总', row: item.row, englishName: item.englishName, region: item.region || '', trafficSpend: item.trafficSpend });
   }
   const profile = permissionProfileFor(employeeKey); const sourceCompanies = authorizedCompaniesFor(employeeKey).filter(company => company.key !== 'group' && profileScopeAllows(profile, company.key, period)); const journalSources = [];
   for (const company of sourceCompanies) {
@@ -2331,16 +2399,16 @@ const consultantRoiAnalysisFor = (employeeKey, period) => {
     }
   }
   const rows = [...consultants.values()].map(item => {
-    const input = roundedAmount(item.baseSalary + item.commission + item.journalExpense); const output = roundedAmount(item.expectedRevenue); const hireDate = [...item.hireDates].sort()[0] || '';
+    const input = roundedAmount(item.baseSalary + item.commission + item.journalExpense + item.trafficSpend); const output = roundedAmount(item.expectedRevenue); const hireDate = [...item.hireDates].sort()[0] || '';
     const directoryPerson = directory.records.get(item.canonicalName);
-    return { name: item.name, canonicalName: item.canonicalName, hireDate, englishName: directoryPerson?.englishName || '', isResigned: directoryPerson?.employmentStatus === 'resigned', region: [...item.regions].join('、') || '待补充', isNewEmployee: Boolean(hireDate && hireDate.slice(0, 7) === period), baseSalary: roundedAmount(item.baseSalary), commission: roundedAmount(item.commission), journalExpense: roundedAmount(item.journalExpense), input, output, roi: input ? output / input : null, matchStatus: item.payrollDetails.length && item.revenueDetails.length ? 'matched' : item.payrollDetails.length ? 'missing_revenue' : 'missing_payroll', payrollDetails: item.payrollDetails, revenueDetails: item.revenueDetails, expenseDetails: item.expenseDetails };
+    return { name: item.name, canonicalName: item.canonicalName, hireDate, englishName: directoryPerson?.englishName || '', isResigned: directoryPerson?.employmentStatus === 'resigned', region: [...item.regions].join('、') || '待补充', isNewEmployee: Boolean(hireDate && hireDate.slice(0, 7) === period), baseSalary: roundedAmount(item.baseSalary), commission: roundedAmount(item.commission), journalExpense: roundedAmount(item.journalExpense), trafficSpend: roundedAmount(item.trafficSpend), input, output, roi: input ? output / input : null, matchStatus: item.payrollDetails.length && item.revenueDetails.length ? 'matched' : item.payrollDetails.length ? 'missing_revenue' : 'missing_payroll', payrollDetails: item.payrollDetails, revenueDetails: item.revenueDetails, expenseDetails: item.expenseDetails, spendDetails: item.spendDetails };
   }).sort((a, b) => b.output - a.output || b.input - a.input);
-  const totals = rows.reduce((sum, row) => ({ input: sum.input + row.input, output: sum.output + row.output, baseSalary: sum.baseSalary + row.baseSalary, commission: sum.commission + row.commission, journalExpense: sum.journalExpense + row.journalExpense }), { input: 0, output: 0, baseSalary: 0, commission: 0, journalExpense: 0 });
+  const totals = rows.reduce((sum, row) => ({ input: sum.input + row.input, output: sum.output + row.output, baseSalary: sum.baseSalary + row.baseSalary, commission: sum.commission + row.commission, journalExpense: sum.journalExpense + row.journalExpense, trafficSpend: sum.trafficSpend + row.trafficSpend }), { input: 0, output: 0, baseSalary: 0, commission: 0, journalExpense: 0, trafficSpend: 0 });
   Object.keys(totals).forEach(key => { totals[key] = roundedAmount(totals[key]); }); totals.roi = totals.input ? totals.output / totals.input : null;
-  const sourceRevision = crypto.createHash('sha256').update(JSON.stringify({ schema: 5, payroll: [payroll.meta.uploadKey, payroll.meta.publishedAt], revenue: [revenue.meta.uploadKey, revenue.meta.publishedAt], directory: directory.revision, directorySync: [directorySync.state, directorySync.updatedAt, directorySync.requestedAt], journals: journalSources.map(item => [item.companyKey, item.uploadKey, item.publishedAt]) })).digest('hex').slice(0, 20);
+  const sourceRevision = crypto.createHash('sha256').update(JSON.stringify({ schema: 6, payroll: [payroll.meta.uploadKey, payroll.meta.publishedAt], revenue: [revenue.meta.uploadKey, revenue.meta.publishedAt], spend: [spend.meta.uploadKey, spend.meta.publishedAt], directory: directory.revision, directorySync: [directorySync.state, directorySync.updatedAt, directorySync.requestedAt], journals: journalSources.map(item => [item.companyKey, item.uploadKey, item.publishedAt]) })).digest('hex').slice(0, 20);
   const consultantDepartments = [...new Set(consultantPayrollRows.map(item => String(item.department || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'zh-CN'));
   const directoryMatchedRows = rows.filter(item => directory.records.has(item.canonicalName)).length;
-  return { company: '桉侨集团', period, sourceRevision, rows, totals, sources: { payroll: payroll.meta, payrollSheet: payrollRaw?.sourceSheet || '', payrollFields: payrollRaw?.fieldMapping || {}, payrollConsultantDepartments: consultantDepartments, payrollConsultantRows: consultantPayrollRows.length, payrollExcludedRows: Math.max(0, payrollRows.length - consultantPayrollRows.length), directory: { available: directory.available, generatedAt: directory.generatedAt, matchedRows: directoryMatchedRows, reason: directory.reason, sync: directorySync }, revenue: revenue.meta, revenueSheet: revenueRaw?.consultantRevenue?.sourceSheet || '', revenueFields: revenueRaw?.consultantRevenue?.fieldMapping || {}, revenueExcludedPeriodRows: Number(revenueRaw?.consultantRevenue?.excludedPeriodRows || 0), unmatchedRevenueRows, unmatchedRevenueAmount: roundedAmount(unmatchedRevenueAmount), journals: journalSources }, missing: [payroll.meta.noData ? '每月工资表' : '', !payroll.meta.noData && !consultantPayrollRows.length ? '工资表·顾问部门人员' : '', revenue.meta.noData || !revenueRows.length ? '营收统计表·总营收明细表' : '', ...journalSources.filter(item => item.noData).map(item => `${item.companyName}序时账`)].filter(Boolean) };
+  return { company: '桉侨集团', period, sourceRevision, rows, totals, sources: { payroll: payroll.meta, payrollSheet: payrollRaw?.sourceSheet || '', payrollFields: payrollRaw?.fieldMapping || {}, payrollConsultantDepartments: consultantDepartments, payrollConsultantRows: consultantPayrollRows.length, payrollExcludedRows: Math.max(0, payrollRows.length - consultantPayrollRows.length), directory: { available: directory.available, generatedAt: directory.generatedAt, matchedRows: directoryMatchedRows, reason: directory.reason, sync: directorySync }, revenue: revenue.meta, revenueSheet: revenueRaw?.consultantRevenue?.sourceSheet || '', revenueFields: revenueRaw?.consultantRevenue?.fieldMapping || {}, revenueExcludedPeriodRows: Number(revenueRaw?.consultantRevenue?.excludedPeriodRows || 0), unmatchedRevenueRows, unmatchedRevenueAmount: roundedAmount(unmatchedRevenueAmount), spend: spend.meta, spendSheet: spend.raw?.sourceSheet || '', spendFields: spend.raw?.fieldMapping || {}, matchedSpendRows, unmatchedSpendRows, ambiguousSpendRows, unmatchedSpendAmount: roundedAmount(unmatchedSpendAmount), journals: journalSources }, missing: [payroll.meta.noData ? '每月工资表' : '', !payroll.meta.noData && !consultantPayrollRows.length ? '工资表·顾问部门人员' : '', revenue.meta.noData || !revenueRows.length ? '营收统计表·总营收明细表' : '', spend.meta.noData ? '顾问消耗-营收表·汇总' : '', ...journalSources.filter(item => item.noData).map(item => `${item.companyName}序时账`)].filter(Boolean) };
 };
 const briefLineName = value => String(value || '')
   .replace(/\s+/g, '')
@@ -2676,7 +2744,7 @@ const server = http.createServer(async (req, res) => {
       const periodExcludedReports = reports.periodExcludedReports || [];
       const recognizedTypes = recognizedReportKeys;
       if (reportType && groupOnlyReportTypes.has(reportType) && companyKey !== 'group') return json(res, 409, { error: '集团报表只能归属“桉侨集团”，请切换上传公司后重试', code: 'GROUP_COMPANY_REQUIRED', selectedCompanyKey: companyKey, requiredCompanyKey: 'group' });
-      if (reportType && !groupOnlyReportTypes.has(reportType) && companyKey === 'group') return json(res, 409, { error: '“桉侨集团”只接收集团合并利润表、营收统计表、每月工资表和集团报单表，请重新选择报表或公司', code: 'GROUP_REPORT_TYPE_REQUIRED' });
+      if (reportType && !groupOnlyReportTypes.has(reportType) && companyKey === 'group') return json(res, 409, { error: '“桉侨集团”只接收集团合并利润表、营收统计表、每月工资表、顾问消耗-营收表和集团报单表，请重新选择报表或公司', code: 'GROUP_REPORT_TYPE_REQUIRED' });
       const requestedTypes = reportType === quotationLedgerReportType ? recognizedTypes.filter(type => type === quotationLedgerReportType) : recognizedTypes.length > 1 || !reportType ? recognizedTypes : recognizedTypes.filter(type => type === reportType);
       const selectedTypes = requestedTypes.filter(type => companyKey === 'group' ? groupOnlyReportTypes.has(type) : !groupOnlyReportTypes.has(type));
       if (!selectedTypes.length && periodExcludedReports.length) return bad(res, 400, `文件中的报表数据不属于所选期间 ${period}，已阻止生成上传批次`, { code: 'REPORT_PERIOD_EXCLUDED', periodExcludedReports });

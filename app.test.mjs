@@ -216,6 +216,24 @@ function payrollWorkbookBuffer() {
   return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
 }
 
+function consultantSpendWorkbookBuffer() {
+  const workbook = XLSX.utils.book_new();
+  const rows = [
+    ['顾问', null, '付费', null, null, null, null, null, '自然流', null, '汇总', null, '7月营收', '顾问投产比'],
+    [null, null, '小红书', '巨量', '百度', '谷歌', '腾讯', '渠道', '抖音', '公众号', '汇总/条', '总消耗/元'],
+    ['广州', 'JAMES', 51, 16, 4, 1, 0, 5, 1, 0, 78, 26890.2, 60000, 2.23],
+    [null, 'sasa', 41, 21, 3, 0, 0, 7, 0, 0, 72, 21617.63, 166900, 7.72],
+    [null, '市场部分给渠道部', 15, 1, 2, 0, 0, 0, 0, 0, 18, 12000, 88067, 13.64],
+    ['深圳', 'Unknown', 4, 6, 1, 0, 0, 0, 0, 0, 11, 9999, 0, 0],
+    ['汇总', null, 111, 44, 10, 1, 0, 12, 1, 0, 179, 70489.83, 314967, 4.47]
+  ];
+  const sheet = XLSX.utils.aoa_to_sheet(rows);
+  sheet['!merges'] = [XLSX.utils.decode_range('A1:B2'), XLSX.utils.decode_range('C1:H1'), XLSX.utils.decode_range('I1:J1'), XLSX.utils.decode_range('K1:L1')];
+  XLSX.utils.book_append_sheet(workbook, sheet, '汇总');
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([['历史或辅助明细'], ['英文名', '总消耗/元'], ['JAMES', 999999]]), 'sheet2');
+  return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+}
+
 function legacyGroupWorkbookBuffer(reportType) {
   const buffer = reportType === 'consolidated_income_statement' ? consolidatedWorkbookBuffer() : revenueProfitWorkbookBuffer();
   const workbook = XLSX.read(buffer, { type: 'buffer' });
@@ -450,6 +468,7 @@ test('启动信息按当前员工返回逐报表明细权限', async () => {
     revenue_statistics: false,
     payroll_statement: false,
     quotation_ledger: false,
+    consultant_spend_revenue: false,
     cash_flow: false,
     trial_balance: false,
     journal: false
@@ -618,23 +637,18 @@ test('生产容器使用专用用户且隔离检查覆盖数据挂载、Socket�
   assert.match(offsiteBackup, /chmod 0600 "\$status_file"/);
 });
 
-test('工资表固定为内部数据源且任何角色都不能整表浏览或导出', async () => {
-  for (const endpoint of [
-    '/api/reports/payroll_statement/raw?company=group&period=2026-07',
-    '/api/reports/payroll_statement/summary?company=group&period=2026-07',
-    '/api/reports/payroll_statement/detail?company=group&period=2026-07',
-    '/api/reports/payroll_statement/versions?company=group&period=2026-07',
-    '/api/reports/payroll_statement/export?company=group&period=2026-07&level=summary',
-  ]) {
-    const response = await request(endpoint, 'admin');
+test('工资表与顾问消耗表固定为内部数据源且任何角色都不能整表浏览或导出', async () => {
+  for (const reportType of ['payroll_statement', 'consultant_spend_revenue']) for (const action of ['raw', 'summary', 'detail', 'versions', 'export']) {
+    const suffix = action === 'export' ? '&level=summary' : '';
+    const response = await request(`/api/reports/${reportType}/${action}?company=group&period=2026-07${suffix}`, 'admin');
     assert.equal(response.response.status, 403);
     assert.match(response.payload.error, /敏感数据源不提供整表浏览或导出/);
   }
   const scopeDb = new TestDatabase(testDbPath, { readonly: true });
-  try { assert.equal(scopeDb.prepare("SELECT COUNT(*) AS count FROM role_report_scopes WHERE report_type = 'payroll_statement'").get().count, 0); }
+  try { for (const reportType of ['payroll_statement', 'consultant_spend_revenue']) assert.equal(scopeDb.prepare('SELECT COUNT(*) AS count FROM role_report_scopes WHERE report_type = ?').get(reportType).count, 0); }
   finally { scopeDb.close(); }
   const backend = fs.readFileSync(path.join(projectDir, 'app.mjs'), 'utf8');
-  assert.match(backend, /sourceOnlyReportTypes = new Set\(\[payrollStatementReportType, quotationLedgerReportType\]\)/);
+  assert.match(backend, /sourceOnlyReportTypes = new Set\(\[payrollStatementReportType, quotationLedgerReportType, consultantSpendRevenueReportType\]\)/);
   assert.match(backend, /DELETE FROM role_report_scopes WHERE report_type = \?/);
 });
 
@@ -933,10 +947,10 @@ test('上传页使用独立公司期间选择器且移除全局范围锁定', ()
 test('页面与后台运行版本一致且旧响应不能覆盖上传操作后的列表', async () => {
   const bootstrap = await request('/api/bootstrap?company=gz&period=2026-06');
   assert.equal(bootstrap.response.status, 200);
-  assert.equal(bootstrap.payload.appVersion, '1.1.45');
+  assert.equal(bootstrap.payload.appVersion, '1.1.47');
   const index = fs.readFileSync(path.join(projectDir, 'public', 'index.html'), 'utf8');
   const frontend = fs.readFileSync(path.join(projectDir, 'public', 'app.js'), 'utf8');
-  assert.match(index, /<meta name="app-version" content="1\.1\.45">/);
+  assert.match(index, /<meta name="app-version" content="1\.1\.47">/);
   assert.match(frontend, /const expectedAppVersion = document\.querySelector\('meta\[name="app-version"\]'\)/);
   assert.match(frontend, /bootstrap\?\.appVersion === expectedAppVersion/);
   assert.match(frontend, /APP_VERSION_MISMATCH/);
@@ -2034,6 +2048,12 @@ test('集团顾问投入产出比联合工资表、营收明细和各公司序�
     companyKey: 'group', reportType: 'revenue_statistics', fileName: '2027.3桉侨集团营收统计表.xlsx',
     contentBase64: revenueStatisticsWorkbookBuffer(period).toString('base64')
   });
+  const spend = await uploadAndPublish({
+    companyKey: 'group', reportType: 'consultant_spend_revenue', fileName: '27年3月顾问消耗-营收表.xlsx',
+    contentBase64: consultantSpendWorkbookBuffer().toString('base64')
+  });
+  assert.equal(spend[0].reportType, 'consultant_spend_revenue');
+  assert.equal((await request(`/api/reports/consultant_spend_revenue/raw?company=group&period=${period}&uploadKey=${spend[0].uploadKey}`)).response.status, 403);
   const automaticRefreshRequest = JSON.parse(fs.readFileSync(testConsultantDirectoryRefreshRequestFile, 'utf8'));
   assert.equal(automaticRefreshRequest.schemaVersion, 1); assert.equal(automaticRefreshRequest.reason, 'revenue_published');
   assert.deepEqual(Object.keys(automaticRefreshRequest).sort(), ['reason', 'requestId', 'requestedAt', 'schemaVersion']);
@@ -2071,17 +2091,18 @@ test('集团顾问投入产出比联合工资表、营收明细和各公司序�
   assert.equal(result.response.status, 200, JSON.stringify(result.payload));
   const byName = Object.fromEntries(result.payload.rows.map(item => [item.canonicalName, item]));
   assert.equal(result.payload.rows.some(item => ['当月计薪日', '147'].includes(item.name)), false);
-  assert.deepEqual({ baseSalary: byName['詹志坚'].baseSalary, commission: byName['詹志坚'].commission, journalExpense: byName['詹志坚'].journalExpense, input: byName['詹志坚'].input, output: byName['詹志坚'].output, region: byName['詹志坚'].region, matchStatus: byName['詹志坚'].matchStatus }, { baseSalary: 10000, commission: 2000, journalExpense: 3000, input: 15000, output: 120000, region: '广州', matchStatus: 'matched' });
-  assert.equal(byName['詹志坚'].roi, 8);
+  assert.deepEqual({ baseSalary: byName['詹志坚'].baseSalary, commission: byName['詹志坚'].commission, journalExpense: byName['詹志坚'].journalExpense, trafficSpend: byName['詹志坚'].trafficSpend, input: byName['詹志坚'].input, output: byName['詹志坚'].output, region: byName['詹志坚'].region, matchStatus: byName['詹志坚'].matchStatus }, { baseSalary: 10000, commission: 2000, journalExpense: 3000, trafficSpend: 26890.2, input: 41890.2, output: 120000, region: '广州', matchStatus: 'matched' });
+  assert.ok(Math.abs(byName['詹志坚'].roi - 120000 / 41890.2) < 0.0000001);
   assert.deepEqual({ hireDate: byName['詹志坚'].hireDate, isNewEmployee: byName['詹志坚'].isNewEmployee }, { hireDate: '2027-03-05', isNewEmployee: true });
   assert.deepEqual({ englishName: byName['詹志坚'].englishName, isResigned: byName['詹志坚'].isResigned }, { englishName: 'James', isResigned: false });
-  assert.deepEqual({ baseSalary: byName['张莎莎'].baseSalary, commission: byName['张莎莎'].commission, journalExpense: byName['张莎莎'].journalExpense, input: byName['张莎莎'].input, output: byName['张莎莎'].output, region: byName['张莎莎'].region }, { baseSalary: 9000, commission: 1500, journalExpense: 1200, input: 11700, output: 80000, region: '深圳' });
+  assert.deepEqual({ baseSalary: byName['张莎莎'].baseSalary, commission: byName['张莎莎'].commission, journalExpense: byName['张莎莎'].journalExpense, trafficSpend: byName['张莎莎'].trafficSpend, input: byName['张莎莎'].input, output: byName['张莎莎'].output, region: byName['张莎莎'].region }, { baseSalary: 9000, commission: 1500, journalExpense: 1200, trafficSpend: 21617.63, input: 33317.63, output: 80000, region: '深圳' });
   assert.equal(byName['徐梓茵'], undefined);
   assert.equal(byName['非顾问人员'], undefined);
   assert.equal(byName['张莎莎'].isNewEmployee, false);
   assert.deepEqual({ englishName: byName['张莎莎'].englishName, isResigned: byName['张莎莎'].isResigned }, { englishName: 'Sasa', isResigned: true });
   assert.equal(result.payload.rows.length, 2);
-  assert.equal(result.payload.totals.input, 26700);
+  assert.equal(result.payload.totals.input, 75207.83);
+  assert.equal(result.payload.totals.trafficSpend, 48507.83);
   assert.equal(result.payload.totals.output, 200000);
   assert.equal(byName['詹志坚'].expenseDetails.length, 1);
   assert.match(byName['詹志坚'].expenseDetails[0].summary, /客户拜访/);
@@ -2089,10 +2110,16 @@ test('集团顾问投入产出比联合工资表、营收明细和各公司序�
   assert.equal(byName['詹志坚'].payrollDetails[0].sourceSheet, '202703工资表');
   assert.deepEqual({ company: byName['詹志坚'].payrollDetails[0].company, department: byName['詹志坚'].payrollDetails[0].department, hireDate: byName['詹志坚'].payrollDetails[0].hireDate }, { company: '广州桉侨', department: '广州顾问部', hireDate: '2027-03-05' });
   assert.equal(byName['詹志坚'].revenueDetails.length, 2);
+  assert.equal(byName['詹志坚'].spendDetails.length, 1);
+  assert.deepEqual({ sourceSheet: byName['詹志坚'].spendDetails[0].sourceSheet, englishName: byName['詹志坚'].spendDetails[0].englishName, trafficSpend: byName['詹志坚'].spendDetails[0].trafficSpend }, { sourceSheet: '汇总', englishName: 'JAMES', trafficSpend: 26890.2 });
   assert.equal(result.payload.sources.payroll.fileName, '2027年3月桉侨集团工资表.xlsx');
   assert.equal(result.payload.sources.payrollSheet, '202703工资表');
   assert.deepEqual(result.payload.sources.payrollFields, { company: '公司', department: '部门', name: '中文姓名', hireDate: '入职日期', baseSalary: ['基本工资'], commission: '本月提成' });
   assert.equal(result.payload.sources.revenueSheet, '总营收明细表');
+  assert.equal(result.payload.sources.spend.fileName, '27年3月顾问消耗-营收表.xlsx');
+  assert.equal(result.payload.sources.spendSheet, '汇总');
+  assert.deepEqual(result.payload.sources.spendFields, { englishName: '顾问（合并表头末列）', trafficSpend: '总消耗/元' });
+  assert.deepEqual({ matched: result.payload.sources.matchedSpendRows, unmatched: result.payload.sources.unmatchedSpendRows, ambiguous: result.payload.sources.ambiguousSpendRows, unmatchedAmount: result.payload.sources.unmatchedSpendAmount }, { matched: 2, unmatched: 1, ambiguous: 0, unmatchedAmount: 9999 });
   assert.deepEqual(result.payload.sources.payrollConsultantDepartments, ['广州顾问部', '深圳顾问部']);
   assert.equal(result.payload.sources.payrollConsultantRows, 2);
   assert.equal(result.payload.sources.payrollExcludedRows, 1);
@@ -2146,6 +2173,8 @@ test('集团顾问投入产出比联合工资表、营收明细和各公司序�
   assert.match(frontend, /data-roi-input/); assert.match(frontend, /data-roi-filter-toggle/); assert.match(frontend, /data-roi-filter-draft/); assert.match(frontend, /data-roi-sort/);
   assert.match(frontend, /consultant-roi-filter-menu/); assert.match(frontend, /positionColumnFilter/); assert.doesNotMatch(frontend, /roi-filter-row/);
   assert.match(frontend, /consultant-roi-export/); assert.match(frontend, /顾问投入产出比\.csv/);
+  assert.match(frontend, /key: 'trafficSpend', label: '投流消耗费用'/); assert.match(frontend, /consultantSpendRevenueReportType, '集团顾问消耗-营收表'/);
+  assert.match(frontend, /投流取数字段/); assert.match(frontend, /unmatchedSpendRows/);
   assert.match(frontend, /工资取数字段/); assert.match(frontend, /payrollFields/);
   assert.match(serverSource, /refreshedConsultantPayrollRawFor/); assert.match(serverSource, /hireDate\.slice\(0, 7\) === period/);
   assert.match(frontend, /consultantRoiAverageSummary/); assert.match(frontend, /consultant-roi-average-modal/); assert.match(frontend, /consultant-new-hire-badge/); assert.match(frontend, /入职时间/);
@@ -2163,14 +2192,14 @@ test('集团顾问投入产出比联合工资表、营收明细和各公司序�
   assert.match(stylesheet, /analysis-layout-editable>\.consultant-roi-table-panel \.consultant-roi-table-toolbar\{padding-right:78px\}/);
   assert.match(stylesheet, /\.consultant-roi-page-actions\{[^}]*flex-wrap:nowrap/); assert.match(stylesheet, /#consultant-roi-refresh-status\{[^}]*position:absolute/);
   assert.match(stylesheet, /\.consultant-roi-average-card/); assert.match(stylesheet, /\.consultant-roi-average-modal/); assert.match(stylesheet, /\.consultant-new-hire-badge/);
-  assert.match(stylesheet, /\.consultant-resigned-badge/); assert.match(stylesheet, /roi-col-hireDate/); assert.match(stylesheet, /roi-col-englishName/);
+  assert.match(stylesheet, /\.consultant-resigned-badge/); assert.match(stylesheet, /roi-col-hireDate/); assert.match(stylesheet, /roi-col-englishName/); assert.match(stylesheet, /roi-col-trafficSpend/);
   assert.match(stylesheet, /\.consultant-directory-guide/); assert.match(stylesheet, /\.consultant-directory-guide-modal/);
   assert.match(stylesheet, /\.consultant-roi-table\{width:100%;min-width:0!important;table-layout:fixed\}/);
   assert.match(stylesheet, /\.roi-filter-menu\{position:fixed/); assert.match(stylesheet, /\.roi-filter-trigger\.active/);
   const helperSource = frontend.slice(frontend.indexOf('const consultantRoiInputDefinitions'), frontend.indexOf('async function renderConsultantRoiAnalysis'));
   assert.doesNotMatch(helperSource, /label: '来源'/); assert.doesNotMatch(helperSource, /'匹配状态', '来源'/);
   const context = { result: null, summary: null, escapeHtml: value => String(value ?? ''), showNotice: () => {}, URL: {}, Blob: function Blob() {}, document: {}, window: {} };
-  vm.runInNewContext(`const consultantRoiView = { inputs: { baseSalary: false, commission: true, journalExpense: true }, filters: { region: '广州', input: '>=5000' }, sortKey: 'input', sortDirection: 'desc' }; ${helperSource}; const sampleRows = [{ name: '甲', region: '广州', baseSalary: 10000, commission: 2000, journalExpense: 3000, output: 100000, matchStatus: 'matched', payrollDetails: [], revenueDetails: [], expenseDetails: [] }, { name: '乙', region: '深圳', baseSalary: 9000, commission: 1000, journalExpense: 500, output: 80000, matchStatus: 'matched', payrollDetails: [], revenueDetails: [], expenseDetails: [] }]; result = consultantRoiRowsForView(sampleRows); summary = consultantRoiAverageSummary(sampleRows);`, context);
+  vm.runInNewContext(`const consultantRoiView = { inputs: { baseSalary: false, commission: true, journalExpense: true, trafficSpend: false }, filters: { region: '广州', input: '>=5000' }, sortKey: 'input', sortDirection: 'desc' }; ${helperSource}; const sampleRows = [{ name: '甲', region: '广州', baseSalary: 10000, commission: 2000, journalExpense: 3000, trafficSpend: 25000, output: 100000, matchStatus: 'matched', payrollDetails: [], revenueDetails: [], expenseDetails: [], spendDetails: [] }, { name: '乙', region: '深圳', baseSalary: 9000, commission: 1000, journalExpense: 500, trafficSpend: 12000, output: 80000, matchStatus: 'matched', payrollDetails: [], revenueDetails: [], expenseDetails: [], spendDetails: [] }]; result = consultantRoiRowsForView(sampleRows); summary = consultantRoiAverageSummary(sampleRows);`, context);
   assert.equal(context.result.length, 1); assert.equal(context.result[0].name, '甲'); assert.equal(context.result[0].input, 5000); assert.equal(context.result[0].roi, 20);
   assert.equal(context.summary.consultantCount, 2); assert.ok(Math.abs(context.summary.averageRoi - 36.6666666667) < 0.000001); assert.deepEqual(Array.from(context.summary.regions, item => item.region), ['广州', '深圳']);
 });
