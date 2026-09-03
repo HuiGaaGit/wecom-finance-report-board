@@ -315,3 +315,8 @@ cat /data/data/wecom-finance-report-board/backups/offsite-last-success.meta
 - SQLite 完整性为 `ok`；核心业务事实保持 8 家公司、88 个上传批次、88 份报表快照和 4,635 条报表行，二级项目表当前为 0 行，增列迁移未改写历史报表数据。
 - 发布前数据库备份：`/data/data/wecom-finance-report-board/backups/report-board-20260903T061119Z.db`，SHA256：`7f7a8d31490394e2b10e6703cca856181e6e90442383abb626d45677a426651b`；发布后备份：`/data/data/wecom-finance-report-board/backups/report-board-20260903T061448Z.db`，SHA256：`6669c2f860af8532ffc7cfc98ac1f36af2520ed2e27d90edf4276d7db50d2d14`，两者权限均为 `0600`。
 - 发布前源码与 Compose 回滚快照：`/data/backups/wecom-finance-report-board/pre-1.1.29-20260903T061103Z`。回滚时恢复该快照中的 Compose 并重新启动上一镜像；除非数据库完整性失败，不得用旧备份覆盖正常业务数据。
+
+## 19. 财务简报二级项目入口交互候选（1.1.30，待部署）
+
+- 不再在每个一级项目下方常驻显示“添加二级项目”文字行；授权人员悬停一级项目或用键盘聚焦时，仅在该项目左侧显示一个浮动 `+`，不占用正文高度。
+- 点击 `+` 后，直接在一级项目下方展开与正文相同的名称、金额、操作三列填写行，不增加额外缩进或卡片容器。触屏设备保留低对比度浮动 `+`，确保没有悬停能力时仍可操作。

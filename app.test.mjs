@@ -842,10 +842,10 @@ test('上传页使用独立公司期间选择器且移除全局范围锁定', ()
 test('页面与后台运行版本一致且旧响应不能覆盖上传操作后的列表', async () => {
   const bootstrap = await request('/api/bootstrap?company=gz&period=2026-06');
   assert.equal(bootstrap.response.status, 200);
-  assert.equal(bootstrap.payload.appVersion, '1.1.29');
+  assert.equal(bootstrap.payload.appVersion, '1.1.30');
   const index = fs.readFileSync(path.join(projectDir, 'public', 'index.html'), 'utf8');
   const frontend = fs.readFileSync(path.join(projectDir, 'public', 'app.js'), 'utf8');
-  assert.match(index, /<meta name="app-version" content="1\.1\.29">/);
+  assert.match(index, /<meta name="app-version" content="1\.1\.30">/);
   assert.match(frontend, /const expectedAppVersion = document\.querySelector\('meta\[name="app-version"\]'\)/);
   assert.match(frontend, /bootstrap\?\.appVersion === expectedAppVersion/);
   assert.match(frontend, /APP_VERSION_MISMATCH/);
@@ -1938,12 +1938,13 @@ test('财务数据简报按集团与公司范围联合已发布报表自动取�
   const stylesheet = fs.readFileSync(path.join(projectDir, 'public', 'styles.css'), 'utf8');
   assert.match(advertisingHelper, /amount: debitAmount/); assert.doesNotMatch(advertisingHelper, /rawReportFor\('journal'|creditAmount|借方－贷方/);
   assert.match(frontend, /renderFinancialBrief/); assert.match(frontend, /预计营收/); assert.match(frontend, /其中广宣费 \$\{value\(m\.advertisingExpense\)\}/);
-  assert.match(frontend, /financial-brief-copy-button/); assert.match(frontend, /financialBriefPlainText/); assert.match(frontend, /添加二级项目/); assert.match(frontend, /\/api\/analysis\/financial-brief\/secondary-items/);
+  assert.match(frontend, /financial-brief-copy-button/); assert.match(frontend, /financialBriefPlainText/); assert.match(frontend, /class="financial-brief-item-add"[\s\S]*aria-label="在\$\{escapeHtml\(row\.label\)\}下添加二级项目"[\s\S]*>\+<\/button>/); assert.match(frontend, /\/api\/analysis\/financial-brief\/secondary-items/);
   assert.match(frontend, /row\.key !== 'comprehensiveRevenueProfit'/); assert.doesNotMatch(frontend, /class="financial-brief-note"|>备注</);
   assert.match(frontend, /financialBriefAutoRefreshMs = 60_000/); assert.match(frontend, /visibilitychange/); assert.match(frontend, /financial-brief-refresh/);
   assert.doesNotMatch(frontend, /广宣费来源明细|科目余额表优先、序时账兜底/); assert.doesNotMatch(stylesheet, /\.financial-brief-advertising/); assert.match(stylesheet, /financial-brief-spin/);
   assert.match(stylesheet, /\.financial-brief-page-actions\{flex-wrap:nowrap\}/); assert.match(stylesheet, /\.financial-brief-refresh\{[^}]*white-space:nowrap/); assert.match(stylesheet, /#financial-brief-refresh-status\{[^}]*position:absolute/);
   assert.match(stylesheet, /\.financial-brief-copy-button/); assert.match(stylesheet, /\.financial-brief-subrow/); assert.match(stylesheet, /\.financial-brief-item-editor/);
+  assert.match(stylesheet, /\.financial-brief-item-add\{position:absolute[^}]*left:-30px[^}]*opacity:0/); assert.match(stylesheet, /\.financial-brief-item-editor\{margin:4px 0 0/); assert.match(stylesheet, /\.financial-brief-item-editor input:first-child\{margin-left:0\}/);
   assert.match(backend, /ALTER TABLE financial_brief_notes ADD COLUMN item_name/); assert.match(backend, /ALTER TABLE financial_brief_notes ADD COLUMN item_amount/);
   const plainTextSource = frontend.slice(frontend.indexOf('const financialBriefAmountText'), frontend.indexOf('const financialBriefRowsHtml'));
   const plainContext = {}; vm.runInNewContext(`${plainTextSource}; result = financialBriefPlainText(${JSON.stringify(withItem.payload)});`, plainContext);
