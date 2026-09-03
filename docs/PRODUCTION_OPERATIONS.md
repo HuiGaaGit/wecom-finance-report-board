@@ -1,8 +1,8 @@
 # 桉侨财务模块生产说明
 
 更新日期：2026-09-03
-当前生产版本：1.1.33
-最近发布包：1.1.33（已部署）
+当前生产版本：1.1.34
+最近发布包：1.1.34（已部署）
 正式地址：<https://anqiaoyiminxq.com/platform/finance/>
 
 ## 1. 系统归属与隔离
@@ -75,7 +75,7 @@ ssh -F deploy/ssh_config wecom-finance-prod "hostname && whoami"
 
 - Compose 项目：`wecom-finance-report-board`
 - 容器：`wecom-finance-report-board`
-- 当前镜像：`aqllm/finance-report-board:1.1.29`
+- 当前镜像：`aqllm/finance-report-board:1.1.34`
 - 容器运行用户：`20117:20117`
 - 容器端口：`3180`
 - 主机监听：`127.0.0.1:3180`
@@ -341,9 +341,15 @@ cat /data/data/wecom-finance-report-board/backups/offsite-last-success.meta
 - 早期集团文件没有公司分表时保留集团主表并标记为无分表可勾稽；只要存在公司分表，仍须逐行加总一致才能发布。
 - 历史目录隔离试解析识别 60 个候选文件，5 个生产已发布项跳过，其余 55 个文件预计形成 147 个新报表批次；正式上传和发布须在生产一致性备份及用户最终确认后执行。
 
-## 22. 财务简报自由二级说明候选（1.1.34，待部署）
+## 22. 财务简报自由二级说明发布（1.1.34）
 
 - 一级项目左侧浮动 `+` 比同行项目名称下移约半个字符，继续保持默认隐藏、悬停或键盘聚焦显示。
 - 点击后仅展开一个最长 300 字的横向自由文字框，可填写纯文字、金额说明或两者混合，不再强制拆分“项目名称”和“金额”。
 - 已保存说明支持编辑与确认删除，纯文字复制时仍紧跟所属一级项目且不插入空行；服务端继续校验权限、公司和期间范围并记录操作日志。
 - 继续复用 `financial_brief_notes` 表和原权限键，旧名称金额数据按合并文本兼容显示，不重建或清空数据库。
+- 功能提交为 `779a99c`，构建镜像源支持提交为 `da141c7`；最终发布包为 `artifacts/build-1.1.34-r2/wecom-finance-report-board-1.1.34.zip`，SHA256 为 `7BA27A3E627953112E1773A2E429AC2147147A032822B70E9B567CC0B3AB6283`，服务器上传副本核验一致。
+- 本地与服务器 Docker tests 完整回归均为 `93/93`；独立空数据库冒烟返回 `version=1.1.34`、`authMode=platform`。正式镜像为 `aqllm/finance-report-board:1.1.34`，镜像 ID 为 `sha256:db28286bfeb331870e7975449d8f90542fca91d29e632faec310ea1ebde0bf7c`。
+- 生产已于 `2026-09-03 16:19 CST` 从 `1.1.33` 切换到 `1.1.34`。容器为 `healthy`，回环健康接口返回 `1.1.34/platform`；未登录访问正式地址进入小Q统一登录流程，Nginx 配置、运行时隔离和应用静态资源一致性检查通过。
+- SQLite 完整性为 `ok`；核心业务事实保持 8 家公司、88 个上传批次、88 份报表快照和 4,635 条报表行，二级说明表为 0 行。本次未写入生产测试说明；部署前发现异机备份状态文件权限为 `0640`，已按隔离契约收紧为 `0600`。
+- 发布前数据库备份：`/data/data/wecom-finance-report-board/backups/report-board-20260903T080257Z.db`，SHA256：`6ff0f77801b61e387041e06831e861d795c2adf2db9a048804c35f94add55894`；发布后备份：`/data/data/wecom-finance-report-board/backups/report-board-20260903T082406Z.db`，SHA256：`a7d1f6b6a2f4debb1ae244a16b421698442950eeb67dee084579ff8601a998a0`，两者均为 `20117:20117`、权限 `0600`。
+- 发布前源码与 Compose 回滚快照：`/data/backups/wecom-finance-report-board/pre-1.1.34-20260903T081850Z`。回滚时恢复其中的源码和 Compose 并重新启动上一镜像；除非数据库完整性失败，不得用旧备份覆盖正常业务数据。
