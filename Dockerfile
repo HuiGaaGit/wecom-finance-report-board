@@ -17,7 +17,7 @@ RUN npm ci --omit=dev --registry="${NPM_REGISTRY}" && npm cache clean --force
 
 FROM dependencies AS tests
 
-COPY package.json package-lock.json app.mjs app.test.mjs asset-liability-analysis.mjs asset-liability-analysis.test.mjs cash-flow-analysis.mjs cash-flow-analysis.test.mjs permission-center.test.mjs platform-auth.mjs platform-auth.test.mjs Dockerfile ./
+COPY package.json package-lock.json app.mjs app.test.mjs asset-liability-analysis.mjs asset-liability-analysis.test.mjs cash-flow-analysis.mjs cash-flow-analysis.test.mjs consultant-directory-input.mjs permission-center.test.mjs platform-auth.mjs platform-auth.test.mjs Dockerfile ./
 COPY public ./public
 COPY data/raw-reports-demo.json ./data/raw-reports-demo.json
 COPY deploy ./deploy
@@ -34,9 +34,9 @@ RUN groupadd --gid ${APP_GID} financeapp \
   && useradd --uid ${APP_UID} --gid ${APP_GID} --no-create-home --no-log-init --shell /usr/sbin/nologin financeapp
 
 COPY --from=dependencies /app/node_modules ./node_modules
-COPY --chown=${APP_UID}:${APP_GID} package.json package-lock.json app.mjs asset-liability-analysis.mjs cash-flow-analysis.mjs platform-auth.mjs ./
+COPY --chown=${APP_UID}:${APP_GID} package.json package-lock.json app.mjs asset-liability-analysis.mjs cash-flow-analysis.mjs consultant-directory-input.mjs platform-auth.mjs ./
 COPY --chown=${APP_UID}:${APP_GID} public ./public
-COPY --chown=${APP_UID}:${APP_GID} deploy/database-summary.mjs deploy/backup-database.mjs ./deploy/
+COPY --chown=${APP_UID}:${APP_GID} deploy/database-summary.mjs deploy/backup-database.mjs deploy/prepare-consultant-directory-input.mjs ./deploy/
 
 USER ${APP_UID}:${APP_GID}
 EXPOSE 3180

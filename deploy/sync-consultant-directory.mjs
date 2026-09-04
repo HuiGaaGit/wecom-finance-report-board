@@ -3,25 +3,17 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { fileURLToPath, pathToFileURL } from 'node:url';
-
-let Database;
-try {
-  ({ default: Database } = await import('better-sqlite3')); const probe = new Database(':memory:'); probe.close();
-} catch {
-  const fallback = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '14云端企微账簿', 'node_modules', 'better-sqlite3', 'lib', 'index.js');
-  ({ default: Database } = await import(pathToFileURL(fallback).href));
-}
+import { fileURLToPath } from 'node:url';
 
 process.umask(0o077);
 const args = process.argv.slice(2);
 const valueFor = (name, fallback = '') => { const index = args.indexOf(name); return index >= 0 ? String(args[index + 1] || '') : fallback; };
-const dbFile = valueFor('--db', process.env.DB_FILE || '/data/data/wecom-finance-report-board/report-board.db');
-const dataDirectory = valueFor('--data-dir', process.env.FINANCE_DATA_DIR || path.dirname(dbFile));
+const dataDirectory = valueFor('--data-dir', process.env.FINANCE_DATA_DIR || '/data/data/wecom-finance-report-board');
 const outputFile = valueFor('--output', process.env.CONSULTANT_DIRECTORY_FILE || path.join(dataDirectory, 'consultant-directory.json'));
 const statusFile = valueFor('--status', process.env.CONSULTANT_DIRECTORY_STATUS_FILE || path.join(dataDirectory, 'consultant-directory-status.json'));
 const requestFile = valueFor('--request', process.env.CONSULTANT_DIRECTORY_REFRESH_REQUEST_FILE || path.join(dataDirectory, 'consultant-directory-refresh-request.json'));
 const authRequestFile = valueFor('--auth-request', process.env.CONSULTANT_DIRECTORY_AUTH_REQUEST_FILE || path.join(dataDirectory, 'consultant-directory-auth-request.json'));
+const inputFile = valueFor('--input', process.env.CONSULTANT_DIRECTORY_INPUT_FILE || path.join(dataDirectory, 'consultant-directory-input.json'));
 const rosterUrl = valueFor('--roster-url', process.env.WECOM_ROSTER_URL || '');
 const appUid = Number(valueFor('--uid', process.env.FINANCE_APP_UID || '20117')); const appGid = Number(valueFor('--gid', process.env.FINANCE_APP_GID || '20117'));
 const configuredWecomCli = valueFor('--wecom-cli', process.env.WECOM_CLI || '');
@@ -93,27 +85,23 @@ const preservedAuthLink = source => {
     return { authUrl: authUrl.toString(), authUrlExpiresAt };
   } catch { return {}; }
 };
-const resolveStoredPath = stored => {
-  const source = String(stored || ''); if (fs.existsSync(source)) return source;
-  const prefix = '/var/lib/wecom-finance/';
-  return source.startsWith(prefix) ? path.join(dataDirectory, source.slice(prefix.length)) : source;
-};
-const consultantNamesFromPayroll = () => {
-  if (!fs.existsSync(dbFile)) fail('未找到财务数据库，无法限定顾问名单', 'SOURCE_DATA_REQUIRED');
-  const database = new Database(dbFile, { readonly: true, fileMustExist: true });
+const consultantNamesFromInput = (sourceFile = inputFile) => {
   try {
-    const uploads = database.prepare("SELECT raw_path FROM upload_batches WHERE report_type = 'payroll_statement' AND status = 'published' ORDER BY published_at DESC").all();
+    const stat = fs.statSync(sourceFile); if (!stat.isFile() || stat.size <= 0 || stat.size > 256 * 1024) fail('顾问匹配清单大小异常', 'SOURCE_DATA_REQUIRED');
+    const payload = JSON.parse(fs.readFileSync(sourceFile, 'utf8'));
+    if (payload?.schemaVersion !== 1 || !Array.isArray(payload.people) || payload.people.length > 5000) fail('顾问匹配清单格式异常', 'SOURCE_DATA_REQUIRED');
     const names = new Map();
-    for (const upload of uploads) {
-      const rawPath = resolveStoredPath(upload.raw_path); if (!rawPath || !fs.existsSync(rawPath)) continue;
-      try {
-        const payload = JSON.parse(fs.readFileSync(rawPath, 'utf8')); const report = payload.payroll_statement || payload.uploaded?.payroll_statement || payload;
-        for (const row of report.payrollRows || []) if (/顾问/.test(String(row.department || '').replace(/\s+/g, ''))) names.set(row.canonicalName || canonicalName(row.name), String(row.name || '').trim());
-      } catch {}
+    for (const person of payload.people) {
+      if (!person || Object.keys(person).some(key => key !== 'name')) fail('顾问匹配清单包含未授权字段', 'SOURCE_SCOPE_REQUIRED');
+      const name = String(person.name || '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 40); const key = canonicalName(name);
+      if (name && key) names.set(key, name);
     }
     if (!names.size) fail('已发布工资表中尚未识别到顾问部门人员', 'SOURCE_DATA_REQUIRED');
     return names;
-  } finally { database.close(); }
+  } catch (error) {
+    if (error instanceof SyncError) throw error;
+    fail('未找到可用的财务顾问匹配清单', 'SOURCE_DATA_REQUIRED');
+  }
 };
 const rosterDocument = () => {
   if (rosterUrl) return { url: rosterUrl, doc_name: '花名册' };
@@ -156,7 +144,7 @@ const main = () => {
   const auth = spawnSync(wecomCli, [...wecomCliPrefix, 'auth', 'show', '--status'], { encoding: 'utf8', windowsHide: true });
   if (auth.error || auth.status !== 0 || String(auth.stdout || '').trim() !== 'authorized') fail('企业微信授权未完成或已失效', 'AUTH_REQUIRED');
   privateJson(statusFile, statusPayload('running', '正在读取企业微信花名册与通讯录', '', { lastSuccessAt: String(priorStatus.lastSuccessAt || '') }));
-  const consultantNames = consultantNamesFromPayroll(); const doc = rosterDocument();
+  const consultantNames = consultantNamesFromInput(); const doc = rosterDocument();
   const active = rosterPeople(doc, '在职', 'active'); const resigned = rosterPeople(doc, '离职', 'resigned'); const contactNames = contactEnglishNames(consultantNames);
   const people = [...consultantNames].map(([key, name]) => {
     const roster = resigned.get(key) || active.get(key);
@@ -194,4 +182,4 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   }
 }
 
-export { gridCellText, exactTwoColumnRows, exactRosterRows, preservedAuthLink };
+export { gridCellText, exactTwoColumnRows, exactRosterRows, consultantNamesFromInput, preservedAuthLink };

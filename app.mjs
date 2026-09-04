@@ -13,6 +13,7 @@ import {
 } from './platform-auth.mjs';
 import { parseAssetLiabilityAnalysis } from './asset-liability-analysis.mjs';
 import { parseCashFlowAnalysis } from './cash-flow-analysis.mjs';
+import { writeConsultantDirectoryInput } from './consultant-directory-input.mjs';
 
 // 财务文件、SQLite WAL/SHM 与临时解析产物默认仅允许当前专用运行用户访问。
 process.umask(0o077);
@@ -29,7 +30,7 @@ try {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const dataDir = path.join(__dirname, 'data');
-const appVersion = '1.1.51';
+const appVersion = '1.1.52';
 const financialBriefModuleKey = 'financial_brief';
 const financialBriefNotesPermissionKey = 'module.financial_brief.notes.manage';
 const financialBriefMetricKeys = new Set(['expectedRevenue', 'accountBalance', 'operatingRevenue', 'operatingCost', 'sellingExpense', 'managementExpense', 'financeExpense', 'netProfit']);
@@ -121,6 +122,7 @@ const consultantDirectoryFile = process.env.CONSULTANT_DIRECTORY_FILE || path.jo
 const consultantDirectoryStatusFile = process.env.CONSULTANT_DIRECTORY_STATUS_FILE || path.join(path.dirname(dbFile), 'consultant-directory-status.json');
 const consultantDirectoryRefreshRequestFile = process.env.CONSULTANT_DIRECTORY_REFRESH_REQUEST_FILE || path.join(path.dirname(dbFile), 'consultant-directory-refresh-request.json');
 const consultantDirectoryAuthRequestFile = process.env.CONSULTANT_DIRECTORY_AUTH_REQUEST_FILE || path.join(path.dirname(dbFile), 'consultant-directory-auth-request.json');
+const consultantDirectoryInputFile = process.env.CONSULTANT_DIRECTORY_INPUT_FILE || path.join(path.dirname(dbFile), 'consultant-directory-input.json');
 const consultantDirectoryMaxBytes = 512 * 1024;
 const ensurePrivateDirectory = directory => { fs.mkdirSync(directory, { recursive: true, mode: 0o700 }); try { fs.chmodSync(directory, 0o700); } catch (error) { if (process.platform !== 'win32') throw error; } };
 ensurePrivateDirectory(path.dirname(dbFile));
@@ -1758,6 +1760,7 @@ const writePrivateJsonAtomic = (file, value) => {
 const requestConsultantDirectoryRefresh = reason => {
   const safeReasons = new Set(['manual', 'payroll_published', 'revenue_published', 'relevant_reports_published']);
   const requestedAt = now(); const requestId = crypto.randomUUID();
+  writeConsultantDirectoryInput(db, consultantDirectoryInputFile);
   writePrivateJsonAtomic(consultantDirectoryRefreshRequestFile, { schemaVersion: 1, requestId, requestedAt, reason: safeReasons.has(reason) ? reason : 'manual' });
   return { requested: true, requestId, requestedAt };
 };

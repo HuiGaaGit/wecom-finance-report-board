@@ -25,9 +25,10 @@ const testConsultantDirectoryFile = path.join(projectDir, 'data', `test-consulta
 const testConsultantDirectoryStatusFile = path.join(projectDir, 'data', `test-consultant-directory-status-${process.pid}-${Date.now()}.json`);
 const testConsultantDirectoryRefreshRequestFile = path.join(projectDir, 'data', `test-consultant-directory-refresh-${process.pid}-${Date.now()}.json`);
 const testConsultantDirectoryAuthRequestFile = path.join(projectDir, 'data', `test-consultant-directory-auth-${process.pid}-${Date.now()}.json`);
+const testConsultantDirectoryInputFile = path.join(projectDir, 'data', `test-consultant-directory-input-${process.pid}-${Date.now()}.json`);
 let child;
 
-const { exactTwoColumnRows, exactRosterRows, preservedAuthLink } = await import('./deploy/sync-consultant-directory.mjs');
+const { exactTwoColumnRows, exactRosterRows, consultantNamesFromInput, preservedAuthLink } = await import('./deploy/sync-consultant-directory.mjs');
 const { safeAuthUrl } = await import('./deploy/init-consultant-directory-auth.mjs');
 
 test('企微花名册只接受结构化精确两列，异常响应仅有限重试，授权链接严格限定官方临时入口', () => {
@@ -49,6 +50,13 @@ test('企微花名册只接受结构化精确两列，异常响应仅有限重�
   assert.deepEqual(retried, [['姓名', '英文名']]);
   assert.equal(attempts, 3); assert.deepEqual(waits, [500, 1000]);
   assert.throws(() => exactRosterRows([], () => ({ grid_data: { start_column: 5, rows: [] } }), () => {}), error => error.code === 'SOURCE_SCOPE_REQUIRED' && error.diagnostic.attempts === 3);
+  const safeInput = path.join(projectDir, 'data', `test-consultant-input-parser-${process.pid}.json`);
+  try {
+    fs.writeFileSync(safeInput, JSON.stringify({ schemaVersion: 1, people: [{ name: '测试顾问' }] }));
+    assert.deepEqual([...consultantNamesFromInput(safeInput).values()], ['测试顾问']);
+    fs.writeFileSync(safeInput, JSON.stringify({ schemaVersion: 1, people: [{ name: '测试顾问', department: '顾问部' }] }));
+    assert.throws(() => consultantNamesFromInput(safeInput), error => error.code === 'SOURCE_SCOPE_REQUIRED');
+  } finally { fs.rmSync(safeInput, { force: true }); }
   const valid = 'https://work.weixin.qq.com/ai/qc/gen?source=wecom_cli_external&scode=Abc_123-def';
   assert.equal(safeAuthUrl(valid), valid);
   assert.equal(safeAuthUrl('https://example.com/ai/qc/gen?source=wecom_cli_external&scode=Abc_123-def'), '');
@@ -313,7 +321,7 @@ function bundleWithStaleLedgerSourcesBuffer() {
 }
 
 before(async () => {
-  child = spawn(process.execPath, ['app.mjs'], { cwd: projectDir, env: { ...process.env, NODE_ENV: 'test', PORT: String(testPort), DB_FILE: testDbPath, UPLOADS_DIR: testUploadsDir, CONSULTANT_DIRECTORY_FILE: testConsultantDirectoryFile, CONSULTANT_DIRECTORY_STATUS_FILE: testConsultantDirectoryStatusFile, CONSULTANT_DIRECTORY_REFRESH_REQUEST_FILE: testConsultantDirectoryRefreshRequestFile, CONSULTANT_DIRECTORY_AUTH_REQUEST_FILE: testConsultantDirectoryAuthRequestFile }, stdio: 'ignore' });
+  child = spawn(process.execPath, ['app.mjs'], { cwd: projectDir, env: { ...process.env, NODE_ENV: 'test', PORT: String(testPort), DB_FILE: testDbPath, UPLOADS_DIR: testUploadsDir, CONSULTANT_DIRECTORY_FILE: testConsultantDirectoryFile, CONSULTANT_DIRECTORY_STATUS_FILE: testConsultantDirectoryStatusFile, CONSULTANT_DIRECTORY_REFRESH_REQUEST_FILE: testConsultantDirectoryRefreshRequestFile, CONSULTANT_DIRECTORY_AUTH_REQUEST_FILE: testConsultantDirectoryAuthRequestFile, CONSULTANT_DIRECTORY_INPUT_FILE: testConsultantDirectoryInputFile }, stdio: 'ignore' });
   let started = false;
   for (let i = 0; i < 40; i++) {
     try { const response = await fetch(`${base}/api/health`); if (response.ok) { started = true; break; } } catch {}
@@ -326,7 +334,7 @@ before(async () => {
   await publishFixture('gz', '2026-08', ['journal']);
 });
 
-after(() => { child?.kill(); fs.rmSync(testUploadsDir, { recursive: true, force: true }); fs.rmSync(testConsultantDirectoryFile, { force: true }); fs.rmSync(testConsultantDirectoryStatusFile, { force: true }); fs.rmSync(testConsultantDirectoryRefreshRequestFile, { force: true }); fs.rmSync(testConsultantDirectoryAuthRequestFile, { force: true }); });
+after(() => { child?.kill(); fs.rmSync(testUploadsDir, { recursive: true, force: true }); fs.rmSync(testConsultantDirectoryFile, { force: true }); fs.rmSync(testConsultantDirectoryStatusFile, { force: true }); fs.rmSync(testConsultantDirectoryRefreshRequestFile, { force: true }); fs.rmSync(testConsultantDirectoryAuthRequestFile, { force: true }); fs.rmSync(testConsultantDirectoryInputFile, { force: true }); });
 
 test('平台生产模式公开登录引导页并将未认证请求交给小Q登录', async () => {
   const authPort = testPort + 1; const authBase = `http://127.0.0.1:${authPort}`;
@@ -979,10 +987,10 @@ test('上传页使用独立公司期间选择器且移除全局范围锁定', ()
 test('页面与后台运行版本一致且旧响应不能覆盖上传操作后的列表', async () => {
   const bootstrap = await request('/api/bootstrap?company=gz&period=2026-06');
   assert.equal(bootstrap.response.status, 200);
-  assert.equal(bootstrap.payload.appVersion, '1.1.51');
+  assert.equal(bootstrap.payload.appVersion, '1.1.52');
   const index = fs.readFileSync(path.join(projectDir, 'public', 'index.html'), 'utf8');
   const frontend = fs.readFileSync(path.join(projectDir, 'public', 'app.js'), 'utf8');
-  assert.match(index, /<meta name="app-version" content="1\.1\.51">/);
+  assert.match(index, /<meta name="app-version" content="1\.1\.52">/);
   assert.match(frontend, /const expectedAppVersion = document\.querySelector\('meta\[name="app-version"\]'\)/);
   assert.match(frontend, /bootstrap\?\.appVersion === expectedAppVersion/);
   assert.match(frontend, /APP_VERSION_MISMATCH/);
@@ -2105,6 +2113,9 @@ test('集团顾问投入产出比联合工资表、营收明细和各公司序�
   const automaticRefreshRequest = JSON.parse(fs.readFileSync(testConsultantDirectoryRefreshRequestFile, 'utf8'));
   assert.equal(automaticRefreshRequest.schemaVersion, 1); assert.equal(automaticRefreshRequest.reason, 'revenue_published');
   assert.deepEqual(Object.keys(automaticRefreshRequest).sort(), ['reason', 'requestId', 'requestedAt', 'schemaVersion']);
+  const directoryInput = JSON.parse(fs.readFileSync(testConsultantDirectoryInputFile, 'utf8'));
+  assert.equal(directoryInput.schemaVersion, 1); assert.deepEqual(directoryInput.people, [{ name: '詹志坚' }, { name: '张莎莎' }]);
+  assert.doesNotMatch(JSON.stringify(directoryInput), /工资|薪资|基本工资|提成|部门|身份证|手机号/);
   const journalRows = rows => ({ journal: { sourceSheet: '3月序时账', rows: [
     { row: 1, cells: ['日期', '凭证号', '摘要', '科目编码', '科目名称', '借方金额', '贷方金额'] },
     ...rows
@@ -2239,6 +2250,8 @@ test('集团顾问投入产出比联合工资表、营收明细和各公司序�
   const stylesheet = fs.readFileSync(path.join(projectDir, 'public', 'styles.css'), 'utf8');
   const serverSource = fs.readFileSync(path.join(projectDir, 'app.mjs'), 'utf8');
   const directorySyncSource = fs.readFileSync(path.join(projectDir, 'deploy', 'sync-consultant-directory.mjs'), 'utf8');
+  const directoryInputSource = fs.readFileSync(path.join(projectDir, 'consultant-directory-input.mjs'), 'utf8');
+  const directoryInputRunner = fs.readFileSync(path.join(projectDir, 'deploy', 'prepare-consultant-directory-input.mjs'), 'utf8');
   const directoryAuthSource = fs.readFileSync(path.join(projectDir, 'deploy', 'init-consultant-directory-auth.mjs'), 'utf8');
   const directoryAuthUnit = fs.readFileSync(path.join(projectDir, 'deploy', 'systemd', 'wecom-finance-consultant-auth.service'), 'utf8');
   assert.match(frontend, /data-roi-input/); assert.match(frontend, /data-roi-filter-toggle/); assert.match(frontend, /data-roi-filter-draft/); assert.match(frontend, /data-roi-sort/);
@@ -2253,6 +2266,9 @@ test('集团顾问投入产出比联合工资表、营收明细和各公司序�
   assert.match(serverSource, /consultantDirectorySnapshot/); assert.match(serverSource, /directory: directory\.revision/); assert.match(serverSource, /employmentStatus === 'resigned'/);
   assert.match(directorySyncSource, /contact', 'users', 'search/); assert.match(directorySyncSource, /sheet', 'get', '--json/); assert.match(directorySyncSource, /sheet', 'ranges', 'get', '--json/); assert.match(directorySyncSource, /mode: 'default'/); assert.match(directorySyncSource, /exactTwoColumnRows/); assert.doesNotMatch(directorySyncSource, /WECOM_ALLOW_WIDE_ROSTER_READ/);
   assert.match(directorySyncSource, /schemaVersion: 1/); assert.match(directorySyncSource, /englishName: contactNames\.get\(key\) \|\| roster\?\.englishName/);
+  assert.match(directorySyncSource, /CONSULTANT_DIRECTORY_INPUT_FILE/); assert.doesNotMatch(directorySyncSource, /better-sqlite3|14云端企微账簿/);
+  assert.match(directoryInputSource, /payroll_statement/); assert.match(directoryInputSource, /people = publishedConsultantNames/); assert.doesNotMatch(directoryInputSource, /baseSalary|commission|salary|身份证|手机号/);
+  assert.match(directoryInputRunner, /better-sqlite3/); assert.match(directoryInputRunner, /readonly: true/);
   assert.match(directorySyncSource, /AUTH_REQUIRED/); assert.match(directorySyncSource, /source_permission_required/); assert.match(directorySyncSource, /CONSULTANT_DIRECTORY_STATUS_FILE/); assert.match(directorySyncSource, /CONSULTANT_DIRECTORY_AUTH_REQUEST_FILE/);
   assert.match(directoryAuthSource, /auth', 'init', '--noninteractive/); assert.match(directoryAuthSource, /work\.weixin\.qq\.com/); assert.match(directoryAuthSource, /authUrlExpiresAt/); assert.doesNotMatch(directoryAuthSource, /console\.log/);
   assert.match(directoryAuthUnit, /WECOM_CLI=\/opt\/wecom-finance\/wecom-cli/); assert.match(directoryAuthUnit, /HOME=\/var\/lib\/wecom-finance-cli/); assert.match(directoryAuthUnit, /ProtectHome=true/);

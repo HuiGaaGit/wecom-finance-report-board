@@ -17,7 +17,7 @@ if (envPath) {
   }
 }
 
-const required = ['NODE_ENV', 'AUTH_MODE', 'PORT', 'APP_BASE_PATH', 'PUBLIC_BASE_URL', 'FINANCE_ALLOWED_ORIGIN', 'SESSION_SECRET', 'PLATFORM_API_BASE_URL', 'PLATFORM_LOGIN_URL', 'DB_FILE', 'UPLOADS_DIR', 'CONSULTANT_DIRECTORY_FILE', 'CONSULTANT_DIRECTORY_STATUS_FILE', 'CONSULTANT_DIRECTORY_REFRESH_REQUEST_FILE', 'CONSULTANT_DIRECTORY_AUTH_REQUEST_FILE'];
+const required = ['NODE_ENV', 'AUTH_MODE', 'PORT', 'APP_BASE_PATH', 'PUBLIC_BASE_URL', 'FINANCE_ALLOWED_ORIGIN', 'SESSION_SECRET', 'PLATFORM_API_BASE_URL', 'PLATFORM_LOGIN_URL', 'DB_FILE', 'UPLOADS_DIR', 'CONSULTANT_DIRECTORY_FILE', 'CONSULTANT_DIRECTORY_STATUS_FILE', 'CONSULTANT_DIRECTORY_REFRESH_REQUEST_FILE', 'CONSULTANT_DIRECTORY_AUTH_REQUEST_FILE', 'CONSULTANT_DIRECTORY_INPUT_FILE'];
 const errors = required.filter(key => !values[key]).map(key => `缺少 ${key}`);
 if (values.NODE_ENV !== 'production') errors.push('NODE_ENV 必须为 production');
 if (values.AUTH_MODE !== 'platform') errors.push('AUTH_MODE 必须为 platform');
@@ -34,7 +34,7 @@ try {
 } catch {}
 if (String(values.SESSION_SECRET || '').length < 32) errors.push('SESSION_SECRET 至少 32 个字符');
 if (!Number.isInteger(Number(values.PORT)) || Number(values.PORT) < 1024 || Number(values.PORT) > 65535) errors.push('PORT 必须是 1024 至 65535 的整数');
-for (const key of ['DB_FILE', 'UPLOADS_DIR', 'CONSULTANT_DIRECTORY_FILE', 'CONSULTANT_DIRECTORY_STATUS_FILE', 'CONSULTANT_DIRECTORY_REFRESH_REQUEST_FILE', 'CONSULTANT_DIRECTORY_AUTH_REQUEST_FILE']) if (!path.posix.isAbsolute(String(values[key] || '').replaceAll('\\', '/'))) errors.push(`${key} 必须是绝对路径`);
+for (const key of ['DB_FILE', 'UPLOADS_DIR', 'CONSULTANT_DIRECTORY_FILE', 'CONSULTANT_DIRECTORY_STATUS_FILE', 'CONSULTANT_DIRECTORY_REFRESH_REQUEST_FILE', 'CONSULTANT_DIRECTORY_AUTH_REQUEST_FILE', 'CONSULTANT_DIRECTORY_INPUT_FILE']) if (!path.posix.isAbsolute(String(values[key] || '').replaceAll('\\', '/'))) errors.push(`${key} 必须是绝对路径`);
 if (!allowPlaceholders) for (const key of required) if (/CHANGE_ME|example\.com/i.test(String(values[key] || ''))) errors.push(`${key} 仍是模板占位值`);
 
 const projectDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -45,6 +45,8 @@ const htmlSource = fs.readFileSync(path.join(projectDir, 'public', 'index.html')
 const releaseScript = fs.readFileSync(path.join(projectDir, 'deploy', 'deploy-release.sh'), 'utf8');
 const dockerfile = fs.readFileSync(path.join(projectDir, 'Dockerfile'), 'utf8');
 const composeSource = fs.readFileSync(path.join(projectDir, 'deploy', 'compose.production.yml'), 'utf8');
+const consultantSyncSource = fs.readFileSync(path.join(projectDir, 'deploy', 'sync-consultant-directory.mjs'), 'utf8');
+const consultantSyncUnit = fs.readFileSync(path.join(projectDir, 'deploy', 'systemd', 'wecom-finance-consultant-directory.service'), 'utf8');
 const platformNginx = fs.readFileSync(path.join(projectDir, 'deploy', 'nginx', 'platform-finance.conf'), 'utf8');
 const icpNumber = '粤ICP备2022138475号-5';
 const icpUrl = 'https://beian.miit.gov.cn/';
@@ -65,6 +67,10 @@ if (!platformNginx.includes('deny 127.0.0.1') || !platformNginx.includes('deny 8
 if (!platformNginx.includes("worker-src 'none'") || !platformNginx.includes('Cross-Origin-Opener-Policy') || !platformNginx.includes('X-Frame-Options "DENY"')) errors.push('同源财务路径的浏览器安全响应头缺失');
 for (const file of ['harden-finance-data.sh', 'restore-legacy-data-owner.sh', 'check-runtime-isolation.mjs']) if (!fs.existsSync(path.join(projectDir, 'deploy', file))) errors.push(`缺少隔离脚本 deploy/${file}`);
 for (const file of ['sync-consultant-directory.mjs', 'init-consultant-directory-auth.mjs', 'systemd/wecom-finance-consultant-directory.service', 'systemd/wecom-finance-consultant-directory.timer', 'systemd/wecom-finance-consultant-directory.path', 'systemd/wecom-finance-consultant-auth.service', 'systemd/wecom-finance-consultant-auth.path']) if (!fs.existsSync(path.join(projectDir, 'deploy', file))) errors.push(`缺少顾问人事同步文件 deploy/${file}`);
+if (!fs.existsSync(path.join(projectDir, 'consultant-directory-input.mjs')) || !fs.existsSync(path.join(projectDir, 'deploy', 'prepare-consultant-directory-input.mjs'))) errors.push('缺少容器内顾问匹配清单生成器');
+if (!dockerfile.includes('consultant-directory-input.mjs') || !dockerfile.includes('prepare-consultant-directory-input.mjs')) errors.push('运行镜像未包含顾问匹配清单生成器');
+if (consultantSyncSource.includes('better-sqlite3') || consultantSyncSource.includes('14云端企微账簿')) errors.push('宿主机顾问同步器不得加载原生 SQLite 依赖或引用其他项目');
+if (!consultantSyncSource.includes('CONSULTANT_DIRECTORY_INPUT_FILE') || !consultantSyncUnit.includes('CONSULTANT_DIRECTORY_INPUT_FILE=')) errors.push('宿主机顾问同步器未绑定财务专用最小输入清单');
 if (!releaseScript.includes('--retry-connrefused')) errors.push('发布健康检查未重试连接拒绝');
 
 if (errors.length) {
