@@ -529,3 +529,10 @@ cat /data/data/wecom-finance-report-board/backups/offsite-last-success.meta
 - SQLite 完整性发布前后均为 `ok`，核心业务事实保持 8 家公司、235 个上传批次、235 份报表快照和 13,061 条报表行。发布前一致性备份为 `/data/data/wecom-finance-report-board/backups/report-board-20260904T055021Z.db`，SHA256 为 `d7a491b436514308ad7fd4ac58be6e918bc09c33bf2c9d1d79b61cd99ef5924d`；发布后备份为 `/data/data/wecom-finance-report-board/backups/report-board-20260904T060342Z.db`，SHA256 为 `a110a6acc06c2784f5c48072851e0e05884e6d934ad06cb4ef6a68ff44889a76`。两者均为 `0600`、`20117:20117`。
 - 财务专用企微授权保持 `authorized`；directory path/timer 与 auth path 的 unit 文件哈希和发布前快照逐一一致，三个监听均继续为 `enabled/active`，目录 timer 按小时等待。未修改财务专用 CLI/HOME、同步快照、环境授权配置、小W、小Q或其他项目。
 - 发布前完整回滚快照位于 `/data/backups/wecom-finance-report-board/pre-1.1.53-20260904T055021Z`，旧源码位于 `/data/repos/wecom-finance-report-board-pre-1.1.53-20260904T055021Z`。回滚时恢复快照中的源码与 Compose，启动 `aqllm/finance-report-board:1.1.52`；企微监听与环境文件保持现状，数据库完整性正常时不得用旧备份覆盖现有业务数据。
+
+## 43. 顾问报销费用二级科目筛选候选（1.1.54，待部署）
+
+- 顾问投入标签把“人员费用”统一更名为“报销费用”；基本工资、报销费用和投流消耗费用默认选择，提成默认不选择。
+- 顾问报销费用沿用费用分析的二级科目层级：取销售费用或管理费用后的第一段。后端只汇总当前期间、当前授权公司、唯一匹配到当前可见顾问且金额非零的明细，继续排除工资、薪酬、提成和结转分录。
+- 报销费用标签右侧增加二级科目下拉，支持逐项勾选、全选和清空。科目选择只保存在浏览器当前期间视图，并同步重算报销费用列、投入合计、投入产出比、平均投入产出比、地区汇总、筛选和排序，不写回数据库或上传原件。
+- 本版本不改变数据库结构、顾问隐藏名单、企微独立授权、目录同步脚本或 systemd 单元。发布时须保留三个企微监听及五个 unit 哈希和状态；异常时恢复 1.1.53 镜像与源码，数据库完整时不得覆盖现有数据。

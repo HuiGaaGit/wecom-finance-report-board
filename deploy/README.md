@@ -7,8 +7,8 @@
 - 环境变量：`/data/secrets/wecom-finance-report-board/report-board.env`
 - 持久数据：`/data/data/wecom-finance-report-board`
 - 容器：`wecom-finance-report-board`
-- 当前生产镜像：`aqllm/finance-report-board:1.1.49`（生产验收与回滚信息见 `docs/PRODUCTION_OPERATIONS.md`）
-- 当前源码版本：`1.1.53`（管理员顾问名单显示设置与工具栏布局优化候选）
+- 当前生产镜像：`aqllm/finance-report-board:1.1.53`（生产验收与回滚信息见 `docs/PRODUCTION_OPERATIONS.md`）
+- 当前源码版本：`1.1.54`（顾问报销费用二级科目筛选候选）
 - 本机端口：`127.0.0.1:3180`
 - 正式地址：`https://anqiaoyiminxq.com/platform/finance/`
 
@@ -23,6 +23,8 @@
 首次启用或更换源码目录后，先在候选运行镜像中挂载财务数据卷并执行 `node /app/deploy/prepare-consultant-directory-input.mjs`；该容器内工具以只读方式打开 SQLite，只在数据卷写入最小顾问匹配清单。随后宿主机可直接执行目录同步脚本的纯启动/import 预检，整个宿主机服务没有 npm 原生依赖。
 
 顾问名单显示范围由 `app_settings.consultant_roi_hidden_consultants` 保存，只有拥有权限管理能力的管理员可以通过顾问模块修改。过滤在服务端完成，普通用户响应不含被隐藏人员或配置候选；当前顾问模块不显示导出按钮。
+
+顾问模块把原“人员费用”统一展示为“报销费用”。后端只为当前期间、当前授权公司、唯一匹配到可见顾问的销售/管理费用明细返回二级科目，并继续排除工资、薪酬、提成和结转分录；前端二级科目多选仅影响当前视图，不写入财务数据库。基本工资、报销费用和投流消耗费用默认计入投入，提成默认不计入。
 
 `1.1.25` 使用专用运行身份 `20117:20117`。首次切换前先创建 SQLite 一致性备份，再执行 `deploy/harden-finance-data.sh`；该脚本只接受精确目录 `/data/data/wecom-finance-report-board`。SQLite 备份和异机备份状态文件均按 `0600` 创建。启动后必须执行 `node deploy/check-runtime-isolation.mjs`，验证 owner/mode、其他容器挂载、Docker Socket、网络成员和回环端口。
 

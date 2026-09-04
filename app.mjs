@@ -30,7 +30,7 @@ try {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const dataDir = path.join(__dirname, 'data');
-const appVersion = '1.1.53';
+const appVersion = '1.1.54';
 const financialBriefModuleKey = 'financial_brief';
 const financialBriefNotesPermissionKey = 'module.financial_brief.notes.manage';
 const financialBriefMetricKeys = new Set(['expectedRevenue', 'accountBalance', 'operatingRevenue', 'operatingCost', 'sellingExpense', 'managementExpense', 'financeExpense', 'netProfit']);
@@ -1716,6 +1716,10 @@ const consultantCanonicalName = value => {
   return chinese || text.replace(/[^A-Za-z0-9]/g, '').toLowerCase();
 };
 const consultantEnglishKey = value => String(value || '').normalize('NFKC').trim().toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]/g, '');
+const consultantExpenseSecondaryAccount = value => {
+  const account = String(value || '').trim();
+  return (account.replace(/^(?:销售费用|管理费用)[-—－]?/, '').trim().split(/[-—－]/)[0] || '未分类').trim() || '未分类';
+};
 const consultantDirectorySnapshot = () => {
   const empty = (reason = '') => ({ available: false, revision: 'missing', generatedAt: '', records: new Map(), reason });
   if (!fs.existsSync(consultantDirectoryFile)) return empty('尚未同步企业微信花名册与通讯录');
@@ -2427,7 +2431,8 @@ const consultantRoiAnalysisFor = (employeeKey, period) => {
       const searchable = `${summary}${account}`.replace(/\s+/g, '').toLowerCase(); const matched = [...consultants.values()].filter(item => item.canonicalName.length >= 2 && searchable.includes(item.canonicalName.toLowerCase()));
       if (matched.length !== 1) continue;
       const amount = amountFor(cells[debitIndex]) - amountFor(cells[creditIndex]); if (Math.abs(amount) < 0.000001) continue;
-      matched[0].journalExpense += amount; matched[0].expenseDetails.push({ companyKey: company.key, companyName: company.name, row: sourceRow.row, date: journalDateFor(sourceRow), voucher: String(cells[voucherIndex] || ''), summary, account, amount: roundedAmount(amount) });
+      const secondaryAccount = consultantExpenseSecondaryAccount(account);
+      matched[0].journalExpense += amount; matched[0].expenseDetails.push({ companyKey: company.key, companyName: company.name, row: sourceRow.row, date: journalDateFor(sourceRow), voucher: String(cells[voucherIndex] || ''), summary, account, secondaryAccount, amount: roundedAmount(amount) });
     }
   }
   const allRows = [...consultants.values()].map(item => {
@@ -2436,14 +2441,20 @@ const consultantRoiAnalysisFor = (employeeKey, period) => {
     return { name: item.name, canonicalName: item.canonicalName, hireDate, englishName: directoryPerson?.englishName || '', isResigned: directoryPerson?.employmentStatus === 'resigned', region: [...item.regions].join('、') || '待补充', isNewEmployee: Boolean(hireDate && hireDate.slice(0, 7) === period), baseSalary: roundedAmount(item.baseSalary), commission: roundedAmount(item.commission), journalExpense: roundedAmount(item.journalExpense), trafficSpend: roundedAmount(item.trafficSpend), input, output, roi: input ? output / input : null, matchStatus: item.payrollDetails.length && item.revenueDetails.length ? 'matched' : item.payrollDetails.length ? 'missing_revenue' : 'missing_payroll', payrollDetails: item.payrollDetails, revenueDetails: item.revenueDetails, expenseDetails: item.expenseDetails, spendDetails: item.spendDetails };
   }).sort((a, b) => b.output - a.output || b.input - a.input);
   const hiddenKeys = hiddenConsultantKeys(); const rows = allRows.filter(item => !hiddenKeys.has(item.canonicalName));
+  const reimbursementAccountMap = new Map();
+  for (const row of rows) for (const detail of row.expenseDetails || []) {
+    const name = detail.secondaryAccount || consultantExpenseSecondaryAccount(detail.account); const current = reimbursementAccountMap.get(name) || { name, amount: 0, detailCount: 0 };
+    current.amount += Number(detail.amount || 0); current.detailCount += 1; reimbursementAccountMap.set(name, current);
+  }
+  const reimbursementAccounts = [...reimbursementAccountMap.values()].map(item => ({ ...item, amount: roundedAmount(item.amount) })).sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
   const totals = rows.reduce((sum, row) => ({ input: sum.input + row.input, output: sum.output + row.output, baseSalary: sum.baseSalary + row.baseSalary, commission: sum.commission + row.commission, journalExpense: sum.journalExpense + row.journalExpense, trafficSpend: sum.trafficSpend + row.trafficSpend }), { input: 0, output: 0, baseSalary: 0, commission: 0, journalExpense: 0, trafficSpend: 0 });
   Object.keys(totals).forEach(key => { totals[key] = roundedAmount(totals[key]); }); totals.roi = totals.input ? totals.output / totals.input : null;
-  const sourceRevision = crypto.createHash('sha256').update(JSON.stringify({ schema: 7, payroll: [payroll.meta.uploadKey, payroll.meta.publishedAt], revenue: [revenue.meta.uploadKey, revenue.meta.publishedAt], spend: [spend.meta.uploadKey, spend.meta.publishedAt], directory: directory.revision, directorySync: [directorySync.state, directorySync.updatedAt, directorySync.requestedAt], hiddenConsultants: [...hiddenKeys].sort(), journals: journalSources.map(item => [item.companyKey, item.uploadKey, item.publishedAt]) })).digest('hex').slice(0, 20);
+  const sourceRevision = crypto.createHash('sha256').update(JSON.stringify({ schema: 8, payroll: [payroll.meta.uploadKey, payroll.meta.publishedAt], revenue: [revenue.meta.uploadKey, revenue.meta.publishedAt], spend: [spend.meta.uploadKey, spend.meta.publishedAt], directory: directory.revision, directorySync: [directorySync.state, directorySync.updatedAt, directorySync.requestedAt], hiddenConsultants: [...hiddenKeys].sort(), journals: journalSources.map(item => [item.companyKey, item.uploadKey, item.publishedAt]) })).digest('hex').slice(0, 20);
   const consultantDepartments = [...new Set(consultantPayrollRows.map(item => String(item.department || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'zh-CN'));
   const directoryMatchedRows = rows.filter(item => directory.records.has(item.canonicalName)).length;
   const canManageVisibility = hasModule(employeeKey, 'permission_admin', 'manage');
   const visibilityOptions = canManageVisibility ? [...new Map([...allRows.map(item => [item.canonicalName, { canonicalName: item.canonicalName, name: item.name, hidden: hiddenKeys.has(item.canonicalName) }]), ...[...hiddenKeys].filter(key => !allRows.some(item => item.canonicalName === key)).map(key => [key, { canonicalName: key, name: key, hidden: true }])]).values()].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN')) : undefined;
-  return { company: '桉侨集团', period, sourceRevision, rows, totals, canManageAuthorization, canManageVisibility, visibility: canManageVisibility ? { hiddenCount: hiddenKeys.size, options: visibilityOptions } : undefined, sources: { payroll: payroll.meta, payrollSheet: payrollRaw?.sourceSheet || '', payrollFields: payrollRaw?.fieldMapping || {}, payrollConsultantDepartments: consultantDepartments, payrollConsultantRows: consultantPayrollRows.length, payrollExcludedRows: Math.max(0, payrollRows.length - consultantPayrollRows.length), directory: { available: directory.available, generatedAt: directory.generatedAt, matchedRows: directoryMatchedRows, reason: directory.reason, sync: directorySync }, revenue: revenue.meta, revenueSheet: revenueRaw?.consultantRevenue?.sourceSheet || '', revenueFields: revenueRaw?.consultantRevenue?.fieldMapping || {}, revenueExcludedPeriodRows: Number(revenueRaw?.consultantRevenue?.excludedPeriodRows || 0), unmatchedRevenueRows, unmatchedRevenueAmount: roundedAmount(unmatchedRevenueAmount), spend: spend.meta, spendSheet: spend.raw?.sourceSheet || '', spendFields: spend.raw?.fieldMapping || {}, matchedSpendRows, unmatchedSpendRows, ambiguousSpendRows, unmatchedSpendAmount: roundedAmount(unmatchedSpendAmount), journals: journalSources }, missing: [payroll.meta.noData ? '每月工资表' : '', !payroll.meta.noData && !consultantPayrollRows.length ? '工资表·顾问部门人员' : '', revenue.meta.noData || !revenueRows.length ? '营收统计表·总营收明细表' : '', spend.meta.noData ? '顾问消耗-营收表·汇总' : '', ...journalSources.filter(item => item.noData).map(item => `${item.companyName}序时账`)].filter(Boolean) };
+  return { company: '桉侨集团', period, sourceRevision, rows, totals, reimbursementAccounts, canManageAuthorization, canManageVisibility, visibility: canManageVisibility ? { hiddenCount: hiddenKeys.size, options: visibilityOptions } : undefined, sources: { payroll: payroll.meta, payrollSheet: payrollRaw?.sourceSheet || '', payrollFields: payrollRaw?.fieldMapping || {}, payrollConsultantDepartments: consultantDepartments, payrollConsultantRows: consultantPayrollRows.length, payrollExcludedRows: Math.max(0, payrollRows.length - consultantPayrollRows.length), directory: { available: directory.available, generatedAt: directory.generatedAt, matchedRows: directoryMatchedRows, reason: directory.reason, sync: directorySync }, revenue: revenue.meta, revenueSheet: revenueRaw?.consultantRevenue?.sourceSheet || '', revenueFields: revenueRaw?.consultantRevenue?.fieldMapping || {}, revenueExcludedPeriodRows: Number(revenueRaw?.consultantRevenue?.excludedPeriodRows || 0), unmatchedRevenueRows, unmatchedRevenueAmount: roundedAmount(unmatchedRevenueAmount), spend: spend.meta, spendSheet: spend.raw?.sourceSheet || '', spendFields: spend.raw?.fieldMapping || {}, matchedSpendRows, unmatchedSpendRows, ambiguousSpendRows, unmatchedSpendAmount: roundedAmount(unmatchedSpendAmount), journals: journalSources }, missing: [payroll.meta.noData ? '每月工资表' : '', !payroll.meta.noData && !consultantPayrollRows.length ? '工资表·顾问部门人员' : '', revenue.meta.noData || !revenueRows.length ? '营收统计表·总营收明细表' : '', spend.meta.noData ? '顾问消耗-营收表·汇总' : '', ...journalSources.filter(item => item.noData).map(item => `${item.companyName}序时账`)].filter(Boolean) };
 };
 const briefLineName = value => String(value || '')
   .replace(/\s+/g, '')

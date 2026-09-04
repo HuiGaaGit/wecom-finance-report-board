@@ -1,6 +1,6 @@
 {
   "name": "wecom-finance-report-board",
-  "version": "1.1.53",
+  "version": "1.1.54",
   "private": true,
   "type": "module",
   "description": "企业微信工作台财务报表及明细展示应用",
