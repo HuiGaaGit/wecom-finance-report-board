@@ -1,8 +1,8 @@
 # 桉侨财务模块生产说明
 
 更新日期：2026-09-04
-当前生产版本：1.1.62
-最近发布包：1.1.62（已部署）
+当前生产版本：1.1.64
+最近发布包：1.1.64（已部署）
 正式地址：<https://anqiaoyiminxq.com/platform/finance/>
 
 ## 1. 系统归属与隔离
@@ -600,7 +600,12 @@ cat /data/data/wecom-finance-report-board/backups/offsite-last-success.meta
 - `2026-09-04` 实际上线门槛中，固定包 SHA256 `BEA8C54F7F3D053DB77940359F6E0CAE850F2A3E2A0AA3F0767EEE87C42F9695` 在本地与服务器一致，服务器 Docker tests 为 `109/109`。候选手工同步虽返回成功，但 15 名离职人员的 `exitDate` 全为空，已知有日期的脱敏验收记录也未命中，因此在正式镜像构建和容器切换前安全停止。
 - 回滚已恢复 `1.1.62` 同步脚本、schema 2 快照和三个 `enabled/active` 监听；生产容器始终为 `aqllm/finance-report-board:1.1.62` 且健康，SQLite 完整性为 `ok`，8 家公司、238 个上传批次、238 份快照和 13,090 条明细未变。发布前快照为 `/data/backups/wecom-finance-report-board/pre-1.1.63-20260904T111100Z`；数据库一致性备份为 `/data/data/wecom-finance-report-board/backups/report-board-20260904T111129Z.db`，SHA256 `209D4E8838E117A55816E81784F7FF33B1FBFF21318BC1CD828412AFB429C37A`。
 
-## 50. 企业微信时间对象兼容候选（1.1.64，待部署）
+## 50. 企业微信时间对象兼容与离职日期修复生产发布（1.1.64）
 
 - 只读结构探针确认离职日期 B 列的有效日期使用 `cell_value.time` 对象，键严格为 `year`、`month`、`day`；探针没有输出日期值、人员信息、文档标识、链接参数或令牌。`1.1.64` 在原有文本和 Excel 日期序列之外增加该对象的严格解析，再由 `safeRosterDate` 校验真实日历日期并规范为 `YYYY-MM-DD`。
-- 继续使用 `B:B` 与 `D:F` 两段精确读取、原始行号合并、schema 3 字段白名单及全站滚动修复，不扩大花名册读取范围。重新上线必须从服务器 Docker tests、手工同步、已知日期脱敏匹配、权限/字段检查、文件权限、正式镜像、运行隔离和公网浏览器验收全部重跑；任一步异常继续恢复 `1.1.62`。
+- 继续使用 `B:B` 与 `D:F` 两段精确读取、原始行号合并、schema 3 字段白名单及全站滚动修复，不扩大花名册读取范围。
+- `2026-09-04 19:28 CST` 使用提交 `ad1c6b6` 的固定发布包完成生产发布；发布包 SHA256 为 `FA0D1BDCED9FCC601718C4E2E5854B4ACD890E5F508EDD528C4CC08AF519B7B7`。服务器 Docker tests 为 `109/109`，正式镜像为 `aqllm/finance-report-board:1.1.64`，镜像 ID 为 `sha256:fcd565e799a5f8a25722444aed0b33f999171bf9e72a95ac52dff607c929801d`。
+- 上线前手工同步成功，脱敏目录升级为 schema 3，共 42 人，实际字段严格限定为 `name`、`englishName`、`companyName`、`employmentStatus`、`exitDate`；15 名离职人员均取得离职日期，在职人员没有离职日期，已知脱敏样例命中 `2026-08-28`。目录及状态文件保持 `0600`、`20117:20117`，财务专用企微授权保持 `authorized`；目录发布监听、小时定时器和授权到期监听均为 `enabled/active`。
+- 生产容器为 `healthy`，回环和公网健康接口均返回 `1.1.64/platform`；Nginx 语法、运行时隔离、真实统一登录和顾问投入产出页面验收通过。管理员页面的已知离职标签提示为“离职日期：2026-08-28”，`1280×720` 与 `390×844` 下整页无横向溢出，顶部栏和侧栏层级正常，浏览器没有 warning/error。
+- SQLite 完整性为 `ok`，核心业务事实保持 8 家公司、238 个上传批次、238 份报表快照和 13,090 条报表行。发布前一致性备份为 `/data/data/wecom-finance-report-board/backups/report-board-20260904T112438Z.db`，SHA256 `AEF167AEB04BE6326C1DA523F85FA9198D000BACD9C299C016A7B54F821583C3`；发布后备份为 `/data/data/wecom-finance-report-board/backups/report-board-20260904T113420Z.db`，SHA256 `35D838C07F87A9B32EC40D3F284D4511325275FFB0098DC681FF9458B8F99DA6`。两份备份均为 `0600`、`20117:20117`。
+- 发布前完整回滚快照位于 `/data/backups/wecom-finance-report-board/pre-1.1.64-20260904T112421Z`，旧源码保留于 `/data/repos/wecom-finance-report-board-pre-1.1.64-20260904T112421Z`。回滚时先暂停三个财务企微监听，恢复快照中的源码、Compose 和 systemd 单元，重新运行旧同步器生成 schema 2 安全快照，再启动 `aqllm/finance-report-board:1.1.62` 并恢复监听；数据库完整时不得以旧备份覆盖现有业务数据。
