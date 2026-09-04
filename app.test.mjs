@@ -289,6 +289,52 @@ function sparseRevenueCumulativeWorkbookBuffer() {
   return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
 }
 
+function legacyDynamicRevenueWorkbookBuffer() {
+  const rows = Array.from({ length: 36 }, () => Array(34).fill(null));
+  const monthly = [
+    { column: 0, title: '2026年4月营收总表', headers: ['月份', '业绩归属', '预计营收', '营收占比', '项目数量'], data: [['202604', '桉侨集团', 320000, 1, 12]] },
+    { column: 6, title: '2026年4月项目营收贡献榜', headers: ['排名', '项目名称', '预计营收', '项目数量'], data: [[1, '动态项目', 220000, 7]] },
+    { column: 11, title: '2026年4月负责人营收分析表', headers: ['项目负责人', '预计营收', '营收占比'], data: [['动态负责人', 180000, 0.56]] },
+    { column: 16, title: '2026年4月直客营收来源新口径表', headers: ['来源类型', '预计营收', '营收占比', '项目数量'], data: [['自然流量', 140000, 0.44, 5]] }
+  ];
+  for (const table of monthly) {
+    rows[0][table.column] = table.title;
+    table.headers.forEach((value, index) => { rows[1][table.column + index] = value; });
+    table.data[0].forEach((value, index) => { rows[2][table.column + index] = value; });
+  }
+  rows[8][0] = '2026年累计数据';
+  rows[10][0] = '2026年客户来源年度汇总';
+  ['来源类型', '月份', '预计营收', '营收占比', '项目数量'].forEach((value, index) => { rows[12][index + 1] = value; });
+  ['自然流量', '202604', 140000, 1, 5].forEach((value, index) => { rows[13][index + 1] = value; });
+  rows[10][15] = '非累计业务明细';
+  ['项目名称', '金额', '项目数量'].forEach((value, index) => { rows[12][index + 15] = value; });
+  ['不得并入累计模块', 999999, 99].forEach((value, index) => { rows[13][index + 15] = value; });
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(rows), '经营数据总览（新版）');
+  return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+}
+
+function renamedRevenueDetailWorkbookBuffer() {
+  const workbook = XLSX.read(revenueStatisticsWorkbookBuffer('2026-07', true), { type: 'buffer' });
+  const oldName = '总营收明细表'; const newName = '经营业务数据（新版）';
+  workbook.SheetNames[workbook.SheetNames.indexOf(oldName)] = newName;
+  delete workbook.Sheets[oldName];
+  workbook.Sheets[newName] = XLSX.utils.aoa_to_sheet([
+    ['经营业务数据'],
+    ['业绩归属', '签约顾问', '预计营收金额', '报价日期', '合同编号', '客户名称', '项目名称'],
+    ['广州公司', '七月顾问', 70000, '2026-07-09', 'HT-0701', '七月客户', '加拿大项目'],
+    ['广州公司', '六月顾问', 60000, '2026-06-18', 'HT-0601', '六月客户', '澳洲项目'],
+    ['深圳公司', '深圳顾问', 80000, '2026-07-11', 'HT-0702', '深圳客户', '美国项目']
+  ]);
+  return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+}
+
+function ambiguousRevenueCumulativeWorkbookBuffer() {
+  const workbook = XLSX.read(legacyDynamicRevenueWorkbookBuffer(), { type: 'buffer' });
+  workbook.Sheets['经营数据总览（新版）']['A11'].v = '2026年客户来源概览';
+  return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+}
+
 function payrollWorkbookBuffer() {
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([
@@ -379,8 +425,8 @@ before(async () => {
     uploadMappingRequests.push({ url: req.url, authorization: req.headers.authorization, body });
     if (uploadMappingRequests.length >= 3) { res.writeHead(503, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: 'temporary unavailable' })); return; }
     const suggestion = uploadMappingRequests.length === 1
-      ? { year: '2026', key: 'L4', titleRow: 13, headerRow: 14, startColumn: 28, confidence: 0.99 }
-      : { year: '2026', key: 'L4', titleRow: 13, headerRow: 14, startColumn: 5000, confidence: 1 };
+      ? { year: '2026', key: 'L4', titleRow: 11, titleColumn: 1, headerRow: 13, startColumn: 2, confidence: 0.99 }
+      : { year: '2026', key: 'L4', titleRow: 11, titleColumn: 1, headerRow: 13, startColumn: 5000, confidence: 1 };
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ tables: [suggestion] }) } }] }));
   });
@@ -1101,10 +1147,10 @@ test('上传页使用独立公司期间选择器且移除全局范围锁定', ()
 test('页面与后台运行版本一致且旧响应不能覆盖上传操作后的列表', async () => {
   const bootstrap = await request('/api/bootstrap?company=gz&period=2026-06');
   assert.equal(bootstrap.response.status, 200);
-  assert.equal(bootstrap.payload.appVersion, '1.1.64');
+  assert.equal(bootstrap.payload.appVersion, '1.1.67');
   const index = fs.readFileSync(path.join(projectDir, 'public', 'index.html'), 'utf8');
   const frontend = fs.readFileSync(path.join(projectDir, 'public', 'app.js'), 'utf8');
-  assert.match(index, /<meta name="app-version" content="1\.1\.64">/);
+  assert.match(index, /<meta name="app-version" content="1\.1\.67">/);
   assert.match(frontend, /const expectedAppVersion = document\.querySelector\('meta\[name="app-version"\]'\)/);
   assert.match(frontend, /bootstrap\?\.appVersion === expectedAppVersion/);
   assert.match(frontend, /APP_VERSION_MISMATCH/);
@@ -1849,10 +1895,11 @@ test('地区总经理预设按现有保存配置固化且默认全部不可见',
   const matrix = await request('/api/admin/roles');
   const preset = matrix.payload.roleDefaults.find(item => item.roleKey === 'regional_manager');
   assert.ok(preset);
-  const expectedBase = ['module.cash_analysis.view', 'module.expense_analysis.view', 'module.financial_brief.view', 'module.main_business_analysis.view', 'report.balance_sheet.summary.view', 'report.cash_flow.summary.view', 'report.income_statement.summary.view'];
+  const expectedBase = ['module.cash_analysis.view', 'module.expense_analysis.view', 'module.financial_brief.view', 'module.main_business_analysis.view', 'module.revenue_trend_analysis.view', 'report.balance_sheet.summary.view', 'report.cash_flow.summary.view', 'report.income_statement.summary.view'];
   expectedBase.forEach(key => assert.ok(preset.permissionKeys.includes(key)));
   ['cash_accounts', 'other_liquidity', 'core_liquidity_trend'].forEach(block => assert.ok(preset.permissionKeys.includes(`module.cash_analysis.${block}.view`)));
   ['project_change', 'gross_trend'].forEach(block => assert.ok(preset.permissionKeys.includes(`module.main_business_analysis.${block}.view`)));
+  ['revenue_statistics', 'revenue_history'].forEach(block => assert.ok(preset.permissionKeys.includes(`module.revenue_trend_analysis.${block}.view`)));
   ['selling_table', 'selling_share', 'selling_trend', 'admin_table', 'admin_share', 'admin_trend'].forEach(block => assert.ok(preset.permissionKeys.includes(`module.expense_analysis.${block}.view`)));
   assert.equal(preset.permissionKeys.includes('report.revenue_statistics.summary.view'), false);
   assert.deepEqual(preset.companyKeys, []);
@@ -1868,7 +1915,7 @@ test('地区总经理预设按现有保存配置固化且默认全部不可见',
   assert.equal(saved.payload.profile.isCustomized, true);
 
   const navigation = await request('/api/bootstrap?company=gz&period=2026-06', 'regional_gm');
-  assert.deepEqual(navigation.payload.modules.map(item => item.key), ['home', 'financial_brief', 'balance_sheet', 'income_statement', 'cash_flow', 'cash_analysis', 'main_business_analysis', 'expense_analysis']);
+  assert.deepEqual(navigation.payload.modules.map(item => item.key), ['home', 'financial_brief', 'balance_sheet', 'income_statement', 'cash_flow', 'cash_analysis', 'main_business_analysis', 'revenue_trend_analysis', 'expense_analysis']);
   const allowedAnalysis = await request('/api/analysis/main-business?company=gz&period=2026-07', 'regional_gm');
   assert.equal(allowedAnalysis.response.status, 200);
   const deniedCompany = await request('/api/reports/income_statement/summary?company=sz&period=2026-06', 'regional_gm');
@@ -1971,6 +2018,9 @@ test('上传请求缺失或失效字段时返回明确字段并由前端阻止�
   assert.match(frontend, /file\.size\) \|\| file\.size <= 0/);
   assert.match(frontend, /浏览器未能读取文件内容，请重新选择文件后再试/);
   assert.match(frontend, /state\.bootstrap\.companies\.some\(company => company\.key === companyKey\)/);
+  assert.ok(frontend.includes('const full = stem.match(/(?:^|\\D)(20\\d{2})'));
+  assert.ok(frontend.includes('const short = stem.match(/(?:^|\\D)(\\d{2})'));
+  assert.doesNotMatch(frontend, /\[\.\\-_年\]\?\\s\*0\?\(\[1-9\]\|1\[0-2\]\)/);
 });
 
 test('早期集团通用利润表名称按明确口径识别且不混入公司利润表', async () => {
@@ -2147,7 +2197,7 @@ test('营收利润口径合并利润表展示至 H 列并沿用集团子公司�
   assert.match(stylesheet, /\.revenue-profit-layout\{min-width:980px\}/);
 });
 
-test('集团营收统计表识别三维度八张子表并按集团权限发布', async () => {
+test('集团营收统计表按标题、表头与区域动态识别子表并按集团权限发布', async () => {
   const reportType = 'revenue_statistics';
   const fileName = '2026年营收统计表26.7.xlsx';
   const contentBase64 = revenueStatisticsWorkbookBuffer().toString('base64');
@@ -2176,7 +2226,8 @@ test('集团营收统计表识别三维度八张子表并按集团权限发布',
   assert.deepEqual(cumulativeTables.find(item => item.key === 'L1').headers, ['月份', '预计营收', '营收占比', '项目数量']);
   assert.equal(cumulativeTables.find(item => item.key === 'L1').titleRow, 13);
   assert.equal(cumulativeTables.find(item => item.key === 'L2').rows[1].cells[1], '202601');
-  assert.equal(preview.payload.raw.cumulativeParserVersion, 2);
+  assert.equal(preview.payload.raw.parserVersion, 4);
+  assert.equal(preview.payload.raw.cumulativeParserVersion, 3);
   assert.deepEqual(preview.payload.raw.cumulativeIssues, []);
   assert.match(preview.payload.raw.note, /实际营收以集团口径为准/);
   assert.equal(preview.payload.raw.consultantRevenue.sourceSheet, '总营收明细表');
@@ -2187,48 +2238,77 @@ test('集团营收统计表识别三维度八张子表并按集团权限发布',
   assert.equal(preview.payload.raw.consultantRevenue.excludedPeriodRows, 1);
   assert.deepEqual(preview.payload.raw.consultantRevenue.fieldMapping, { consultant: '签约顾问/渠道', region: '业绩归属', expectedRevenue: '预计营收', period: '月份' });
 
+  const renamedDetailUpload = await post('/api/uploads', { companyKey: 'group', period: '2026-07', reportType, fileName: '2026年营收统计表26.7-明细改名.xlsx', contentBase64: renamedRevenueDetailWorkbookBuffer().toString('base64') });
+  assert.equal(renamedDetailUpload.response.status, 201, JSON.stringify(renamedDetailUpload.payload));
+  const renamedDetailPreview = await request(`/api/reports/${reportType}/raw?company=group&period=2026-07&uploadKey=${renamedDetailUpload.payload.uploadKey}`);
+  assert.equal(renamedDetailPreview.payload.raw.consultantRevenue.sourceSheet, '经营业务数据（新版）');
+  assert.equal(renamedDetailPreview.payload.raw.consultantRevenue.fieldMapping.period, '报价日期');
+  assert.equal(renamedDetailPreview.payload.raw.consultantRevenue.excludedPeriodRows, 1);
+  assert.deepEqual(renamedDetailPreview.payload.raw.consultantRevenue.records.map(item => [item.region, item.expectedRevenue]), [['广州公司', 70000], ['深圳公司', 80000]]);
+  assert.equal(renamedDetailPreview.payload.raw.consultantRevenue.fields.find(item => item.label === '报价日期').kind, 'date');
+
   const rawPath = path.join(testUploadsDir, `${uploaded.payload.uploadKey.replace(/-revenue_statistics$/, '')}.json`);
   const legacyRaw = JSON.parse(fs.readFileSync(rawPath, 'utf8'));
+  delete legacyRaw.revenue_statistics.parserVersion;
   delete legacyRaw.revenue_statistics.cumulativeParserVersion;
   legacyRaw.revenue_statistics.cumulativeYears[0].tables.find(item => item.key === 'L4').headers.push('旧版误映射字段');
   fs.writeFileSync(rawPath, JSON.stringify(legacyRaw), 'utf8');
   const refreshedLegacy = await request(`/api/reports/${reportType}/raw?company=group&period=2026-07&uploadKey=${uploaded.payload.uploadKey}`);
   assert.deepEqual(refreshedLegacy.payload.raw.cumulativeYears[0].tables.map(item => item.key), ['L1', 'L2', 'L2-1', 'L3', 'L4', 'L5', 'L6']);
-  assert.equal(refreshedLegacy.payload.raw.cumulativeParserVersion, 2);
+  assert.equal(refreshedLegacy.payload.raw.parserVersion, 4);
+  assert.equal(refreshedLegacy.payload.raw.cumulativeParserVersion, 3);
   assert.equal(refreshedLegacy.payload.raw.cumulativeYears[0].tables.find(item => item.key === 'L4').headers.includes('旧版误映射字段'), false);
 
   const legacyTitles = await post('/api/uploads', { companyKey: 'group', period: '2026-06', reportType, fileName: '2026年营收统计表26.6v1.xlsx', contentBase64: revenueStatisticsWorkbookBuffer('2026-06', true).toString('base64') });
   assert.equal(legacyTitles.response.status, 201, JSON.stringify(legacyTitles.payload));
   assert.equal(legacyTitles.payload.sheets.find(item => item.reportType === reportType)?.sourceSheet, '2026年数据统计汇总表（mia）');
 
+  const dynamicLegacyBuffer = legacyDynamicRevenueWorkbookBuffer();
+  const wrongDynamicPeriod = await post('/api/uploads', { companyKey: 'group', period: '2026-01', reportType, fileName: '2026年营收统计表26.4定版.xlsx', contentBase64: dynamicLegacyBuffer.toString('base64') });
+  assert.equal(wrongDynamicPeriod.response.status, 409); assert.equal(wrongDynamicPeriod.payload.code, 'PERIOD_MISMATCH'); assert.equal(wrongDynamicPeriod.payload.detectedPeriod, '2026-04');
+  const dynamicLegacy = await post('/api/uploads', { companyKey: 'group', period: '2026-04', reportType, fileName: '2026年营收统计表26.4定版.xlsx', contentBase64: dynamicLegacyBuffer.toString('base64') });
+  assert.equal(dynamicLegacy.response.status, 201, JSON.stringify(dynamicLegacy.payload));
+  const dynamicPreview = await request(`/api/reports/${reportType}/raw?company=group&period=2026-04&uploadKey=${dynamicLegacy.payload.uploadKey}`);
+  assert.equal(dynamicPreview.payload.raw.sourceSheet, '经营数据总览（新版）');
+  assert.equal(dynamicPreview.payload.raw.sourcePeriod, '2026-04');
+  assert.deepEqual(dynamicPreview.payload.raw.dimensions.flatMap(item => item.tables.map(table => table.title)), ['2026年4月营收总表', '2026年4月项目营收贡献榜', '2026年4月负责人营收分析表', '2026年4月直客营收来源新口径表']);
+  const dynamicCumulative = dynamicPreview.payload.raw.cumulativeYears[0].tables[0];
+  assert.equal(dynamicCumulative.title, '2026年客户来源年度汇总');
+  assert.deepEqual(dynamicCumulative.headers, ['来源类型', '月份', '预计营收', '营收占比', '项目数量']);
+  assert.equal(dynamicCumulative.rows.some(row => row.cells.includes('不得并入累计模块') || row.cells.includes(999999)), false);
+
   const mappingRequestCount = uploadMappingRequests.length;
   const sparse = await post('/api/uploads', { companyKey: 'group', period: '2026-06', reportType, fileName: '2026年营收统计表26.6-稀疏累计.xlsx', contentBase64: sparseRevenueCumulativeWorkbookBuffer().toString('base64') });
   assert.equal(sparse.response.status, 201, JSON.stringify(sparse.payload));
-  assert.deepEqual(sparse.payload.mappingAssistance, { status: 'applied', model: 'test-structure-model', sharedData: 'structural_labels_only', appliedTables: ['2026:L4'] });
+  assert.equal(sparse.payload.mappingAssistance, null);
+  assert.equal(uploadMappingRequests.length, mappingRequestCount);
+  const sparsePreview = await request(`/api/reports/${reportType}/raw?company=group&period=2026-06&uploadKey=${sparse.payload.uploadKey}`);
+  const sparseTables = sparsePreview.payload.raw.cumulativeYears[0].tables;
+  assert.deepEqual(sparseTables.map(item => item.key), ['L1', 'L2', 'C3']);
+  const sparseSource = sparseTables.find(item => item.title === '2026年客户来源年度汇总');
+  assert.deepEqual(sparseSource.headers, ['来源（一级）', '月份', '预计营收', '营收占比', '项目数量']);
+  assert.equal(sparseSource.rows.every(row => row.cells.length === 5), true);
+  assert.equal(sparseSource.rows.some(row => row.cells.includes('无关项目甲') || row.cells.includes('无关项目乙')), false);
+  assert.equal(sparseTables.some(table => table.title === '非累计项目明细'), false);
+
+  const assisted = await post('/api/uploads', { companyKey: 'group', period: '2026-04', reportType, fileName: '2026年营收统计表26.4-低置信度结构.xlsx', contentBase64: ambiguousRevenueCumulativeWorkbookBuffer().toString('base64') });
+  assert.equal(assisted.response.status, 201, JSON.stringify(assisted.payload));
+  assert.deepEqual(assisted.payload.mappingAssistance, { status: 'applied', model: 'test-structure-model', sharedData: 'structural_labels_only', appliedTables: ['2026:L4'] });
   assert.equal(uploadMappingRequests.length, mappingRequestCount + 1);
   const mappingRequest = uploadMappingRequests.at(-1);
   assert.equal(mappingRequest.url, '/chat/completions'); assert.equal(mappingRequest.authorization, 'Bearer test-only-secret');
-  assert.match(mappingRequest.body, /2026年客户来源年度汇总/); assert.match(mappingRequest.body, /来源（一级）/);
-  assert.doesNotMatch(mappingRequest.body, /无关项目甲|无关项目乙|175987\.6975|30657/);
-  const sparsePreview = await request(`/api/reports/${reportType}/raw?company=group&period=2026-06&uploadKey=${sparse.payload.uploadKey}`);
-  const sparseTables = sparsePreview.payload.raw.cumulativeYears[0].tables;
-  assert.deepEqual(sparseTables.map(item => item.key), ['L1', 'L2', 'L4']);
-  const sparseL4 = sparseTables.find(item => item.key === 'L4');
-  assert.deepEqual(sparseL4.headers, ['来源（一级）', '月份', '预计营收', '营收占比', '项目数量']);
-  assert.equal(sparseL4.rows.every(row => row.cells.length === 5), true);
-  assert.equal(sparseL4.rows.some(row => row.cells.includes('无关项目甲') || row.cells.includes('无关项目乙')), false);
-  assert.deepEqual(sparsePreview.payload.raw.mappingAssistance.appliedTables, ['2026:L4']);
-  assert.match(sparsePreview.payload.raw.cumulativeIssues.join('；'), /L2-1、L3、L5、L6/);
+  assert.match(mappingRequest.body, /2026年客户来源概览/); assert.match(mappingRequest.body, /来源类型/);
+  assert.doesNotMatch(mappingRequest.body, /自然流量|140000|不得并入累计模块|999999/);
+  const assistedPreview = await request(`/api/reports/${reportType}/raw?company=group&period=2026-04&uploadKey=${assisted.payload.uploadKey}`);
+  assert.deepEqual(assistedPreview.payload.raw.cumulativeYears[0].tables.map(item => item.title), ['2026年客户来源概览']);
+  assert.deepEqual(assistedPreview.payload.raw.cumulativeYears[0].tables[0].headers, ['来源类型', '月份', '预计营收', '营收占比', '项目数量']);
 
-  const invalidAdvice = await post('/api/uploads', { companyKey: 'group', period: '2026-06', reportType, fileName: '2026年营收统计表26.6-模型越界校验.xlsx', contentBase64: sparseRevenueCumulativeWorkbookBuffer().toString('base64') });
+  const invalidAdvice = await post('/api/uploads', { companyKey: 'group', period: '2026-04', reportType, fileName: '2026年营收统计表26.4-模型越界校验.xlsx', contentBase64: ambiguousRevenueCumulativeWorkbookBuffer().toString('base64') });
   assert.equal(invalidAdvice.response.status, 201, JSON.stringify(invalidAdvice.payload));
   assert.equal(invalidAdvice.payload.mappingAssistance.status, 'confirmed_no_change');
   assert.deepEqual(invalidAdvice.payload.mappingAssistance.appliedTables, []);
-  const invalidAdvicePreview = await request(`/api/reports/${reportType}/raw?company=group&period=2026-06&uploadKey=${invalidAdvice.payload.uploadKey}`);
-  assert.deepEqual(invalidAdvicePreview.payload.raw.cumulativeYears[0].tables.map(item => item.key), ['L1', 'L2']);
-  assert.equal(invalidAdvicePreview.payload.raw.cumulativeYears[0].tables.some(table => table.headers.includes('项目名称')), false);
 
-  const unavailableAdvice = await post('/api/uploads', { companyKey: 'group', period: '2026-06', reportType, fileName: '2026年营收统计表26.6-模型不可用.xlsx', contentBase64: sparseRevenueCumulativeWorkbookBuffer().toString('base64') });
+  const unavailableAdvice = await post('/api/uploads', { companyKey: 'group', period: '2026-04', reportType, fileName: '2026年营收统计表26.4-模型不可用.xlsx', contentBase64: ambiguousRevenueCumulativeWorkbookBuffer().toString('base64') });
   assert.equal(unavailableAdvice.response.status, 201, JSON.stringify(unavailableAdvice.payload));
   assert.equal(unavailableAdvice.payload.mappingAssistance.status, 'failed');
   assert.deepEqual(unavailableAdvice.payload.mappingAssistance.appliedTables, []);
@@ -2236,6 +2316,22 @@ test('集团营收统计表识别三维度八张子表并按集团权限发布',
   assert.equal((await post(`/api/uploads/${uploaded.payload.uploadKey}/publish`, {})).response.status, 200);
   const groupBootstrap = (await request('/api/bootstrap?company=group&period=2026-07')).payload;
   assert.equal(groupBootstrap.modules.some(item => item.key === reportType), true);
+  assert.equal(groupBootstrap.modules.some(item => item.key === 'revenue_trend_analysis'), false);
+  const branchBootstrap = (await request('/api/bootstrap?company=gz&period=2026-07')).payload;
+  assert.equal(branchBootstrap.modules.some(item => item.key === 'revenue_trend_analysis'), true);
+  const branchTrend = await request('/api/analysis/revenue-trend?company=gz&period=2026-07&year=2026');
+  assert.equal(branchTrend.response.status, 200, JSON.stringify(branchTrend.payload));
+  assert.equal(branchTrend.payload.company, '广州桉侨');
+  assert.deepEqual(branchTrend.payload.current, { recordCount: 2, expectedRevenue: 120000 });
+  assert.deepEqual(branchTrend.payload.trend.map(item => [item.period, item.expectedRevenue]), [['2026-07', 120000]]);
+  assert.equal(branchTrend.payload.fields.some(item => item.key === '签约顾问/渠道'), true);
+  assert.doesNotMatch(JSON.stringify(branchTrend.payload), /sasa张莎莎|80000|徐梓茵|50000/);
+  assert.equal((await put('/api/analysis/revenue-trend/settings', { companyKey: 'gz', period: '2026-07', combinations: [{ label: '顾问营收贡献', groupField: '签约顾问/渠道', valueField: '预计营收', aggregation: 'sum' }] }, 'manager')).response.status, 403);
+  const savedTrendSettings = await put('/api/analysis/revenue-trend/settings', { companyKey: 'gz', period: '2026-07', combinations: [{ label: '顾问营收贡献', groupField: '签约顾问/渠道', valueField: '预计营收', aggregation: 'sum' }] });
+  assert.equal(savedTrendSettings.response.status, 200, JSON.stringify(savedTrendSettings.payload));
+  const configuredTrend = await request('/api/analysis/revenue-trend?company=gz&period=2026-07&year=2026');
+  assert.equal(configuredTrend.payload.combinations[0].label, '顾问营收贡献');
+  assert.deepEqual(configuredTrend.payload.combinations[0].rows.map(item => [item.label, item.value]), [['James詹志坚', 120000]]);
   assert.equal((await request('/api/bootstrap?company=gz&period=2026-06')).payload.modules.some(item => item.key === reportType), false);
   assert.equal((await request(`/api/reports/${reportType}/raw?company=group&period=2026-07`, 'accountant')).response.status, 403);
 
@@ -2245,6 +2341,9 @@ test('集团营收统计表识别三维度八张子表并按集团权限发布',
   const frontend = fs.readFileSync(path.join(projectDir, 'public', 'app.js'), 'utf8');
   const stylesheet = fs.readFileSync(path.join(projectDir, 'public', 'styles.css'), 'utf8');
   assert.match(frontend, /renderRevenueStatistics/);
+  assert.match(frontend, /renderRevenueTrendAnalysis/);
+  assert.match(frontend, /data-revenue-trend-target/);
+  assert.match(frontend, /配置统计组合/);
   assert.match(frontend, /data-revenue-dimension/);
   assert.match(frontend, /data-revenue-table/);
   assert.match(frontend, /data-revenue-cumulative-year/);
@@ -2259,6 +2358,8 @@ test('集团营收统计表识别三维度八张子表并按集团权限发布',
   assert.match(stylesheet, /\.revenue-table-scroll\{max-width:100%;overflow-x:auto/);
   assert.match(stylesheet, /\.revenue-cumulative-panel/);
   assert.match(stylesheet, /\.revenue-cumulative-tabs \.revenue-tab-label/);
+  assert.match(stylesheet, /\.revenue-trend-carousel/);
+  assert.match(stylesheet, /\.revenue-combination-editor-row/);
 });
 
 test('集团顾问投入产出比联合工资表、营收明细和各公司序时账且保留来源', async () => {

@@ -13,10 +13,11 @@ const consultantSpendRevenueReportType = 'consultant_spend_revenue';
 const quotationLedgerPeriod = 'all-history';
 const sourceOnlyReportTypes = new Set([payrollStatementReportType, quotationLedgerReportType, consultantSpendRevenueReportType]);
 const consultantRoiModuleKey = 'consultant_roi_analysis';
+const revenueTrendModuleKey = 'revenue_trend_analysis';
 const intercompanyModuleKey = 'intercompany_reconciliation';
 const activityLogModuleKey = 'activity_logs';
 const revenueDimensions = [{ key: 'group', name: '集团维度' }, { key: 'direct', name: '单独直客维度' }, { key: 'channel', name: '单独渠道维度' }, { key: 'cumulative', name: '营收统计累计数据' }];
-const state = { employeeKey: 'admin', bootstrap: null, page: 'home', reportType: 'balance_sheet', company: 'gz', period: '2026-06', periodExplicit: false, detailPeriod: '', detailAccountCodes: [], version: null, summary: null, raw: null, consolidatedEntityReportType: '', consolidatedEntitySheet: '', consolidatedExpanded: false, consolidatedScope: '', revenueDimension: 'group', revenueTable: 'B1', revenueCumulativeYear: '2026', revenueCumulativeTable: 'L1', revenueExpanded: false };
+const state = { employeeKey: 'admin', bootstrap: null, page: 'home', reportType: 'balance_sheet', company: 'gz', period: '2026-06', periodExplicit: false, detailPeriod: '', detailAccountCodes: [], version: null, summary: null, raw: null, consolidatedEntityReportType: '', consolidatedEntitySheet: '', consolidatedExpanded: false, consolidatedScope: '', revenueDimension: 'group', revenueTable: 'B1', revenueCumulativeYear: '2026', revenueCumulativeTable: 'L1', revenueExpanded: false, revenueTrendSlide: 0 };
 const consultantRoiView = {
   inputs: { baseSalary: true, commission: false, journalExpense: true, trafficSpend: true },
   savedInputs: { baseSalary: true, commission: false, journalExpense: true, trafficSpend: true },
@@ -128,6 +129,7 @@ const pageHostFor = page => {
   if (page === 'database_admin') return $('#database-admin-page');
   if (page === 'cash_analysis') return $('#analysis-page');
   if (page === 'main_business_analysis') return $('#business-analysis-page');
+  if (page === revenueTrendModuleKey) return $('#revenue-trend-analysis-page');
   if (page === 'expense_analysis') return $('#expense-analysis-page');
   if (page === 'group_profit_analysis') return $('#group-profit-analysis-page');
   if (page === consultantRoiModuleKey) return $('#consultant-roi-analysis-page');
@@ -186,7 +188,7 @@ const periodMonthText = period => {
   const match = /^(\d{4})-(\d{1,2})$/.exec(String(period || ''));
   return match ? `${Number(match[2])}月` : String(period || '—');
 };
-const sharePageNames = { home: '首页', [financialBriefModuleKey]: '财务数据简报', cash_analysis: '资产净额分析', main_business_analysis: '主营业务分析', expense_analysis: '费用分析', group_profit_analysis: '集团合并利润趋势图', [intercompanyModuleKey]: '各公司往来校验', uploads: '上传报表', [activityLogModuleKey]: '浏览日志', database_admin: '数据库管理', permissions: '权限管理', journal_detail: '序时账明细', ...reportNames };
+const sharePageNames = { home: '首页', [financialBriefModuleKey]: '财务数据简报', cash_analysis: '资产净额分析', main_business_analysis: '主营业务分析', [revenueTrendModuleKey]: '营收趋势分析', expense_analysis: '费用分析', group_profit_analysis: '集团合并利润趋势图', [intercompanyModuleKey]: '各公司往来校验', uploads: '上传报表', [activityLogModuleKey]: '浏览日志', database_admin: '数据库管理', permissions: '权限管理', journal_detail: '序时账明细', ...reportNames };
 const shareCardData = () => {
   const moduleName = state.page === revenueStatisticsReportType && state.revenueDimension === 'cumulative' ? '营收统计累计数据' : sharePageNames[state.page] || '财务报表看板';
   const scope = state.bootstrap && state.page !== 'home' ? `${currentCompanyName()} · ${state.period}` : '企业微信安全访问';
@@ -951,6 +953,73 @@ async function renderMainBusinessAnalysis() {
   } catch (error) { if (revision !== pageRequestRevision || state.page !== 'main_business_analysis') return; page.innerHTML = `<div class="page-title"><div><h1>主营业务分析</h1><p>${escapeHtml(currentCompanyName())} · ${state.period}</p></div>${filterHtml()}</div><div class="empty">${escapeHtml(error.message)}</div>`; bindCommonFilters(); }
 }
 
+const revenueTrendAggregationNames = { sum: '合计', average: '平均值', count: '记录数', distinct: '去重数' };
+const revenueTrendValue = (value, aggregation) => ['count', 'distinct'].includes(aggregation) ? Number(value || 0).toLocaleString('zh-CN') : `¥${Number(value || 0).toLocaleString('zh-CN', { maximumFractionDigits: 2 })}`;
+const revenueTrendChartSvg = trend => {
+  const rows = (trend || []).filter(item => item.available); if (!rows.length) return '<div class="empty">当前年度暂无已发布营收趋势数据</div>';
+  const width = Math.max(720, rows.length * 110); const height = 320; const left = 72; const right = 42; const top = 48; const bottom = 58;
+  const values = rows.map(item => Number(item.expectedRevenue || 0)); const minimum = Math.min(0, ...values); const maximum = Math.max(...values, 1); const span = Math.max(1, maximum - minimum);
+  const x = index => rows.length === 1 ? width / 2 : left + index * (width - left - right) / (rows.length - 1);
+  const y = value => top + (maximum - value) / span * (height - top - bottom);
+  const points = rows.map((item, index) => `${x(index).toFixed(1)},${y(Number(item.expectedRevenue || 0)).toFixed(1)}`).join(' ');
+  const guideLines = [0, .25, .5, .75, 1].map(ratio => { const yy = top + ratio * (height - top - bottom); const amount = maximum - ratio * span; return `<line x1="${left}" x2="${width - right}" y1="${yy}" y2="${yy}" class="revenue-trend-guide"/><text x="${left - 12}" y="${yy + 4}" text-anchor="end" class="revenue-trend-axis">${escapeHtml(money(amount))}</text>`; }).join('');
+  const labels = rows.map((item, index) => `<circle cx="${x(index)}" cy="${y(Number(item.expectedRevenue || 0))}" r="5" class="revenue-trend-point"><title>${escapeHtml(item.period)}：${escapeHtml(revenueTrendValue(item.expectedRevenue, 'sum'))}</title></circle><text x="${x(index)}" y="${Math.max(22, y(Number(item.expectedRevenue || 0)) - 14)}" text-anchor="middle" class="revenue-trend-value">${escapeHtml(money(item.expectedRevenue))}</text><text x="${x(index)}" y="${height - 24}" text-anchor="middle" class="revenue-trend-month">${escapeHtml(item.period.slice(5))}月</text>`).join('');
+  return `<div class="revenue-history-scroll" role="region" aria-label="历史预计营收趋势，可左右滑动" tabindex="0"><svg viewBox="0 0 ${width} ${height}" style="min-width:${width}px" role="img" aria-label="历史预计营收趋势">${guideLines}<polyline points="${points}" class="revenue-trend-line"/>${labels}</svg></div>`;
+};
+const revenueTrendCombinationHtml = combination => `<article class="revenue-combination-card"><header><div><span>${escapeHtml(revenueTrendAggregationNames[combination.aggregation] || combination.aggregation)}</span><h3>${escapeHtml(combination.label)}</h3></div><small>${escapeHtml(combination.groupLabel || combination.groupField)}${combination.valueLabel ? ` · ${escapeHtml(combination.valueLabel)}` : ''}</small></header>${combination.unavailable ? '<div class="empty">当前文件缺少此组合所需的数据标签</div>' : `<div class="table-wrap"><table class="data-table revenue-combination-table"><thead><tr><th>${escapeHtml(combination.groupLabel || '分类')}</th><th>${escapeHtml(combination.label)}</th><th>记录数</th></tr></thead><tbody>${(combination.rows || []).map(row => `<tr><td>${escapeHtml(row.label)}</td><td class="num">${revenueTrendValue(row.value, combination.aggregation)}</td><td class="num">${Number(row.count || 0)}</td></tr>`).join('') || '<tr><td colspan="3" class="empty">本地区当前月份暂无数据</td></tr>'}</tbody></table></div>`}</article>`;
+const revenueTrendSettingsHtml = data => {
+  const fields = data.fields || []; const numeric = fields.filter(field => field.kind === 'number');
+  const fieldOptions = (items, selected) => items.map(field => `<option value="${escapeHtml(field.key)}" ${field.key === selected ? 'selected' : ''}>${escapeHtml(field.label)}</option>`).join('');
+  const rows = (data.combinations || []).map(item => `<div class="revenue-combination-editor-row"><input data-combo-label value="${escapeHtml(item.label)}" aria-label="组合名称"><select data-combo-group aria-label="分组标签">${fieldOptions(fields, item.groupField)}</select><select data-combo-value aria-label="数值标签"><option value="">不使用数值标签</option>${fieldOptions(numeric, item.valueField)}</select><select data-combo-aggregation aria-label="统计方式">${Object.entries(revenueTrendAggregationNames).map(([key, name]) => `<option value="${key}" ${key === item.aggregation ? 'selected' : ''}>${name}</option>`).join('')}</select><button type="button" data-combo-remove aria-label="删除组合">×</button></div>`).join('');
+  return `<div class="revenue-combination-editor hidden" id="revenue-combination-editor"><header><div><strong>全局统计组合</strong><small>数据标签来自当前营收明细表表头；保存后所有公司和员工统一使用</small></div><button type="button" class="button" id="revenue-combination-add">新增组合</button></header><div id="revenue-combination-editor-rows">${rows}</div><footer><button type="button" class="button" id="revenue-combination-cancel">取消</button><button type="button" class="button primary" id="revenue-combination-save">保存并应用</button></footer></div>`;
+};
+function bindRevenueTrendSettings(page, data, scope) {
+  const editor = page.querySelector('#revenue-combination-editor'); if (!editor) return;
+  const rows = editor.querySelector('#revenue-combination-editor-rows'); const fields = data.fields || []; const numeric = fields.filter(field => field.kind === 'number');
+  const options = (items, placeholder) => `<option value="">${placeholder}</option>${items.map(field => `<option value="${escapeHtml(field.key)}">${escapeHtml(field.label)}</option>`).join('')}`;
+  const bindRows = () => {
+    rows.querySelectorAll('[data-combo-remove]').forEach(button => button.onclick = () => button.closest('.revenue-combination-editor-row')?.remove());
+    rows.querySelectorAll('[data-combo-aggregation]').forEach(select => {
+      const sync = () => { const value = select.closest('.revenue-combination-editor-row')?.querySelector('[data-combo-value]'); if (value) value.disabled = select.value === 'count'; };
+      select.onchange = sync; sync();
+    });
+  };
+  page.querySelector('#revenue-combination-edit').onclick = () => editor.classList.toggle('hidden');
+  page.querySelector('#revenue-combination-cancel').onclick = () => editor.classList.add('hidden');
+  page.querySelector('#revenue-combination-add').onclick = () => {
+    if (rows.children.length >= 8) return showNotice('最多配置 8 个统计组合', true);
+    rows.insertAdjacentHTML('beforeend', `<div class="revenue-combination-editor-row"><input data-combo-label placeholder="组合名称" aria-label="组合名称"><select data-combo-group aria-label="分组标签">${options(fields, '选择分组标签')}</select><select data-combo-value aria-label="数值标签">${options(numeric, '选择数值标签')}</select><select data-combo-aggregation aria-label="统计方式">${Object.entries(revenueTrendAggregationNames).map(([key, name]) => `<option value="${key}">${name}</option>`).join('')}</select><button type="button" data-combo-remove aria-label="删除组合">×</button></div>`);
+    bindRows();
+  };
+  page.querySelector('#revenue-combination-save').onclick = async event => {
+    const button = event.currentTarget; const combinations = [...rows.querySelectorAll('.revenue-combination-editor-row')].map(row => {
+      const aggregation = row.querySelector('[data-combo-aggregation]').value;
+      return { label: row.querySelector('[data-combo-label]').value.trim(), groupField: row.querySelector('[data-combo-group]').value, valueField: aggregation === 'count' ? '' : row.querySelector('[data-combo-value]').value, aggregation };
+    });
+    button.disabled = true;
+    try {
+      await api('/api/analysis/revenue-trend/settings', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ companyKey: scope.company, period: scope.period, combinations }) });
+      showNotice('营收统计组合已保存并应用于所有公司和员工'); await renderRevenueTrendAnalysis();
+    } catch (error) { showNotice(error.message, true); } finally { button.disabled = false; }
+  };
+  bindRows();
+}
+
+async function renderRevenueTrendAnalysis() {
+  const page = $('#revenue-trend-analysis-page'); const revision = pageRequestRevision; const scope = { company: state.company, period: state.period };
+  try {
+    const data = await api(`/api/analysis/revenue-trend?company=${encodeURIComponent(scope.company)}&period=${encodeURIComponent(scope.period)}&year=${encodeURIComponent(scope.period.slice(0, 4))}`);
+    if (revision !== pageRequestRevision || state.page !== revenueTrendModuleKey || state.company !== scope.company || state.period !== scope.period) return;
+    const sourceText = data.source?.noData ? '当前月份尚未发布营收统计表' : `${data.source?.fileName || '—'} · ${data.source?.sourceSheet || '总营收明细表'}`;
+    const combinationSlide = `<section class="panel revenue-trend-slide" data-revenue-trend-slide="0" data-analysis-block="revenue_statistics"><div class="toolbar"><div><h2>营收统计组合</h2><div class="panel-sub">${escapeHtml(scope.period)} · ${Number(data.current?.recordCount || 0)} 条本地区记录 · 预计营收 ${revenueTrendValue(data.current?.expectedRevenue, 'sum')}</div></div>${data.canManageSettings ? '<button type="button" class="button" id="revenue-combination-edit">配置统计组合</button>' : ''}</div>${data.canManageSettings ? revenueTrendSettingsHtml(data) : ''}<div class="revenue-combination-grid">${(data.combinations || []).map(revenueTrendCombinationHtml).join('') || '<div class="empty">管理员尚未配置统计组合</div>'}</div></section>`;
+    const historySlide = `<section class="panel revenue-trend-slide" data-revenue-trend-slide="1" data-analysis-block="revenue_history"><div class="toolbar"><div><h2>${escapeHtml(data.year)} 年历史营收趋势</h2><div class="panel-sub">只统计各月总营收明细表中业绩归属为 ${escapeHtml(data.company)} 的预计营收</div></div><span class="role-badge">${(data.trend || []).length} 个已发布月份</span></div>${revenueTrendChartSvg(data.trend)}</section>`;
+    page.innerHTML = `<div class="page-title"><div><h1>营收趋势分析</h1><p>${escapeHtml(data.company)} · ${escapeHtml(data.period)} · 按业绩归属隔离</p></div>${filterHtml()}</div><section class="analysis-source"><strong>数据来源</strong><span>${escapeHtml(sourceText)}</span><small>各分公司只展示业绩归属对应地区的数据；字段标签及子表随每月实际上传文件动态更新。</small></section><div class="revenue-trend-switch" role="tablist"><button type="button" data-revenue-trend-target="0">统计组合</button><button type="button" data-revenue-trend-target="1">历史趋势</button></div><div class="revenue-trend-carousel"><div class="revenue-trend-track">${combinationSlide}${historySlide}</div></div>`;
+    const selectSlide = index => { state.revenueTrendSlide = Math.max(0, Math.min(1, Number(index) || 0)); page.querySelector('.revenue-trend-track').style.transform = `translateX(-${state.revenueTrendSlide * 50}%)`; page.querySelectorAll('[data-revenue-trend-target]').forEach(button => { const active = Number(button.dataset.revenueTrendTarget) === state.revenueTrendSlide; button.classList.toggle('active', active); button.setAttribute('aria-selected', String(active)); }); };
+    page.querySelectorAll('[data-revenue-trend-target]').forEach(button => button.onclick = () => selectSlide(button.dataset.revenueTrendTarget)); selectSlide(state.revenueTrendSlide);
+    bindRevenueTrendSettings(page, data, scope); bindCommonFilters();
+  } catch (error) { if (revision !== pageRequestRevision || state.page !== revenueTrendModuleKey) return; page.innerHTML = `<div class="page-title"><div><h1>营收趋势分析</h1><p>${escapeHtml(currentCompanyName())} · ${state.period}</p></div>${filterHtml()}</div><div class="empty">${escapeHtml(error.message)}</div>`; bindCommonFilters(); }
+}
+
 const expenseMoney = value => `¥${Number(value || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const expensePercent = value => value === null || value === undefined ? '—' : `${Number(value).toFixed(1)}%`;
 const expenseFeePercent = value => value === null || value === undefined ? '—' : `${Number(value).toFixed(2)}%`;
@@ -1502,9 +1571,10 @@ const revenueCumulativePanelHtml = (cumulativeYears, cumulativeIssues) => {
   const table = selectedYear.tables?.find(item => item.key === state.revenueCumulativeTable);
   const headers = table?.headers || [];
   const yearOptions = orderedYears.map(item => `<option value="${escapeHtml(item.year)}" ${item.year === selectedYear.year ? 'selected' : ''}>${escapeHtml(item.year)}年</option>`).join('');
-  const tableTabs = (selectedYear.tables || []).map(item => `<button type="button" class="revenue-table-tab ${item.key === state.revenueCumulativeTable ? 'active' : ''}" data-revenue-cumulative-table="${escapeHtml(item.key)}"><b>${escapeHtml(item.key)}</b>${revenueCumulativeTabLabelHtml(item.shortTitle || item.title)}</button>`).join('');
+  const tableTabs = (selectedYear.tables || []).map((item, index) => `<button type="button" class="revenue-table-tab ${item.key === state.revenueCumulativeTable ? 'active' : ''}" data-revenue-cumulative-table="${escapeHtml(item.key)}"><b>${escapeHtml(item.sourceKey || String(index + 1))}</b>${revenueCumulativeTabLabelHtml(item.shortTitle || item.title)}</button>`).join('');
   const issue = cumulativeIssues.filter(message => message.startsWith(selectedYear.year)).map(message => `<li>${escapeHtml(message)}</li>`).join('');
-  return `<section class="panel revenue-cumulative-panel"><div class="revenue-cumulative-title"><div><span>年度经营累计</span><h2>年度累计明细</h2><p>${escapeHtml(selectedYear.sourceTitle || `${selectedYear.year}年累计数据`)} · 按标题和字段表头动态识别</p></div><label><span>时间维度</span><select data-revenue-cumulative-year>${yearOptions}</select></label></div><div class="revenue-table-tabs revenue-cumulative-tabs" role="tablist" aria-label="${escapeHtml(selectedYear.year)}年累计数据子表">${tableTabs}</div><div class="revenue-panel-heading revenue-cumulative-table-heading"><div><span>${escapeHtml(table?.key || '')}</span><h3>${escapeHtml(table?.shortTitle || table?.title || '累计数据子表')}</h3></div><div class="revenue-source-meta"><span>字段表头定位</span><b>${headers.length} 个字段</b></div></div><div class="revenue-table-scroll" role="region" aria-label="${escapeHtml(table?.title || '营收统计累计表')}，可左右滑动" tabindex="0"><table class="revenue-statistics-table revenue-cumulative-table" style="--revenue-columns:${Math.max(headers.length, 1)}"><thead><tr>${headers.map(header => `<th>${escapeHtml(header)}</th>`).join('')}</tr></thead><tbody>${revenueRowsHtml(table) || `<tr><td colspan="${Math.max(headers.length, 1)}" class="empty">当前累计子表暂无数据</td></tr>`}</tbody></table></div>${issue ? `<ul class="revenue-cumulative-issues">${issue}</ul>` : ''}</section>`;
+  const tableIndex = Math.max(0, (selectedYear.tables || []).findIndex(item => item.key === table?.key));
+  return `<section class="panel revenue-cumulative-panel"><div class="revenue-cumulative-title"><div><span>年度经营累计</span><h2>年度累计明细</h2><p>${escapeHtml(selectedYear.sourceTitle || `${selectedYear.year}年累计数据`)} · 子表数量和名称随源文件动态更新</p></div><label><span>时间维度</span><select data-revenue-cumulative-year>${yearOptions}</select></label></div><div class="revenue-table-tabs revenue-cumulative-tabs" role="tablist" aria-label="${escapeHtml(selectedYear.year)}年累计数据子表">${tableTabs}</div><div class="revenue-panel-heading revenue-cumulative-table-heading"><div><span>${escapeHtml(table?.sourceKey || String(tableIndex + 1))}</span><h3>${escapeHtml(table?.shortTitle || table?.title || '累计数据子表')}</h3></div><div class="revenue-source-meta"><span>区域与字段表头定位</span><b>${headers.length} 个字段</b></div></div><div class="revenue-table-scroll" role="region" aria-label="${escapeHtml(table?.title || '营收统计累计表')}，可左右滑动" tabindex="0"><table class="revenue-statistics-table revenue-cumulative-table" style="--revenue-columns:${Math.max(headers.length, 1)}"><thead><tr>${headers.map(header => `<th>${escapeHtml(header)}</th>`).join('')}</tr></thead><tbody>${revenueRowsHtml(table) || `<tr><td colspan="${Math.max(headers.length, 1)}" class="empty">当前累计子表暂无数据</td></tr>`}</tbody></table></div>${issue ? `<ul class="revenue-cumulative-issues">${issue}</ul>` : ''}</section>`;
 };
 
 async function renderRevenueStatistics() {
@@ -1535,10 +1605,10 @@ async function renderRevenueStatistics() {
       if (!dimension.tables?.some(item => item.key === state.revenueTable)) state.revenueTable = dimension.tables?.[0]?.key || '';
       const table = dimension.tables?.find(item => item.key === state.revenueTable);
       const dimensionButtons = dimensions.map(item => `<button type="button" class="revenue-dimension-button ${item.key === dimension.key ? 'active' : ''}" data-revenue-page-dimension="${escapeHtml(item.key)}"><small>一级维度</small><strong>${escapeHtml(item.name)}</strong><span>${item.tables?.length || 0} 张子表</span></button>`).join('');
-      const tableTabs = (dimension.tables || []).map(item => `<button type="button" class="revenue-table-tab ${item.key === state.revenueTable ? 'active' : ''}" data-revenue-table="${escapeHtml(item.key)}"><b>${escapeHtml(item.key)}</b><span>${escapeHtml(item.shortTitle || item.title)}</span></button>`).join('');
+      const tableTabs = (dimension.tables || []).map((item, index) => `<button type="button" class="revenue-table-tab ${item.key === state.revenueTable ? 'active' : ''}" data-revenue-table="${escapeHtml(item.key)}"><b>${escapeHtml(item.sourceKey || String(index + 1))}</b><span>${escapeHtml(item.shortTitle || item.title)}</span></button>`).join('');
       const headers = table?.headers || [];
       const rows = revenueRowsHtml(table, true);
-      page.innerHTML = `<div class="page-title revenue-page-title"><div><h1>营收统计表</h1><p>${escapeHtml(data.company)} · ${escapeHtml(data.period)} · 三个统计口径独立查看</p></div><div class="revenue-source-badge"><span>${escapeHtml(sourceState)}</span><strong>${escapeHtml(data.meta?.fileName || data.raw?.sourceSheet || '营收统计汇总表')}</strong></div></div><section class="revenue-dimension-switch" aria-label="营收统计一级维度">${dimensionButtons}</section><section class="panel revenue-statistics-panel"><div class="revenue-panel-heading"><div><span>${escapeHtml(dimension.sourceTitle || dimension.name)}</span><h2>${escapeHtml(table?.shortTitle || table?.title || '二级统计表')}</h2></div><div class="revenue-source-meta"><span>${escapeHtml(data.raw?.sourceSheet || '数据统计汇总表（mia）')}</span><b>${escapeHtml(data.raw?.sourcePeriod || data.period)}</b></div></div><div class="revenue-table-tabs" role="tablist" aria-label="${escapeHtml(dimension.name)}二级表">${tableTabs}</div><div class="revenue-table-scroll" role="region" aria-label="${escapeHtml(table?.title || '营收统计表')}，可左右滑动" tabindex="0"><table class="revenue-statistics-table" style="--revenue-columns:${Math.max(headers.length, 1)}"><thead><tr>${headers.map(header => `<th>${escapeHtml(header)}</th>`).join('')}</tr></thead><tbody>${rows || `<tr><td colspan="${Math.max(headers.length, 1)}" class="empty">当前子表暂无数据</td></tr>`}</tbody></table></div>${data.raw?.note ? `<div class="revenue-scope-note"><strong>口径提示</strong><span>${escapeHtml(data.raw.note)}</span></div>` : ''}</section>`;
+      page.innerHTML = `<div class="page-title revenue-page-title"><div><h1>营收统计表</h1><p>${escapeHtml(data.company)} · ${escapeHtml(data.period)} · 子表数量和名称随当月源文件动态更新</p></div><div class="revenue-source-badge"><span>${escapeHtml(sourceState)}</span><strong>${escapeHtml(data.meta?.fileName || data.raw?.sourceSheet || '营收统计汇总表')}</strong></div></div><section class="revenue-dimension-switch" aria-label="营收统计一级维度">${dimensionButtons}</section><section class="panel revenue-statistics-panel"><div class="revenue-panel-heading"><div><span>${escapeHtml(dimension.sourceTitle || dimension.name)}</span><h2>${escapeHtml(table?.shortTitle || table?.title || '二级统计表')}</h2></div><div class="revenue-source-meta"><span>${escapeHtml(data.raw?.sourceSheet || '数据统计汇总表（mia）')}</span><b>${escapeHtml(data.raw?.sourcePeriod || data.period)}</b></div></div><div class="revenue-table-tabs" role="tablist" aria-label="${escapeHtml(dimension.name)}二级表">${tableTabs}</div><div class="revenue-table-scroll" role="region" aria-label="${escapeHtml(table?.title || '营收统计表')}，可左右滑动" tabindex="0"><table class="revenue-statistics-table" style="--revenue-columns:${Math.max(headers.length, 1)}"><thead><tr>${headers.map(header => `<th>${escapeHtml(header)}</th>`).join('')}</tr></thead><tbody>${rows || `<tr><td colspan="${Math.max(headers.length, 1)}" class="empty">当前子表暂无数据</td></tr>`}</tbody></table></div>${data.raw?.note ? `<div class="revenue-scope-note"><strong>口径提示</strong><span>${escapeHtml(data.raw.note)}</span></div>` : ''}</section>`;
       page.querySelectorAll('[data-revenue-page-dimension]').forEach(button => button.onclick = () => { state.revenueDimension = button.dataset.revenuePageDimension; state.revenueTable = ''; state.revenueExpanded = true; renderNav(); paint(); applyReportWatermark(); });
       page.querySelectorAll('[data-revenue-table]').forEach(button => button.onclick = () => { state.revenueTable = button.dataset.revenueTable; paint(); applyReportWatermark(); });
     };
@@ -1597,7 +1667,15 @@ async function renderUploads() {
   const companyPicker = $('#upload-company-picker'); const periodPicker = $('#upload-period-picker');
   const selected = state.uploadSelectedFiles || (state.uploadSelectedFiles = {});
   const guessType = fileName => { const name = String(fileName).toLowerCase(); if (/顾问.*消耗.*营收|顾问消耗/.test(name)) return consultantSpendRevenueReportType; if (/报价单|报价表|报单表|合同台账/.test(name)) return quotationLedgerReportType; if (name.includes('工资表') || name.includes('薪酬明细')) return payrollStatementReportType; if (name.includes('营收统计表') || name.includes('数据统计汇总表')) return revenueStatisticsReportType; if (name.includes('营收利润口径') || name.includes('营收口径')) return revenueProfitReportType; if (name.includes('合并利润表') || name.includes('集团利润表') || name.includes('consolidated income')) return 'consolidated_income_statement'; if (name.includes('财务报表') || name.includes('汇总报表') || name.includes('financial')) return 'bundle'; if (name.includes('序时账') || name.includes('journal')) return 'journal'; if (name.includes('科目余额') || name.includes('account')) return 'trial_balance'; if (name.includes('资产负债')) return 'balance_sheet'; if (name.includes('利润表') || name.includes('income')) return 'income_statement'; return ''; };
-  const guessPeriod = fileName => { const match = String(fileName).match(/(?:(20)?(\d{2}))[.\-_年]?\s*0?([1-9]|1[0-2])(?:月|[.\-_]|\b)/i); return match ? `${match[1] ? `${match[1]}${match[2]}` : `20${match[2]}`}-${String(match[3]).padStart(2, '0')}` : ''; };
+  const guessPeriod = fileName => {
+    const stem = String(fileName || '').split(/[\\/]/).pop().replace(/\.[^.]+$/, '');
+    const full = stem.match(/(?:^|\D)(20\d{2})\s*(?:年|[.\-_/])\s*(0?[1-9]|1[0-2])(?:月|(?=\D|$))/i);
+    if (full) return `${full[1]}-${String(full[2]).padStart(2, '0')}`;
+    const compact = stem.match(/(?:^|\D)(20\d{2})(0[1-9]|1[0-2])(?:\D|$)/i);
+    if (compact) return `${compact[1]}-${compact[2]}`;
+    const short = stem.match(/(?:^|\D)(\d{2})\s*[.\-_/]\s*(0?[1-9]|1[0-2])(?:月|(?=\D|$))/i);
+    return short ? `20${short[1]}-${String(short[2]).padStart(2, '0')}` : '';
+  };
   const quotationVersion = fileName => { const name = String(fileName || '').split(/[\\/]/).pop(); const stem = name.replace(/\.[^.]+$/, '').trim(); return stem.match(/(?:^|[\s_-]+)([A-Za-z0-9][A-Za-z0-9._-]{1,23})$/)?.[1] || '未标注'; };
   const normalizeCompanyText = value => String(value || '').replace(/桉桥/g, '桉侨').replace(/[\s市]/g, '');
   const companyAliases = name => { const full = normalizeCompanyText(name); if (full === '桉侨集团') return [full]; const brandEnd = full.indexOf('桉侨'); const short = brandEnd >= 0 ? full.slice(0, brandEnd + 2) : full.replace(/(?:有限责任公司|有限公司|公司)$/, ''); return [...new Set([full, short].filter(alias => alias.length >= 2))]; };
@@ -2063,6 +2141,7 @@ async function refresh({ reloadBootstrap = true } = {}) {
   else if (state.page === 'database_admin') await renderDatabaseAdmin();
   else if (state.page === 'cash_analysis') await renderCashAnalysis();
   else if (state.page === 'main_business_analysis') await renderMainBusinessAnalysis();
+  else if (state.page === revenueTrendModuleKey) await renderRevenueTrendAnalysis();
   else if (state.page === 'expense_analysis') await renderExpenseAnalysis();
   else if (state.page === 'group_profit_analysis') await renderGroupProfitAnalysis();
   else if (state.page === consultantRoiModuleKey) await renderConsultantRoiInteractive();
