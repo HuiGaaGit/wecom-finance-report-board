@@ -29,7 +29,7 @@ try {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const dataDir = path.join(__dirname, 'data');
-const appVersion = '1.1.49';
+const appVersion = '1.1.50';
 const financialBriefModuleKey = 'financial_brief';
 const financialBriefNotesPermissionKey = 'module.financial_brief.notes.manage';
 const financialBriefMetricKeys = new Set(['expectedRevenue', 'accountBalance', 'operatingRevenue', 'operatingCost', 'sellingExpense', 'managementExpense', 'financeExpense', 'netProfit']);
@@ -120,6 +120,7 @@ const dbFile = process.env.DB_FILE || path.join(dataDir, 'report-board.db');
 const consultantDirectoryFile = process.env.CONSULTANT_DIRECTORY_FILE || path.join(path.dirname(dbFile), 'consultant-directory.json');
 const consultantDirectoryStatusFile = process.env.CONSULTANT_DIRECTORY_STATUS_FILE || path.join(path.dirname(dbFile), 'consultant-directory-status.json');
 const consultantDirectoryRefreshRequestFile = process.env.CONSULTANT_DIRECTORY_REFRESH_REQUEST_FILE || path.join(path.dirname(dbFile), 'consultant-directory-refresh-request.json');
+const consultantDirectoryAuthRequestFile = process.env.CONSULTANT_DIRECTORY_AUTH_REQUEST_FILE || path.join(path.dirname(dbFile), 'consultant-directory-auth-request.json');
 const consultantDirectoryMaxBytes = 512 * 1024;
 const ensurePrivateDirectory = directory => { fs.mkdirSync(directory, { recursive: true, mode: 0o700 }); try { fs.chmodSync(directory, 0o700); } catch (error) { if (process.platform !== 'win32') throw error; } };
 ensurePrivateDirectory(path.dirname(dbFile));
@@ -1728,13 +1729,23 @@ const boundedJsonFile = (file, maxBytes = 64 * 1024) => {
     return JSON.parse(fs.readFileSync(file, 'utf8'));
   } catch { return null; }
 };
-const consultantDirectorySyncStatus = () => {
-  const allowedStates = new Set(['success', 'running', 'auth_required', 'source_scope_required', 'source_permission_required', 'source_data_required', 'error']);
+const consultantDirectoryAuthUrl = source => {
+  try {
+    const url = new URL(String(source?.authUrl || '')); const expiresAt = String(source?.authUrlExpiresAt || '');
+    if (url.protocol !== 'https:' || url.hostname !== 'work.weixin.qq.com' || url.pathname !== '/ai/qc/gen') return null;
+    if (url.searchParams.get('source') !== 'wecom_cli_external' || !/^[A-Za-z0-9_-]{6,200}$/.test(url.searchParams.get('scode') || '')) return null;
+    if (!expiresAt || Date.parse(expiresAt) <= Date.now()) return null;
+    return { authUrl: url.toString(), authUrlExpiresAt: expiresAt };
+  } catch { return null; }
+};
+const consultantDirectorySyncStatus = (includeAuthUrl = false) => {
+  const allowedStates = new Set(['success', 'pending', 'running', 'auth_required', 'source_scope_required', 'source_permission_required', 'source_data_required', 'error']);
   const source = boundedJsonFile(consultantDirectoryStatusFile); const request = boundedJsonFile(consultantDirectoryRefreshRequestFile);
   const status = source?.schemaVersion === 1 && allowedStates.has(source.state) ? {
     state: source.state, message: String(source.message || '').slice(0, 240), updatedAt: String(source.updatedAt || ''),
     lastSuccessAt: String(source.lastSuccessAt || ''), action: String(source.action || '').slice(0, 80)
   } : { state: 'not_configured', message: '企业微信人事同步尚未运行', updatedAt: '', lastSuccessAt: '', action: '请管理员完成同步服务配置' };
+  if (includeAuthUrl) Object.assign(status, consultantDirectoryAuthUrl(source) || {});
   const requestedAt = request?.schemaVersion === 1 ? String(request.requestedAt || '') : '';
   if (requestedAt && status.state !== 'running') return { ...status, state: 'pending', message: '已提交刷新请求，正在等待服务器读取企业微信花名册与通讯录', requestedAt };
   return { ...status, requestedAt };
@@ -1748,6 +1759,11 @@ const requestConsultantDirectoryRefresh = reason => {
   const safeReasons = new Set(['manual', 'payroll_published', 'revenue_published', 'relevant_reports_published']);
   const requestedAt = now(); const requestId = crypto.randomUUID();
   writePrivateJsonAtomic(consultantDirectoryRefreshRequestFile, { schemaVersion: 1, requestId, requestedAt, reason: safeReasons.has(reason) ? reason : 'manual' });
+  return { requested: true, requestId, requestedAt };
+};
+const requestConsultantDirectoryAuthorization = () => {
+  const requestedAt = now(); const requestId = crypto.randomUUID();
+  writePrivateJsonAtomic(consultantDirectoryAuthRequestFile, { schemaVersion: 1, requestId, requestedAt, reason: 'manual_reauthorization' });
   return { requested: true, requestId, requestedAt };
 };
 const consultantDirectoryRefreshForPublishedReports = reportTypes => {
@@ -2356,7 +2372,7 @@ const refreshedConsultantPayrollRawFor = (payroll, period) => {
 };
 const consultantRoiAnalysisFor = (employeeKey, period) => {
   const payroll = rawReportFor(payrollStatementReportType, 'group', period); const revenue = rawReportFor(revenueStatisticsReportType, 'group', period); const spend = rawReportFor(consultantSpendRevenueReportType, 'group', period);
-  const directory = consultantDirectorySnapshot(); const directorySync = consultantDirectorySyncStatus();
+  const directory = consultantDirectorySnapshot(); const canManageAuthorization = hasModule(employeeKey, 'permission_admin', 'manage'); const directorySync = consultantDirectorySyncStatus(canManageAuthorization);
   const payrollRaw = refreshedConsultantPayrollRawFor(payroll, period); const payrollRows = payrollRaw?.payrollRows || []; const consultantPayrollRows = payrollRows.filter(item => consultantDepartmentMatches(item.department)); const revenueRaw = refreshedRevenueStatisticsRawFor(revenue, period); const revenueRows = revenueRaw?.consultantRevenue?.rows || []; const spendRows = spend.raw?.spendRows || [];
   const consultants = new Map();
   const ensure = (canonicalName, displayName) => { if (!consultants.has(canonicalName)) consultants.set(canonicalName, { canonicalName, name: displayName || canonicalName, regions: new Set(), hireDates: new Set(), baseSalary: 0, commission: 0, journalExpense: 0, trafficSpend: 0, expectedRevenue: 0, payrollDetails: [], revenueDetails: [], expenseDetails: [], spendDetails: [] }); return consultants.get(canonicalName); };
@@ -2409,7 +2425,7 @@ const consultantRoiAnalysisFor = (employeeKey, period) => {
   const sourceRevision = crypto.createHash('sha256').update(JSON.stringify({ schema: 6, payroll: [payroll.meta.uploadKey, payroll.meta.publishedAt], revenue: [revenue.meta.uploadKey, revenue.meta.publishedAt], spend: [spend.meta.uploadKey, spend.meta.publishedAt], directory: directory.revision, directorySync: [directorySync.state, directorySync.updatedAt, directorySync.requestedAt], journals: journalSources.map(item => [item.companyKey, item.uploadKey, item.publishedAt]) })).digest('hex').slice(0, 20);
   const consultantDepartments = [...new Set(consultantPayrollRows.map(item => String(item.department || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'zh-CN'));
   const directoryMatchedRows = rows.filter(item => directory.records.has(item.canonicalName)).length;
-  return { company: '桉侨集团', period, sourceRevision, rows, totals, sources: { payroll: payroll.meta, payrollSheet: payrollRaw?.sourceSheet || '', payrollFields: payrollRaw?.fieldMapping || {}, payrollConsultantDepartments: consultantDepartments, payrollConsultantRows: consultantPayrollRows.length, payrollExcludedRows: Math.max(0, payrollRows.length - consultantPayrollRows.length), directory: { available: directory.available, generatedAt: directory.generatedAt, matchedRows: directoryMatchedRows, reason: directory.reason, sync: directorySync }, revenue: revenue.meta, revenueSheet: revenueRaw?.consultantRevenue?.sourceSheet || '', revenueFields: revenueRaw?.consultantRevenue?.fieldMapping || {}, revenueExcludedPeriodRows: Number(revenueRaw?.consultantRevenue?.excludedPeriodRows || 0), unmatchedRevenueRows, unmatchedRevenueAmount: roundedAmount(unmatchedRevenueAmount), spend: spend.meta, spendSheet: spend.raw?.sourceSheet || '', spendFields: spend.raw?.fieldMapping || {}, matchedSpendRows, unmatchedSpendRows, ambiguousSpendRows, unmatchedSpendAmount: roundedAmount(unmatchedSpendAmount), journals: journalSources }, missing: [payroll.meta.noData ? '每月工资表' : '', !payroll.meta.noData && !consultantPayrollRows.length ? '工资表·顾问部门人员' : '', revenue.meta.noData || !revenueRows.length ? '营收统计表·总营收明细表' : '', spend.meta.noData ? '顾问消耗-营收表·汇总' : '', ...journalSources.filter(item => item.noData).map(item => `${item.companyName}序时账`)].filter(Boolean) };
+  return { company: '桉侨集团', period, sourceRevision, rows, totals, canManageAuthorization, sources: { payroll: payroll.meta, payrollSheet: payrollRaw?.sourceSheet || '', payrollFields: payrollRaw?.fieldMapping || {}, payrollConsultantDepartments: consultantDepartments, payrollConsultantRows: consultantPayrollRows.length, payrollExcludedRows: Math.max(0, payrollRows.length - consultantPayrollRows.length), directory: { available: directory.available, generatedAt: directory.generatedAt, matchedRows: directoryMatchedRows, reason: directory.reason, sync: directorySync }, revenue: revenue.meta, revenueSheet: revenueRaw?.consultantRevenue?.sourceSheet || '', revenueFields: revenueRaw?.consultantRevenue?.fieldMapping || {}, revenueExcludedPeriodRows: Number(revenueRaw?.consultantRevenue?.excludedPeriodRows || 0), unmatchedRevenueRows, unmatchedRevenueAmount: roundedAmount(unmatchedRevenueAmount), spend: spend.meta, spendSheet: spend.raw?.sourceSheet || '', spendFields: spend.raw?.fieldMapping || {}, matchedSpendRows, unmatchedSpendRows, ambiguousSpendRows, unmatchedSpendAmount: roundedAmount(unmatchedSpendAmount), journals: journalSources }, missing: [payroll.meta.noData ? '每月工资表' : '', !payroll.meta.noData && !consultantPayrollRows.length ? '工资表·顾问部门人员' : '', revenue.meta.noData || !revenueRows.length ? '营收统计表·总营收明细表' : '', spend.meta.noData ? '顾问消耗-营收表·汇总' : '', ...journalSources.filter(item => item.noData).map(item => `${item.companyName}序时账`)].filter(Boolean) };
 };
 const briefLineName = value => String(value || '')
   .replace(/\s+/g, '')
@@ -2957,6 +2973,15 @@ const server = http.createServer(async (req, res) => {
       const analysis = groupProfitAnalysisFor(period, year); log(employee.employee_key, 'view_group_profit_analysis', 'group_profit_analysis', `${companyKey}/${period}`, { moduleKey: 'group_profit_analysis', companyKey, period });
       return json(res, 200, { company: companyRow(companyKey).company_name, period, ...analysis });
     }
+    if (url.pathname === '/api/analysis/consultant-directory/authorize' && req.method === 'POST') {
+      const employee = requireEmployee(req, res); if (!employee) return;
+      if (!hasModule(employee.employee_key, 'permission_admin', 'manage')) return bad(res, 403, '只有财务管理员可以生成企业微信重新授权链接');
+      try {
+        const authorization = requestConsultantDirectoryAuthorization();
+        log(employee.employee_key, 'request_consultant_directory_authorization', consultantRoiModuleKey, 'manual_reauthorization', { moduleKey: consultantRoiModuleKey, companyKey: 'group' });
+        return json(res, 202, { ok: true, ...authorization, sync: consultantDirectorySyncStatus(true) });
+      } catch { return bad(res, 503, '无法提交企业微信重新授权请求，请联系管理员检查财务专用授权服务'); }
+    }
     if (url.pathname === '/api/analysis/consultant-directory/refresh' && req.method === 'POST') {
       const body = await parseBody(req); const companyKey = String(body.companyKey || 'group'); const period = String(body.period || '');
       if (companyKey !== 'group') return bad(res, 400, '顾问人事匹配仅适用于桉侨集团');
@@ -2966,7 +2991,7 @@ const server = http.createServer(async (req, res) => {
       try {
         const refresh = requestConsultantDirectoryRefresh('manual');
         log(employee.employee_key, 'refresh_consultant_directory', consultantRoiModuleKey, `${companyKey}/${period}`, { moduleKey: consultantRoiModuleKey, companyKey, period });
-        return json(res, 202, { ok: true, ...refresh, sync: consultantDirectorySyncStatus() });
+        return json(res, 202, { ok: true, ...refresh, sync: consultantDirectorySyncStatus(hasModule(employee.employee_key, 'permission_admin', 'manage')) });
       } catch { return bad(res, 503, '无法提交企业微信人事匹配刷新，请联系管理员检查同步服务'); }
     }
     if (url.pathname === '/api/analysis/consultant-roi' && req.method === 'GET') {

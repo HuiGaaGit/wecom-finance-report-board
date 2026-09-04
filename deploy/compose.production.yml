@@ -8,7 +8,7 @@ services:
       args:
         APP_UID: 20117
         APP_GID: 20117
-    image: aqllm/finance-report-board:1.1.49
+    image: aqllm/finance-report-board:1.1.50
     container_name: wecom-finance-report-board
     user: "20117:20117"
     restart: unless-stopped
@@ -22,6 +22,7 @@ services:
       CONSULTANT_DIRECTORY_FILE: /var/lib/wecom-finance/consultant-directory.json
       CONSULTANT_DIRECTORY_STATUS_FILE: /var/lib/wecom-finance/consultant-directory-status.json
       CONSULTANT_DIRECTORY_REFRESH_REQUEST_FILE: /var/lib/wecom-finance/consultant-directory-refresh-request.json
+      CONSULTANT_DIRECTORY_AUTH_REQUEST_FILE: /var/lib/wecom-finance/consultant-directory-auth-request.json
     ports:
       - 127.0.0.1:3180:3180
     volumes:

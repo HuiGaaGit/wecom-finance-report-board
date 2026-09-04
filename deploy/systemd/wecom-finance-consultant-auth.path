@@ -1,0 +1,9 @@
+[Unit]
+Description=Start finance WeCom authorization when requested by the dashboard
+
+[Path]
+PathChanged=/data/data/wecom-finance-report-board/consultant-directory-auth-request.json
+Unit=wecom-finance-consultant-auth.service
+
+[Install]
+WantedBy=multi-user.target

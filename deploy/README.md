@@ -8,7 +8,7 @@
 - 持久数据：`/data/data/wecom-finance-report-board`
 - 容器：`wecom-finance-report-board`
 - 当前生产镜像：`aqllm/finance-report-board:1.1.49`（生产验收与回滚信息见 `docs/PRODUCTION_OPERATIONS.md`）
-- 当前源码版本：`1.1.49`（现金流量表已上线与资产负债分析统一的动态现金收支弹窗）
+- 当前源码版本：`1.1.50`（顾问花名册精确两列读取及财务专用授权到期提醒候选）
 - 本机端口：`127.0.0.1:3180`
 - 正式地址：`https://anqiaoyiminxq.com/platform/finance/`
 
@@ -16,9 +16,9 @@
 
 财务模块只以无正文 GET 请求调用小Q的 `/api/auth/me`、`/api/data-dist/my-roles` 和管理员目录同步所需的 `/api/data-dist/user-groups`。生产环境不保存企微应用 Secret，也不把报表、工资、上传文件或解析结果发送给小Q。
 
-顾问英文名和离职状态不经小Q接口传递。宿主机安装 `deploy/systemd/wecom-finance-consultant-directory.service/.path/.timer`，由已单独授权的企业微信 CLI 读取数据：工资表或营收统计表发布后，财务容器只写入不含人员、文件名和金额的刷新请求，`.path` 立即启动同步器，`.timer` 每小时兜底。同步器只把姓名、英文名、在职/离职状态和同步时间写入 `consultant-directory.json`，另把不含人员信息的执行结果写入 `consultant-directory-status.json`；文件最终固定为 `20117:20117`、`0600`。
+顾问英文名和离职状态不经小Q接口传递。宿主机安装 `deploy/systemd/wecom-finance-consultant-directory.service/.path/.timer`，由财务专用 `/opt/wecom-finance/wecom-cli/node_modules/.bin/wecom-cli` 和独立凭证目录 `/var/lib/wecom-finance-cli` 读取数据：工资表或营收统计表发布后，财务容器只写入不含人员、文件名和金额的刷新请求，`.path` 立即启动同步器，`.timer` 每小时兜底并检查授权。同步器只把姓名、英文名、在职/离职状态和同步时间写入 `consultant-directory.json`，另把不含人员信息的执行结果写入 `consultant-directory-status.json`；文件最终固定为 `20117:20117`、`0600`。
 
-当前连接器若未遵守 `E:F` 列范围而返回整张花名册，同步器默认报错且不覆盖上一份安全快照。不得为了省事在 systemd 单元中启用 `WECOM_ALLOW_WIDE_ROSTER_READ=1`；应先升级连接器或改用仅含姓名、英文名、状态的独立受控表。安装前先以服务运行账号完成一次 `wecom-cli auth init` 和 `wecom-cli auth show --status`，再手工启动一次服务确认成功，最后执行 `systemctl enable --now wecom-finance-consultant-directory.path wecom-finance-consultant-directory.timer`。
+同步器使用 CLI 1.2.0 的 `sheet get --json` 和 `sheet ranges get --json` 结构化接口，只读取花名册“在职”“离职”工作表 `E:F`；全空行可跳过，任何非空行有效列宽超过 2 都会报错且不覆盖安全快照。不得增加扩大读取范围的开关。授权约 7 天失效后，小时级目录同步会写入 `consultant-directory-auth-request.json`，由新增 `wecom-finance-consultant-auth.path/.service` 生成 15 分钟临时授权链接；链接只通过管理员接口展示。管理员确认后授权服务自动复检并提交刷新请求。首次启用前依次手工验证目录同步和授权模拟，再执行 `systemctl enable --now wecom-finance-consultant-directory.path wecom-finance-consultant-directory.timer wecom-finance-consultant-auth.path`。
 
 `1.1.25` 使用专用运行身份 `20117:20117`。首次切换前先创建 SQLite 一致性备份，再执行 `deploy/harden-finance-data.sh`；该脚本只接受精确目录 `/data/data/wecom-finance-report-board`。SQLite 备份和异机备份状态文件均按 `0600` 创建。启动后必须执行 `node deploy/check-runtime-isolation.mjs`，验证 owner/mode、其他容器挂载、Docker Socket、网络成员和回环端口。
 

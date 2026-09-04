@@ -24,7 +24,28 @@ const testUploadsDir = path.join(projectDir, 'data', `test-uploads-${process.pid
 const testConsultantDirectoryFile = path.join(projectDir, 'data', `test-consultant-directory-${process.pid}-${Date.now()}.json`);
 const testConsultantDirectoryStatusFile = path.join(projectDir, 'data', `test-consultant-directory-status-${process.pid}-${Date.now()}.json`);
 const testConsultantDirectoryRefreshRequestFile = path.join(projectDir, 'data', `test-consultant-directory-refresh-${process.pid}-${Date.now()}.json`);
+const testConsultantDirectoryAuthRequestFile = path.join(projectDir, 'data', `test-consultant-directory-auth-${process.pid}-${Date.now()}.json`);
 let child;
+
+const { exactTwoColumnRows, preservedAuthLink } = await import('./deploy/sync-consultant-directory.mjs');
+const { safeAuthUrl } = await import('./deploy/init-consultant-directory-auth.mjs');
+
+test('企微花名册只接受结构化精确两列，授权链接严格限定官方临时入口', () => {
+  const rows = exactTwoColumnRows({ grid_data: { rows: [
+    { values: [] },
+    { values: [{ cell_value: { text: '姓名' }, data_type: 'TEXT' }, { cell_value: { text: '英文名' }, data_type: 'TEXT' }] },
+    { values: [{ cell_value: { text: '测试顾问' }, data_type: 'TEXT' }, { cell_value: { text: 'Tester' }, data_type: 'TEXT' }, { cell_value: { text: '' }, data_type: 'TEXT' }] }
+  ] } });
+  assert.deepEqual(rows, [['', ''], ['姓名', '英文名'], ['测试顾问', 'Tester']]);
+  assert.throws(() => exactTwoColumnRows({ grid_data: { rows: [{ values: [{ cell_value: { text: '甲' } }, { cell_value: { text: 'A' } }, { cell_value: { text: '手机号' } }] }] } }), /超出姓名\/英文名允许列/);
+  const valid = 'https://work.weixin.qq.com/ai/qc/gen?source=wecom_cli_external&scode=Abc_123-def';
+  assert.equal(safeAuthUrl(valid), valid);
+  assert.equal(safeAuthUrl('https://example.com/ai/qc/gen?source=wecom_cli_external&scode=Abc_123-def'), '');
+  assert.equal(safeAuthUrl('https://work.weixin.qq.com/ai/qc/gen?source=other&scode=Abc_123-def'), '');
+  const authUrlExpiresAt = new Date(Date.now() + 60_000).toISOString();
+  assert.deepEqual(preservedAuthLink({ authUrl: valid, authUrlExpiresAt }), { authUrl: valid, authUrlExpiresAt });
+  assert.deepEqual(preservedAuthLink({ authUrl: valid, authUrlExpiresAt: '2020-01-01T00:00:00.000Z' }), {});
+});
 
 async function request(pathname, employee = 'admin') {
   const response = await fetch(`${base}${pathname}`, { headers: { 'x-demo-employee': employee } });
@@ -281,7 +302,7 @@ function bundleWithStaleLedgerSourcesBuffer() {
 }
 
 before(async () => {
-  child = spawn(process.execPath, ['app.mjs'], { cwd: projectDir, env: { ...process.env, NODE_ENV: 'test', PORT: String(testPort), DB_FILE: testDbPath, UPLOADS_DIR: testUploadsDir, CONSULTANT_DIRECTORY_FILE: testConsultantDirectoryFile, CONSULTANT_DIRECTORY_STATUS_FILE: testConsultantDirectoryStatusFile, CONSULTANT_DIRECTORY_REFRESH_REQUEST_FILE: testConsultantDirectoryRefreshRequestFile }, stdio: 'ignore' });
+  child = spawn(process.execPath, ['app.mjs'], { cwd: projectDir, env: { ...process.env, NODE_ENV: 'test', PORT: String(testPort), DB_FILE: testDbPath, UPLOADS_DIR: testUploadsDir, CONSULTANT_DIRECTORY_FILE: testConsultantDirectoryFile, CONSULTANT_DIRECTORY_STATUS_FILE: testConsultantDirectoryStatusFile, CONSULTANT_DIRECTORY_REFRESH_REQUEST_FILE: testConsultantDirectoryRefreshRequestFile, CONSULTANT_DIRECTORY_AUTH_REQUEST_FILE: testConsultantDirectoryAuthRequestFile }, stdio: 'ignore' });
   let started = false;
   for (let i = 0; i < 40; i++) {
     try { const response = await fetch(`${base}/api/health`); if (response.ok) { started = true; break; } } catch {}
@@ -294,7 +315,7 @@ before(async () => {
   await publishFixture('gz', '2026-08', ['journal']);
 });
 
-after(() => { child?.kill(); fs.rmSync(testUploadsDir, { recursive: true, force: true }); fs.rmSync(testConsultantDirectoryFile, { force: true }); fs.rmSync(testConsultantDirectoryStatusFile, { force: true }); fs.rmSync(testConsultantDirectoryRefreshRequestFile, { force: true }); });
+after(() => { child?.kill(); fs.rmSync(testUploadsDir, { recursive: true, force: true }); fs.rmSync(testConsultantDirectoryFile, { force: true }); fs.rmSync(testConsultantDirectoryStatusFile, { force: true }); fs.rmSync(testConsultantDirectoryRefreshRequestFile, { force: true }); fs.rmSync(testConsultantDirectoryAuthRequestFile, { force: true }); });
 
 test('平台生产模式公开登录引导页并将未认证请求交给小Q登录', async () => {
   const authPort = testPort + 1; const authBase = `http://127.0.0.1:${authPort}`;
@@ -947,10 +968,10 @@ test('上传页使用独立公司期间选择器且移除全局范围锁定', ()
 test('页面与后台运行版本一致且旧响应不能覆盖上传操作后的列表', async () => {
   const bootstrap = await request('/api/bootstrap?company=gz&period=2026-06');
   assert.equal(bootstrap.response.status, 200);
-  assert.equal(bootstrap.payload.appVersion, '1.1.49');
+  assert.equal(bootstrap.payload.appVersion, '1.1.50');
   const index = fs.readFileSync(path.join(projectDir, 'public', 'index.html'), 'utf8');
   const frontend = fs.readFileSync(path.join(projectDir, 'public', 'app.js'), 'utf8');
-  assert.match(index, /<meta name="app-version" content="1\.1\.49">/);
+  assert.match(index, /<meta name="app-version" content="1\.1\.50">/);
   assert.match(frontend, /const expectedAppVersion = document\.querySelector\('meta\[name="app-version"\]'\)/);
   assert.match(frontend, /bootstrap\?\.appVersion === expectedAppVersion/);
   assert.match(frontend, /APP_VERSION_MISMATCH/);
@@ -2167,6 +2188,27 @@ test('集团顾问投入产出比联合工资表、营收明细和各公司序�
   assert.equal(pendingDirectory.payload.sources.directory.sync.state, 'pending');
   assert.equal((await post('/api/analysis/consultant-directory/refresh', { companyKey: 'group', period }, 'accountant')).response.status, 403);
 
+  fs.rmSync(testConsultantDirectoryRefreshRequestFile, { force: true });
+  const authUrl = 'https://work.weixin.qq.com/ai/qc/gen?source=wecom_cli_external&scode=Finance_test_123';
+  const authUrlExpiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
+  fs.writeFileSync(testConsultantDirectoryStatusFile, JSON.stringify({ schemaVersion: 1, state: 'auth_required', message: '企业微信授权已到期', updatedAt: new Date().toISOString(), lastSuccessAt: '2027-03-31T09:00:00.000Z', authUrl, authUrlExpiresAt }));
+  const adminAuthorizationView = await request(`/api/analysis/consultant-roi?company=group&period=${period}`);
+  assert.equal(adminAuthorizationView.payload.canManageAuthorization, true);
+  assert.deepEqual({ authUrl: adminAuthorizationView.payload.sources.directory.sync.authUrl, authUrlExpiresAt: adminAuthorizationView.payload.sources.directory.sync.authUrlExpiresAt }, { authUrl, authUrlExpiresAt });
+  const managerAuthorizationView = await request(`/api/analysis/consultant-roi?company=group&period=${period}`, 'manager');
+  assert.equal(managerAuthorizationView.response.status, 200);
+  assert.equal(managerAuthorizationView.payload.canManageAuthorization, false);
+  assert.equal(managerAuthorizationView.payload.sources.directory.sync.authUrl, undefined);
+  assert.equal((await post('/api/analysis/consultant-directory/authorize', {}, 'manager')).response.status, 403);
+  const authorizationRequest = await post('/api/analysis/consultant-directory/authorize', {});
+  assert.equal(authorizationRequest.response.status, 202); assert.equal(authorizationRequest.payload.requested, true);
+  const authorizationRequestFile = JSON.parse(fs.readFileSync(testConsultantDirectoryAuthRequestFile, 'utf8'));
+  assert.equal(authorizationRequestFile.reason, 'manual_reauthorization'); assert.doesNotMatch(JSON.stringify(authorizationRequestFile), /Finance_test_123|詹志坚|张莎莎/);
+
+  fs.writeFileSync(testConsultantDirectoryStatusFile, JSON.stringify({ schemaVersion: 1, state: 'auth_required', message: '企业微信授权已到期', updatedAt: new Date().toISOString(), lastSuccessAt: '', authUrl, authUrlExpiresAt: '2020-01-01T00:00:00.000Z' }));
+  const expiredAuthorizationView = await request(`/api/analysis/consultant-roi?company=group&period=${period}`);
+  assert.equal(expiredAuthorizationView.payload.sources.directory.sync.authUrl, undefined);
+
   fs.writeFileSync(testConsultantDirectoryFile, 'x'.repeat(513 * 1024));
   const rejectedDirectory = await request(`/api/analysis/consultant-roi?company=group&period=${period}`);
   assert.equal(rejectedDirectory.response.status, 200);
@@ -2186,6 +2228,8 @@ test('集团顾问投入产出比联合工资表、营收明细和各公司序�
   const stylesheet = fs.readFileSync(path.join(projectDir, 'public', 'styles.css'), 'utf8');
   const serverSource = fs.readFileSync(path.join(projectDir, 'app.mjs'), 'utf8');
   const directorySyncSource = fs.readFileSync(path.join(projectDir, 'deploy', 'sync-consultant-directory.mjs'), 'utf8');
+  const directoryAuthSource = fs.readFileSync(path.join(projectDir, 'deploy', 'init-consultant-directory-auth.mjs'), 'utf8');
+  const directoryAuthUnit = fs.readFileSync(path.join(projectDir, 'deploy', 'systemd', 'wecom-finance-consultant-auth.service'), 'utf8');
   assert.match(frontend, /data-roi-input/); assert.match(frontend, /data-roi-filter-toggle/); assert.match(frontend, /data-roi-filter-draft/); assert.match(frontend, /data-roi-sort/);
   assert.match(frontend, /consultant-roi-filter-menu/); assert.match(frontend, /positionColumnFilter/); assert.doesNotMatch(frontend, /roi-filter-row/);
   assert.match(frontend, /consultant-roi-export/); assert.match(frontend, /顾问投入产出比\.csv/);
@@ -2196,12 +2240,14 @@ test('集团顾问投入产出比联合工资表、营收明细和各公司序�
   assert.match(frontend, /consultantRoiAverageSummary/); assert.match(frontend, /consultant-roi-average-modal/); assert.match(frontend, /consultant-new-hire-badge/); assert.match(frontend, /入职时间/);
   assert.match(frontend, /key: 'hireDate', label: '入职日期'/); assert.match(frontend, /key: 'englishName', label: '英文名'/); assert.match(frontend, /consultant-resigned-badge/);
   assert.match(serverSource, /consultantDirectorySnapshot/); assert.match(serverSource, /directory: directory\.revision/); assert.match(serverSource, /employmentStatus === 'resigned'/);
-  assert.match(directorySyncSource, /contact', 'users', 'search/); assert.match(directorySyncSource, /sheet', 'ranges', 'get/); assert.match(directorySyncSource, /wide && !allowWideRead/);
+  assert.match(directorySyncSource, /contact', 'users', 'search/); assert.match(directorySyncSource, /sheet', 'get', '--json/); assert.match(directorySyncSource, /sheet', 'ranges', 'get', '--json/); assert.match(directorySyncSource, /mode: 'default'/); assert.match(directorySyncSource, /exactTwoColumnRows/); assert.doesNotMatch(directorySyncSource, /WECOM_ALLOW_WIDE_ROSTER_READ/);
   assert.match(directorySyncSource, /schemaVersion: 1/); assert.match(directorySyncSource, /englishName: contactNames\.get\(key\) \|\| roster\?\.englishName/);
-  assert.match(directorySyncSource, /AUTH_REQUIRED/); assert.match(directorySyncSource, /source_permission_required/); assert.match(directorySyncSource, /CONSULTANT_DIRECTORY_STATUS_FILE/);
-  assert.match(serverSource, /CONSULTANT_DIRECTORY_REFRESH_REQUEST_FILE/); assert.match(serverSource, /consultantDirectoryRefreshForPublishedReports/); assert.match(serverSource, /consultant-directory\/refresh/);
+  assert.match(directorySyncSource, /AUTH_REQUIRED/); assert.match(directorySyncSource, /source_permission_required/); assert.match(directorySyncSource, /CONSULTANT_DIRECTORY_STATUS_FILE/); assert.match(directorySyncSource, /CONSULTANT_DIRECTORY_AUTH_REQUEST_FILE/);
+  assert.match(directoryAuthSource, /auth', 'init', '--noninteractive/); assert.match(directoryAuthSource, /work\.weixin\.qq\.com/); assert.match(directoryAuthSource, /authUrlExpiresAt/); assert.doesNotMatch(directoryAuthSource, /console\.log/);
+  assert.match(directoryAuthUnit, /WECOM_CLI=\/opt\/wecom-finance\/wecom-cli/); assert.match(directoryAuthUnit, /HOME=\/var\/lib\/wecom-finance-cli/); assert.match(directoryAuthUnit, /ProtectHome=true/);
+  assert.match(serverSource, /CONSULTANT_DIRECTORY_REFRESH_REQUEST_FILE/); assert.match(serverSource, /CONSULTANT_DIRECTORY_AUTH_REQUEST_FILE/); assert.match(serverSource, /consultantDirectoryRefreshForPublishedReports/); assert.match(serverSource, /consultant-directory\/refresh/); assert.match(serverSource, /consultant-directory\/authorize/);
   assert.match(frontend, /consultantRoiAutoRefreshMs = 60_000/); assert.match(frontend, /consultant-roi-refresh/); assert.match(frontend, /data\.sourceRevision === consultantRoiSourceRevision/);
-  assert.match(frontend, /consultantDirectoryPollingMs = 3_000/); assert.match(frontend, /consultant-directory-guide-modal/); assert.match(frontend, /wecom-cli auth init/);
+  assert.match(frontend, /consultantDirectoryPollingMs = 3_000/); assert.match(frontend, /consultant-directory-guide-modal/); assert.match(frontend, /consultant-directory-auth-link/); assert.match(frontend, /consultant-directory-auth-request/);
   assert.match(frontend, /state\.page === consultantRoiModuleKey[\s\S]{0,180}renderConsultantRoiInteractive\(\{ trigger: 'resume' \}\)/);
   assert.match(frontend, /visibleColumns = consultantRoiColumns\.filter/); assert.match(frontend, /selectedInputs\.map\(item => item\.label\)/);
   assert.match(stylesheet, /\.consultant-roi-layout>\[data-analysis-block\]\{grid-column:span 12\}/);
@@ -2209,7 +2255,7 @@ test('集团顾问投入产出比联合工资表、营收明细和各公司序�
   assert.match(stylesheet, /\.consultant-roi-page-actions\{[^}]*flex-wrap:nowrap/); assert.match(stylesheet, /#consultant-roi-refresh-status\{[^}]*position:absolute/);
   assert.match(stylesheet, /\.consultant-roi-average-card/); assert.match(stylesheet, /\.consultant-roi-average-modal/); assert.match(stylesheet, /\.consultant-new-hire-badge/);
   assert.match(stylesheet, /\.consultant-resigned-badge/); assert.match(stylesheet, /roi-col-hireDate/); assert.match(stylesheet, /roi-col-englishName/); assert.match(stylesheet, /roi-col-trafficSpend/);
-  assert.match(stylesheet, /\.consultant-directory-guide/); assert.match(stylesheet, /\.consultant-directory-guide-modal/);
+  assert.match(stylesheet, /\.consultant-directory-guide/); assert.match(stylesheet, /\.consultant-directory-guide-modal/); assert.match(stylesheet, /\.consultant-directory-auth-actions/);
   assert.match(stylesheet, /\.consultant-roi-table\{width:100%;min-width:0!important;table-layout:fixed\}/);
   assert.match(stylesheet, /\.roi-filter-menu\{position:fixed/); assert.match(stylesheet, /\.roi-filter-trigger\.active/);
   const helperSource = frontend.slice(frontend.indexOf('const consultantRoiInputDefinitions'), frontend.indexOf('async function renderConsultantRoiAnalysis'));

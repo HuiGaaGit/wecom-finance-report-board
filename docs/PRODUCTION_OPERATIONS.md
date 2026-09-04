@@ -484,3 +484,13 @@ cat /data/data/wecom-finance-report-board/backups/offsite-last-success.meta
 - 发布前数据库备份：`/data/data/wecom-finance-report-board/backups/report-board-20260904T025146Z.db`，SHA256：`F2E4BC72C7204B70F3C9E41B0AE0E5926895203EBE89A695DE1954AD3EA7B426`；发布后备份：`/data/data/wecom-finance-report-board/backups/report-board-20260904T025559Z.db`，SHA256：`F63E877732C9DC295C53C6BD54CDB574A911C34C153CEBA440DC3CB676BB0E44`。两者权限均为 `0600`、所有者均为 `20117:20117`。
 - 发布前 Compose、受限环境、Nginx、容器信息及源码快照位于 `/data/backups/wecom-finance-report-board/pre-1.1.49-20260904T025146Z`；旧源码位于 `/data/repos/wecom-finance-report-board-pre-1.1.49-20260904T025146Z`，旧镜像 `1.1.47` 保留。回滚时恢复该快照的 Compose 和旧源码并启动 `aqllm/finance-report-board:1.1.47`；数据库完整性正常时不得用备份覆盖业务数据。
 - 财务专用企业微信 CLI 的 `.path/.timer` 在本次发布前后均保持 `disabled/inactive`，现金流部署没有修改其独立授权、systemd drop-in 或其他服务器项目。
+
+## 39. 财务专用企业微信授权到期检测候选（1.1.50，待部署）
+
+- 顾问目录同步切换到企业微信 CLI 1.2.0 的结构化 `sheet get --json`、`sheet ranges get --json` 接口，只读取“在职”“离职”工作表 `E:F`。全空行可跳过；任一非空行有效宽度超过两列立即停止且不覆盖旧快照，也不存在扩大范围开关。
+- 目录 timer 每小时先执行财务专用 `auth show --status`。授权失效时写入不含人员、文档和财务数据的 `consultant-directory-auth-request.json`，由新增 `wecom-finance-consultant-auth.path/.service` 启动 15 分钟授权进程。CLI 固定为 `/opt/wecom-finance/wecom-cli/node_modules/.bin/wecom-cli`，HOME/XDG_CONFIG_HOME 固定为 `/var/lib/wecom-finance-cli`，不读取小W或其他服务凭据。
+- 临时链接必须为 `https://work.weixin.qq.com/ai/qc/gen`，且 `source=wecom_cli_external`、`scode` 格式和过期时间全部通过服务端校验后才会返回；只有拥有权限管理能力的财务管理员能读取或重新生成链接，其他顾问分析用户只看到联系管理员提示。CLI 原始输出、令牌、Cookie 和二维码均不写入财务数据或日志。
+- 管理员完成企微确认后，授权服务再次验证 `authorized`，原子写入一次目录刷新请求；原有 directory path 自动刷新脱敏快照，成功后页面恢复常态。授权期间页面每 3 秒检查，平时仍每 60 秒刷新模块数据。
+- 本地回归 `104/104`，服务端、前端、同步与授权脚本语法检查、部署配置检查和差异检查通过；桌面管理员弹窗包含授权/重建入口，`390×844` 下弹窗宽 `355px` 且页面无横向溢出，普通财务负责人接口和 DOM 均不含授权链接，桌面与手机控制台无告警。
+- 生产切换时先创建 SQLite 一致性备份并记录现有 unit/drop-in；添加 `CONSULTANT_DIRECTORY_AUTH_REQUEST_FILE=/var/lib/wecom-finance/consultant-directory-auth-request.json`，安装目录同步及授权五个 unit，`daemon-reload` 后先手工启动 directory service 并确认快照字段/权限，再启用 `wecom-finance-consultant-directory.path`、`wecom-finance-consultant-directory.timer`、`wecom-finance-consultant-auth.path`。不得为验收主动注销当前有效授权。
+- 回滚时执行 `systemctl disable --now wecom-finance-consultant-auth.path wecom-finance-consultant-directory.path wecom-finance-consultant-directory.timer`，恢复旧 unit、drop-in、Compose 和 `1.1.49` 镜像；本版本无数据库结构迁移，数据库完整时不得以旧备份覆盖业务数据。保留财务专用 CLI 与凭证不会影响旧版，也不会影响小W。

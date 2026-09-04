@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import XLSX from 'xlsx';
 
 let Database;
 try {
@@ -16,14 +16,13 @@ try {
 process.umask(0o077);
 const args = process.argv.slice(2);
 const valueFor = (name, fallback = '') => { const index = args.indexOf(name); return index >= 0 ? String(args[index + 1] || '') : fallback; };
-const has = name => args.includes(name);
 const dbFile = valueFor('--db', process.env.DB_FILE || '/data/data/wecom-finance-report-board/report-board.db');
 const dataDirectory = valueFor('--data-dir', process.env.FINANCE_DATA_DIR || path.dirname(dbFile));
 const outputFile = valueFor('--output', process.env.CONSULTANT_DIRECTORY_FILE || path.join(dataDirectory, 'consultant-directory.json'));
 const statusFile = valueFor('--status', process.env.CONSULTANT_DIRECTORY_STATUS_FILE || path.join(dataDirectory, 'consultant-directory-status.json'));
 const requestFile = valueFor('--request', process.env.CONSULTANT_DIRECTORY_REFRESH_REQUEST_FILE || path.join(dataDirectory, 'consultant-directory-refresh-request.json'));
+const authRequestFile = valueFor('--auth-request', process.env.CONSULTANT_DIRECTORY_AUTH_REQUEST_FILE || path.join(dataDirectory, 'consultant-directory-auth-request.json'));
 const rosterUrl = valueFor('--roster-url', process.env.WECOM_ROSTER_URL || '');
-const allowWideRead = has('--allow-wide-roster-read') || process.env.WECOM_ALLOW_WIDE_ROSTER_READ === '1';
 const appUid = Number(valueFor('--uid', process.env.FINANCE_APP_UID || '20117')); const appGid = Number(valueFor('--gid', process.env.FINANCE_APP_GID || '20117'));
 const configuredWecomCli = valueFor('--wecom-cli', process.env.WECOM_CLI || '');
 const windowsCliScript = path.join(process.env.APPDATA || '', 'npm', 'node_modules', '@wecom', 'cli', 'bin', 'wecom.js');
@@ -49,10 +48,36 @@ const canonicalName = value => {
   return text.match(/[\u4e00-\u9fa5]{2,6}/g)?.at(-1) || text.replace(/[^A-Za-z0-9]/g, '').toLowerCase();
 };
 const safeEnglishName = value => String(value || '').replace(/[\u0000-\u001f\u007f\u4e00-\u9fff]/g, '').replace(/\s+/g, ' ').trim().slice(0, 80);
-const csvRows = content => {
-  const workbook = XLSX.read(String(content || ''), { type: 'string', raw: true });
-  const sheet = workbook.Sheets[workbook.SheetNames[0]];
-  return XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: '' });
+const documentIdFor = doc => String(doc?.docid || doc?.url || '').match(/\/sheet\/([^?/#]+)/)?.[1] || String(doc?.docid || doc?.url || '');
+const gridCellText = cell => {
+  const value = cell?.cell_value ?? cell?.value ?? cell;
+  if (value == null) return '';
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return String(value).trim();
+  if (value.text != null) return String(value.text).trim();
+  if (value.number != null) return String(value.number).trim();
+  if (value.link?.text != null) return String(value.link.text).trim();
+  if (value.display_value != null) return String(value.display_value).trim();
+  return '';
+};
+const exactTwoColumnRows = result => {
+  const sourceRows = result?.grid_data?.rows;
+  if (!Array.isArray(sourceRows)) fail('企业微信表格未返回结构化区域数据', 'WECOM_INVALID_RESPONSE');
+  return sourceRows.map(row => {
+    const values = Array.isArray(row?.values) ? row.values : [];
+    const cells = values.map(gridCellText); let effectiveWidth = cells.length;
+    while (effectiveWidth && !cells[effectiveWidth - 1]) effectiveWidth -= 1;
+    if (effectiveWidth > 2) fail('企业微信当前返回了超出姓名/英文名允许列的内容；为避免扩大花名册暴露面，已拒绝生成快照', 'SOURCE_SCOPE_REQUIRED');
+    return [cells[0] || '', cells[1] || ''];
+  });
+};
+const preservedAuthLink = source => {
+  try {
+    const authUrl = new URL(String(source?.authUrl || '')); const authUrlExpiresAt = String(source?.authUrlExpiresAt || '');
+    if (authUrl.protocol !== 'https:' || authUrl.hostname !== 'work.weixin.qq.com' || authUrl.pathname !== '/ai/qc/gen') return {};
+    if (authUrl.searchParams.get('source') !== 'wecom_cli_external' || !/^[A-Za-z0-9_-]{6,200}$/.test(authUrl.searchParams.get('scode') || '')) return {};
+    if (!authUrlExpiresAt || Date.parse(authUrlExpiresAt) <= Date.now()) return {};
+    return { authUrl: authUrl.toString(), authUrlExpiresAt };
+  } catch { return {}; }
 };
 const resolveStoredPath = stored => {
   const source = String(stored || ''); if (fs.existsSync(source)) return source;
@@ -84,16 +109,15 @@ const rosterDocument = () => {
   return exact[0];
 };
 const rosterPeople = (doc, title, status) => {
-  const info = cliJson(['sheet', 'info', '--docid', doc.url]); const sheet = (info.sheets || []).find(item => item.title === title);
+  const docid = documentIdFor(doc); const info = cliJson(['sheet', 'get', '--json', JSON.stringify({ docid })]); const sheet = (info.sheets || []).find(item => item.title === title);
   if (!sheet) fail(`花名册中未找到“${title}”工作表`, 'ROSTER_SHEET_MISSING');
-  const result = cliJson(['sheet', 'ranges', 'get', '--docid', doc.url, '--sheet-id', sheet.sheet_id, '--range', `E1:F${Math.max(2, Number(sheet.row_count || 200))}`]);
-  const rows = csvRows(result.content); const header = rows[0] || [];
+  const range = `E1:F${Math.max(2, Number(sheet.row_count || 200))}`;
+  const result = cliJson(['sheet', 'ranges', 'get', '--json', JSON.stringify({ docid, sheet_id: sheet.sheet_id, mode: 'default', range })]);
+  const rows = exactTwoColumnRows(result); const headerRowIndex = rows.findIndex(row => row.some(Boolean)); const header = rows[headerRowIndex] || [];
   let nameIndex = header.findIndex(value => String(value).trim() === '姓名'); let englishIndex = header.findIndex(value => String(value).trim() === '英文名');
-  const wide = header.length > 2;
-  if (wide && !allowWideRead) fail('企业微信当前返回了超出姓名/英文名允许列的内容；为避免扩大花名册暴露面，已拒绝生成快照', 'SOURCE_SCOPE_REQUIRED');
   if (nameIndex < 0 || englishIndex < 0) fail(`“${title}”工作表未识别到姓名和英文名字段`, 'ROSTER_FIELDS_MISSING');
   const people = new Map();
-  for (const row of rows.slice(1)) {
+  for (const row of rows.slice(headerRowIndex + 1)) {
     const name = String(row[nameIndex] || '').trim(); const key = canonicalName(name); if (!key) continue;
     people.set(key, { name, englishName: safeEnglishName(row[englishIndex]), employmentStatus: status });
   }
@@ -116,9 +140,9 @@ const contactEnglishNames = names => {
 
 const main = () => {
   let priorStatus = {}; try { priorStatus = JSON.parse(fs.readFileSync(statusFile, 'utf8')); } catch {}
-  privateJson(statusFile, statusPayload('running', '正在读取企业微信花名册与通讯录', '', { lastSuccessAt: String(priorStatus.lastSuccessAt || '') }));
   const auth = spawnSync(wecomCli, [...wecomCliPrefix, 'auth', 'show', '--status'], { encoding: 'utf8', windowsHide: true });
   if (auth.error || auth.status !== 0 || String(auth.stdout || '').trim() !== 'authorized') fail('企业微信授权未完成或已失效', 'AUTH_REQUIRED');
+  privateJson(statusFile, statusPayload('running', '正在读取企业微信花名册与通讯录', '', { lastSuccessAt: String(priorStatus.lastSuccessAt || '') }));
   const consultantNames = consultantNamesFromPayroll(); const doc = rosterDocument();
   const active = rosterPeople(doc, '在职', 'active'); const resigned = rosterPeople(doc, '离职', 'resigned'); const contactNames = contactEnglishNames(consultantNames);
   const people = [...consultantNames].map(([key, name]) => {
@@ -147,9 +171,14 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     const [state, message, action] = guide[error.code] || ['error', '企业微信人事匹配刷新失败', '检查同步服务日志与企业微信连接状态后重试'];
     try {
       let priorStatus = {}; try { priorStatus = JSON.parse(fs.readFileSync(statusFile, 'utf8')); } catch {}
-      privateJson(statusFile, statusPayload(state, message, action, { lastSuccessAt: String(priorStatus.lastSuccessAt || '') }));
+      privateJson(statusFile, statusPayload(state, message, action, { lastSuccessAt: String(priorStatus.lastSuccessAt || ''), ...(error.code === 'AUTH_REQUIRED' ? preservedAuthLink(priorStatus) : {}) }));
     } catch {}
+    if (error.code === 'AUTH_REQUIRED') {
+      try { privateJson(authRequestFile, { schemaVersion: 1, requestId: crypto.randomUUID(), requestedAt: new Date().toISOString(), reason: 'authorization_expired' }); } catch {}
+    }
     try { fs.unlinkSync(requestFile); } catch (unlinkError) { if (unlinkError.code !== 'ENOENT') process.stderr.write('顾问人事刷新请求清理失败\n'); }
     process.stderr.write(`顾问人事快照同步失败：${error.message}\n`); process.exitCode = 1;
   }
 }
+
+export { gridCellText, exactTwoColumnRows, preservedAuthLink };
