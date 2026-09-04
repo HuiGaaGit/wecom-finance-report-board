@@ -1218,7 +1218,7 @@ async function renderConsultantRoiInteractive({ trigger = 'initial' } = {}) {
       const optionalAmountCell = (row, key) => consultantRoiView.inputs[key] ? `<td class="num roi-cell-${key}">${money(row[key])}</td>` : '';
       const statusCell = row => data.canViewMatchDiagnostics ? `<td class="roi-cell-status"><span class="roi-match ${row.matchStatus}">${row.matchLabel}</span></td>` : '';
       const statusBadge = (row, kind) => {
-        const resigned = kind === 'resigned'; const date = resigned ? row.departureDate : row.hireDate; const label = resigned ? '离职' : '新'; const title = resigned ? '离职日期' : '入职日期';
+        const resigned = kind === 'resigned'; const date = resigned ? row.exitDate : row.hireDate; const label = resigned ? '离职' : '新'; const title = resigned ? '离职日期' : '入职日期';
         return `<button type="button" class="consultant-status-badge ${resigned ? 'resigned' : 'new'}" data-consultant-status-date="${escapeHtml(date || '')}" data-consultant-status-title="${title}" aria-describedby="consultant-personnel-popover" aria-label="${escapeHtml(row.name)}${label}员工，查看${title}">${label}</button>`;
       };
       $('#consultant-roi-body').innerHTML = rows.map(row => `<tr><td class="roi-cell-name"><span class="consultant-name-cell"><strong>${escapeHtml(row.name)}</strong>${row.isNewEmployee ? statusBadge(row, 'new') : ''}${row.isResigned ? statusBadge(row, 'resigned') : ''}</span></td><td class="roi-cell-english" title="${escapeHtml(row.englishName || '')}">${escapeHtml(row.englishName || '—')}</td><td class="roi-cell-date">${escapeHtml(row.hireDate || '—')}</td><td class="roi-cell-company" title="${escapeHtml(row.companyName || '待补充')}">${escapeHtml(row.companyName || '待补充')}</td>${optionalAmountCell(row, 'baseSalary')}${optionalAmountCell(row, 'commission')}${optionalAmountCell(row, 'journalExpense')}${optionalAmountCell(row, 'trafficSpend')}<td class="num">${money(row.input)}</td><td class="num">${money(row.output)}</td><td class="num roi-value">${row.roi == null ? '—' : `${row.roi.toFixed(2)} 倍`}</td>${statusCell(row)}</tr>`).join('') || `<tr><td colspan="${visibleColumns.length}" class="empty">当前口径或筛选条件下暂无顾问数据</td></tr>`;
@@ -2036,6 +2036,16 @@ const recordCurrentPageView = () => {
   lastPageViewSignature = signature;
   void api('/api/activity/page-view', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ moduleKey: state.page, companyKey: state.company, period, detail }) }).catch(() => { lastPageViewSignature = ''; });
 };
+
+const syncAppHeaderHeight = () => {
+  const header = document.querySelector('.topbar'); if (!header) return;
+  const height = Math.max(1, Math.ceil(header.getBoundingClientRect().height));
+  document.documentElement.style.setProperty('--app-header-height', `${height}px`);
+};
+const appHeader = document.querySelector('.topbar');
+if (appHeader && 'ResizeObserver' in window) new ResizeObserver(syncAppHeaderHeight).observe(appHeader);
+window.addEventListener('resize', syncAppHeaderHeight, { passive: true });
+syncAppHeaderHeight();
 
 async function refresh({ reloadBootstrap = true } = {}) {
   const refreshRevision = ++pageRequestRevision;

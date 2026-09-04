@@ -44,6 +44,11 @@ const safeCompanyName = value => String(value || '').replace(/[\u0000-\u001f\u00
 const safeRosterDate = value => {
   const text = String(value || '').replace(/[\u0000-\u001f\u007f]/g, '').trim();
   const match = text.match(/^(20\d{2})[年/.\-](1[0-2]|0?[1-9])[月/.\-](3[01]|[12]\d|0?[1-9])日?$/);
+  if (!match && /^\d{5}(?:\.\d+)?$/.test(text)) {
+    const serial = Math.trunc(Number(text)); const date = new Date(Date.UTC(1899, 11, 30) + serial * 86400000);
+    const year = date.getUTCFullYear();
+    if (serial >= 36526 && serial <= 73050 && year >= 2000 && year <= 2099) return `${year}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')}`;
+  }
   if (!match) return '';
   const year = Number(match[1]); const month = Number(match[2]); const day = Number(match[3]); const date = new Date(Date.UTC(year, month - 1, day));
   return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day ? `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}` : '';
@@ -53,7 +58,7 @@ const gridCellText = cell => {
   const value = cell?.cell_value ?? cell?.value ?? cell;
   if (value == null) return '';
   if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return String(value).trim();
-  if (value.text != null) return String(value.text).trim();
+  if (value.text != null && String(value.text).trim()) return String(value.text).trim();
   if (value.number != null) return String(value.number).trim();
   if (value.link?.text != null) return String(value.link.text).trim();
   if (value.display_value != null) return String(value.display_value).trim();
@@ -73,6 +78,11 @@ const exactColumnRows = (result, { startColumn = 4, width = 2, label = '姓名/�
   });
 };
 const exactTwoColumnRows = result => exactColumnRows(result);
+const exactColumnRecords = (result, options = {}) => {
+  const startRow = Number(options.startRow || 1); const reportedStartRow = Number(result?.grid_data?.start_row);
+  if (Number.isFinite(reportedStartRow) && reportedStartRow !== startRow - 1) fail('企业微信返回区域的起始行不是请求行；为避免人员与日期错位，已拒绝生成快照', 'SOURCE_SCOPE_REQUIRED', { startRow: reportedStartRow, expectedStartRow: startRow - 1 });
+  return exactColumnRows(result, options).map((cells, index) => ({ rowNumber: startRow + index, cells }));
+};
 const exactRosterRows = (commandArgs, read = cliJson, pause = milliseconds => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds), options = {}) => {
   let lastError;
   for (let attempt = 1; attempt <= 3; attempt += 1) {
@@ -81,6 +91,18 @@ const exactRosterRows = (commandArgs, read = cliJson, pause = milliseconds => At
       if (error.code !== 'SOURCE_SCOPE_REQUIRED') throw error;
       lastError = new SyncError(error.code, error.message, { ...error.diagnostic, attempts: attempt });
       if (attempt < 3) pause(attempt * 500);
+    }
+  }
+  throw lastError;
+};
+const exactRosterRecords = (commandArgs, read = cliJson, pause, options = {}) => {
+  let lastError;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try { return exactColumnRecords(read(commandArgs), options); }
+    catch (error) {
+      if (error.code !== 'SOURCE_SCOPE_REQUIRED') throw error;
+      lastError = new SyncError(error.code, error.message, { ...error.diagnostic, attempts: attempt });
+      if (attempt < 3) (pause || (milliseconds => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds)))(attempt * 500);
     }
   }
   throw lastError;
@@ -119,28 +141,35 @@ const rosterDocument = () => {
   if (exact.length !== 1) fail(`需要唯一的企业微信在线表格“花名册”，当前识别到 ${exact.length} 个`, exact.length ? 'ROSTER_AMBIGUOUS' : 'ROSTER_NOT_FOUND');
   return exact[0];
 };
+const rosterPeopleFromRecords = (profileRecords, exitDateRecords, status, title) => {
+  const headerRecord = profileRecords.find(record => record.cells.some(Boolean)); const header = headerRecord?.cells || [];
+  const companyIndex = header.findIndex(value => String(value).trim() === '所属公司'); const nameIndex = header.findIndex(value => String(value).trim() === '姓名'); const englishIndex = header.findIndex(value => String(value).trim() === '英文名');
+  if (!headerRecord || companyIndex < 0 || nameIndex < 0 || englishIndex < 0) fail(`“${title}”工作表未识别到所属公司、姓名和英文名字段`, 'ROSTER_FIELDS_MISSING');
+  let exitDateByRow = new Map();
+  if (status === 'resigned') {
+    const exitHeader = exitDateRecords.find(record => /离职日期|last\s*day/i.test(String(record.cells[0] || '').replace(/[（）()]/g, ' ')));
+    if (!exitHeader || exitHeader.rowNumber !== headerRecord.rowNumber) fail(`“${title}”工作表未识别到与人员行对齐的离职日期字段`, 'ROSTER_FIELDS_MISSING');
+    exitDateByRow = new Map(exitDateRecords.filter(record => record.rowNumber > exitHeader.rowNumber).map(record => [record.rowNumber, record.cells[0] || '']));
+  }
+  const people = new Map();
+  for (const record of profileRecords) {
+    if (record.rowNumber <= headerRecord.rowNumber) continue;
+    const row = record.cells; const name = String(row[nameIndex] || '').trim(); const key = canonicalName(name); if (!key) continue;
+    people.set(key, { name, englishName: safeEnglishName(row[englishIndex]), companyName: safeCompanyName(row[companyIndex]), employmentStatus: status, exitDate: status === 'resigned' ? safeRosterDate(exitDateByRow.get(record.rowNumber)) : '' });
+  }
+  return people;
+};
 const rosterPeople = (doc, title, status) => {
   const docid = documentIdFor(doc); const info = cliJson(['sheet', 'get', '--json', JSON.stringify({ docid })]); const sheet = (info.sheets || []).find(item => item.title === title);
   if (!sheet) fail(`花名册中未找到“${title}”工作表`, 'ROSTER_SHEET_MISSING');
   const rowCount = Math.max(2, Number(sheet.row_count || 200)); const profileRange = `D1:F${rowCount}`;
-  const rows = exactRosterRows(['sheet', 'ranges', 'get', '--json', JSON.stringify({ docid, sheet_id: sheet.sheet_id, mode: 'default', range: profileRange })], cliJson, undefined, { startColumn: 3, width: 3, label: '所属公司/姓名/英文名' });
-  const headerRowIndex = rows.findIndex(row => row.some(Boolean)); const header = rows[headerRowIndex] || [];
-  const companyIndex = header.findIndex(value => String(value).trim() === '所属公司'); const nameIndex = header.findIndex(value => String(value).trim() === '姓名'); const englishIndex = header.findIndex(value => String(value).trim() === '英文名');
-  if (companyIndex < 0 || nameIndex < 0 || englishIndex < 0) fail(`“${title}”工作表未识别到所属公司、姓名和英文名字段`, 'ROSTER_FIELDS_MISSING');
-  let departureRows = [];
+  const profileRecords = exactRosterRecords(['sheet', 'ranges', 'get', '--json', JSON.stringify({ docid, sheet_id: sheet.sheet_id, mode: 'default', range: profileRange })], cliJson, undefined, { startColumn: 3, startRow: 1, width: 3, label: '所属公司/姓名/英文名' });
+  let exitDateRecords = [];
   if (status === 'resigned') {
-    const departureRange = `B1:B${rowCount}`;
-    departureRows = exactRosterRows(['sheet', 'ranges', 'get', '--json', JSON.stringify({ docid, sheet_id: sheet.sheet_id, mode: 'default', range: departureRange })], cliJson, undefined, { startColumn: 1, width: 1, label: '离职日期' });
-    const departureHeaderIndex = departureRows.findIndex(row => /离职日期|last\s*day/i.test(String(row[0] || '').replace(/[（）()]/g, ' ')));
-    if (departureHeaderIndex < 0 || departureHeaderIndex !== headerRowIndex) fail(`“${title}”工作表未识别到与人员行对齐的离职日期字段`, 'ROSTER_FIELDS_MISSING');
+    const exitDateRange = `B1:B${rowCount}`;
+    exitDateRecords = exactRosterRecords(['sheet', 'ranges', 'get', '--json', JSON.stringify({ docid, sheet_id: sheet.sheet_id, mode: 'default', range: exitDateRange })], cliJson, undefined, { startColumn: 1, startRow: 1, width: 1, label: '离职日期' });
   }
-  const people = new Map();
-  for (let rowIndex = headerRowIndex + 1; rowIndex < rows.length; rowIndex += 1) {
-    const row = rows[rowIndex];
-    const name = String(row[nameIndex] || '').trim(); const key = canonicalName(name); if (!key) continue;
-    people.set(key, { name, englishName: safeEnglishName(row[englishIndex]), companyName: safeCompanyName(row[companyIndex]), employmentStatus: status, departureDate: status === 'resigned' ? safeRosterDate(departureRows[rowIndex]?.[0]) : '' });
-  }
-  return people;
+  return rosterPeopleFromRecords(profileRecords, exitDateRecords, status, title);
 };
 const contactEnglishNames = names => {
   const entries = [...names.entries()]; const result = new Map();
@@ -166,9 +195,9 @@ const main = () => {
   const active = rosterPeople(doc, '在职', 'active'); const resigned = rosterPeople(doc, '离职', 'resigned'); const contactNames = contactEnglishNames(consultantNames);
   const people = [...consultantNames].map(([key, name]) => {
     const roster = resigned.get(key) || active.get(key);
-    return { name, englishName: contactNames.get(key) || roster?.englishName || '', companyName: roster?.companyName || '', employmentStatus: resigned.has(key) ? 'resigned' : 'active', departureDate: resigned.has(key) ? roster?.departureDate || '' : '' };
+    return { name, englishName: contactNames.get(key) || roster?.englishName || '', companyName: roster?.companyName || '', employmentStatus: resigned.has(key) ? 'resigned' : 'active', exitDate: resigned.has(key) ? roster?.exitDate || '' : '' };
   }).sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'));
-  const generatedAt = new Date().toISOString(); const payload = { schemaVersion: 2, generatedAt, source: { roster: '企业微信在线表格·花名册', contacts: '企业微信通讯录' }, people };
+  const generatedAt = new Date().toISOString(); const payload = { schemaVersion: 3, generatedAt, source: { roster: '企业微信在线表格·花名册', contacts: '企业微信通讯录' }, people };
   privateJson(outputFile, payload);
   privateJson(statusFile, statusPayload('success', '企业微信花名册与通讯录已完成匹配', '', { lastSuccessAt: generatedAt, matchedPeople: people.length, englishNames: people.filter(item => item.englishName).length, resignedPeople: people.filter(item => item.employmentStatus === 'resigned').length }));
   try { fs.unlinkSync(requestFile); } catch (error) { if (error.code !== 'ENOENT') throw error; }
@@ -200,4 +229,4 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   }
 }
 
-export { gridCellText, exactColumnRows, exactTwoColumnRows, exactRosterRows, consultantNamesFromInput, preservedAuthLink, safeRosterDate };
+export { gridCellText, exactColumnRows, exactColumnRecords, exactTwoColumnRows, exactRosterRows, exactRosterRecords, rosterPeopleFromRecords, consultantNamesFromInput, preservedAuthLink, safeRosterDate };

@@ -30,10 +30,10 @@ const testConsultantDirectoryAuthRequestFile = path.join(projectDir, 'data', `te
 const testConsultantDirectoryInputFile = path.join(projectDir, 'data', `test-consultant-directory-input-${process.pid}-${Date.now()}.json`);
 let child; let uploadMappingMockServer; const uploadMappingRequests = [];
 
-const { exactColumnRows, exactTwoColumnRows, exactRosterRows, consultantNamesFromInput, preservedAuthLink, safeRosterDate } = await import('./deploy/sync-consultant-directory.mjs');
+const { exactColumnRows, exactColumnRecords, exactTwoColumnRows, exactRosterRows, rosterPeopleFromRecords, consultantNamesFromInput, preservedAuthLink, safeRosterDate } = await import('./deploy/sync-consultant-directory.mjs');
 const { safeAuthUrl } = await import('./deploy/init-consultant-directory-auth.mjs');
 
-test('企微花名册只接受结构化精确两列，异常响应仅有限重试，授权链接严格限定官方临时入口', () => {
+test('企微花名册只接受非连续精确窄范围并按原始行号合并离职日期', () => {
   const rows = exactTwoColumnRows({ grid_data: { start_column: 4, rows: [
     { values: [] },
     { values: [{ cell_value: { text: '姓名' }, data_type: 'TEXT' }, { cell_value: { text: '英文名' }, data_type: 'TEXT' }] },
@@ -43,7 +43,24 @@ test('企微花名册只接受结构化精确两列，异常响应仅有限重�
   assert.deepEqual(exactColumnRows({ grid_data: { start_column: 3, rows: [{ values: [{ cell_value: { text: '所属公司' } }, { cell_value: { text: '姓名' } }, { cell_value: { text: '英文名' } }] }] } }, { startColumn: 3, width: 3, label: '所属公司/姓名/英文名' }), [['所属公司', '姓名', '英文名']]);
   assert.deepEqual(exactColumnRows({ grid_data: { start_column: 1, rows: [{ values: [{ cell_value: { text: '离职日期 (last day)' } }] }, { values: [{ cell_value: { text: '2026/7/28' } }] }] } }, { startColumn: 1, width: 1, label: '离职日期' }), [['离职日期 (last day)'], ['2026/7/28']]);
   assert.throws(() => exactColumnRows({ grid_data: { start_column: 1, rows: [{ values: [{ cell_value: { text: '2026/7/28' } }, { cell_value: { text: '辞退' } }] }] } }, { startColumn: 1, width: 1, label: '离职日期' }), /超出离职日期允许列/);
-  assert.equal(safeRosterDate('2026/7/28'), '2026-07-28'); assert.equal(safeRosterDate('2026年8月4日'), '2026-08-04'); assert.equal(safeRosterDate('非日期'), '');
+  assert.equal(safeRosterDate('2026/7/28'), '2026-07-28'); assert.equal(safeRosterDate('2026年8月4日'), '2026-08-04'); assert.equal(safeRosterDate('46262'), '2026-08-28'); assert.equal(safeRosterDate('非日期'), '');
+  const profileRecords = exactColumnRecords({ grid_data: { start_column: 3, start_row: 0, rows: [
+    { values: [] },
+    { values: [] },
+    { values: [{ cell_value: { text: '所属公司' } }, { cell_value: { text: '姓名' } }, { cell_value: { text: '英文名' } }] },
+    { values: [{ cell_value: { text: '测试公司' } }, { cell_value: { text: '测试甲' } }, { cell_value: { text: 'Example' } }] },
+    { values: [{ cell_value: { text: '测试公司' } }, { cell_value: { text: '测试乙' } }, { cell_value: { text: 'Sample' } }] }
+  ] } }, { startColumn: 3, startRow: 1, width: 3, label: '所属公司/姓名/英文名' });
+  const exitDateRecords = exactColumnRecords({ grid_data: { start_column: 1, start_row: 0, rows: [
+    { values: [] }, { values: [] }, { values: [{ cell_value: { text: '离职日期 (last day)' } }] },
+    { values: [{ cell_value: { number: 46262 } }] }, { values: [] }
+  ] } }, { startColumn: 1, startRow: 1, width: 1, label: '离职日期' });
+  const resignedPeople = rosterPeopleFromRecords(profileRecords, exitDateRecords, 'resigned', '离职');
+  assert.deepEqual(resignedPeople.get('测试甲'), { name: '测试甲', englishName: 'Example', companyName: '测试公司', employmentStatus: 'resigned', exitDate: '2026-08-28' });
+  assert.equal(resignedPeople.get('测试乙').exitDate, '');
+  assert.deepEqual(rosterPeopleFromRecords(profileRecords, [], 'active', '在职').get('测试甲'), { name: '测试甲', englishName: 'Example', companyName: '测试公司', employmentStatus: 'active', exitDate: '' });
+  assert.throws(() => rosterPeopleFromRecords(profileRecords, exitDateRecords.map(record => ({ ...record, rowNumber: record.rowNumber + 1 })), 'resigned', '离职'), error => error.code === 'ROSTER_FIELDS_MISSING');
+  assert.doesNotMatch(JSON.stringify([...resignedPeople.values()]), /离职原因|辞退/);
   assert.throws(() => exactTwoColumnRows({ grid_data: { start_column: 4, rows: [{ values: [{ cell_value: { text: '甲' } }, { cell_value: { text: 'A' } }, { cell_value: { text: '手机号' } }] }] } }), /超出姓名\/英文名允许列/);
   assert.throws(() => exactTwoColumnRows({ grid_data: { start_column: 3, rows: [] } }), /起始列不是预期列/);
   let attempts = 0; const waits = [];
@@ -1083,10 +1100,10 @@ test('上传页使用独立公司期间选择器且移除全局范围锁定', ()
 test('页面与后台运行版本一致且旧响应不能覆盖上传操作后的列表', async () => {
   const bootstrap = await request('/api/bootstrap?company=gz&period=2026-06');
   assert.equal(bootstrap.response.status, 200);
-  assert.equal(bootstrap.payload.appVersion, '1.1.62');
+  assert.equal(bootstrap.payload.appVersion, '1.1.63');
   const index = fs.readFileSync(path.join(projectDir, 'public', 'index.html'), 'utf8');
   const frontend = fs.readFileSync(path.join(projectDir, 'public', 'app.js'), 'utf8');
-  assert.match(index, /<meta name="app-version" content="1\.1\.62">/);
+  assert.match(index, /<meta name="app-version" content="1\.1\.63">/);
   assert.match(frontend, /const expectedAppVersion = document\.querySelector\('meta\[name="app-version"\]'\)/);
   assert.match(frontend, /bootstrap\?\.appVersion === expectedAppVersion/);
   assert.match(frontend, /APP_VERSION_MISMATCH/);
@@ -2311,10 +2328,10 @@ test('集团顾问投入产出比联合工资表、营收明细和各公司序�
     ]))).toString('base64')
   });
 
-  fs.writeFileSync(testConsultantDirectoryFile, JSON.stringify({ schemaVersion: 2, generatedAt: '2027-03-31T08:00:00.000Z', people: [
-    { name: '詹志坚', englishName: 'James', companyName: '广州桉侨', employmentStatus: 'active', departureDate: '' },
-    { name: '张莎莎', englishName: 'Sasa', companyName: '深圳桉侨', employmentStatus: 'resigned', departureDate: '2027-03-20' },
-    { name: '非顾问人员', englishName: 'Finance', companyName: '集团财务', employmentStatus: 'active', departureDate: '' }
+  fs.writeFileSync(testConsultantDirectoryFile, JSON.stringify({ schemaVersion: 3, generatedAt: '2027-03-31T08:00:00.000Z', people: [
+    { name: '詹志坚', englishName: 'James', companyName: '广州桉侨', employmentStatus: 'active', exitDate: '' },
+    { name: '张莎莎', englishName: 'Sasa', companyName: '深圳桉侨', employmentStatus: 'resigned', exitDate: '2027-03-20' },
+    { name: '非顾问人员', englishName: 'Finance', companyName: '集团财务', employmentStatus: 'active', exitDate: '' }
   ] }));
   fs.writeFileSync(testConsultantDirectoryStatusFile, JSON.stringify({ schemaVersion: 1, state: 'success', message: '企业微信花名册与通讯录已完成匹配', updatedAt: '2027-03-31T08:00:00.000Z', lastSuccessAt: '2027-03-31T08:00:00.000Z' }));
   fs.rmSync(testConsultantDirectoryRefreshRequestFile, { force: true });
@@ -2331,7 +2348,7 @@ test('集团顾问投入产出比联合工资表、营收明细和各公司序�
   assert.equal(byName['徐梓茵'], undefined);
   assert.equal(byName['非顾问人员'], undefined);
   assert.equal(byName['张莎莎'].isNewEmployee, false);
-  assert.deepEqual({ englishName: byName['张莎莎'].englishName, isResigned: byName['张莎莎'].isResigned, departureDate: byName['张莎莎'].departureDate }, { englishName: 'Sasa', isResigned: true, departureDate: '2027-03-20' });
+  assert.deepEqual({ englishName: byName['张莎莎'].englishName, isResigned: byName['张莎莎'].isResigned, exitDate: byName['张莎莎'].exitDate }, { englishName: 'Sasa', isResigned: true, exitDate: '2027-03-20' });
   assert.equal(result.payload.rows.length, 2);
   assert.equal(result.payload.totals.input, 71707.83);
   assert.equal(result.payload.totals.trafficSpend, 48507.83);
@@ -2393,8 +2410,8 @@ test('集团顾问投入产出比联合工资表、营收明细和各公司序�
   assert.equal((await put('/api/analysis/consultant-roi/visibility', { hiddenConsultants: [] })).response.status, 200);
   assert.equal((await request(`/api/analysis/consultant-roi?company=group&period=${period}`)).payload.rows.length, 2);
 
-  fs.writeFileSync(testConsultantDirectoryFile, JSON.stringify({ schemaVersion: 2, generatedAt: '2027-03-31T09:00:00.000Z', people: [
-    { name: '詹志坚', englishName: 'James', companyName: '广州桉侨', employmentStatus: 'active', departureDate: '' }, { name: '张莎莎', englishName: 'Sasa', companyName: '深圳桉侨', employmentStatus: 'active', departureDate: '' }
+  fs.writeFileSync(testConsultantDirectoryFile, JSON.stringify({ schemaVersion: 3, generatedAt: '2027-03-31T09:00:00.000Z', people: [
+    { name: '詹志坚', englishName: 'James', companyName: '广州桉侨', employmentStatus: 'active', exitDate: '' }, { name: '张莎莎', englishName: 'Sasa', companyName: '深圳桉侨', employmentStatus: 'active', exitDate: '' }
   ] }));
   const directoryRefreshed = await request(`/api/analysis/consultant-roi?company=group&period=${period}`);
   assert.notEqual(directoryRefreshed.payload.sourceRevision, result.payload.sourceRevision);
@@ -2444,6 +2461,16 @@ test('集团顾问投入产出比联合工资表、营收明细和各公司序�
   const expiredAuthorizationView = await request(`/api/analysis/consultant-roi?company=group&period=${period}`);
   assert.equal(expiredAuthorizationView.payload.sources.directory.sync.authUrl, undefined);
 
+  fs.rmSync(testConsultantDirectoryRefreshRequestFile, { force: true });
+  fs.writeFileSync(testConsultantDirectoryFile, JSON.stringify({ schemaVersion: 2, generatedAt: '2027-03-31T10:00:00.000Z', people: [
+    { name: '詹志坚', englishName: 'James', companyName: '广州桉侨', employmentStatus: 'active', departureDate: '' },
+    { name: '张莎莎', englishName: 'Sasa', companyName: '深圳桉侨', employmentStatus: 'resigned', departureDate: '2027-03-20' }
+  ] }));
+  const legacyDirectoryView = await request(`/api/analysis/consultant-roi?company=group&period=${period}`);
+  assert.equal(legacyDirectoryView.payload.rows.find(item => item.canonicalName === '张莎莎').exitDate, '2027-03-20');
+  assert.equal(JSON.parse(fs.readFileSync(testConsultantDirectoryRefreshRequestFile, 'utf8')).reason, 'directory_schema_upgrade');
+  fs.rmSync(testConsultantDirectoryRefreshRequestFile, { force: true });
+
   fs.writeFileSync(testConsultantDirectoryFile, 'x'.repeat(513 * 1024));
   const rejectedDirectory = await request(`/api/analysis/consultant-roi?company=group&period=${period}`);
   assert.equal(rejectedDirectory.response.status, 200);
@@ -2474,7 +2501,7 @@ test('集团顾问投入产出比联合工资表、营收明细和各公司序�
   assert.match(frontend, /投流取数字段/); assert.match(frontend, /unmatchedSpendRows/);
   assert.match(frontend, /工资取数字段/); assert.match(frontend, /payrollFields/);
   assert.match(serverSource, /refreshedConsultantPayrollRawFor/); assert.match(serverSource, /hireDate\.slice\(0, 7\) === period/);
-  assert.match(frontend, /consultantRoiAverageSummary/); assert.match(frontend, /consultant-roi-average-modal/); assert.match(frontend, /consultant-status-badge/); assert.match(frontend, /入职日期/); assert.match(frontend, /离职日期/);
+  assert.match(frontend, /consultantRoiAverageSummary/); assert.match(frontend, /consultant-roi-average-modal/); assert.match(frontend, /consultant-status-badge/); assert.match(frontend, /入职日期/); assert.match(frontend, /离职日期/); assert.match(frontend, /row\.exitDate/);
   assert.match(frontend, /consultant-roi-visibility-open/); assert.match(frontend, /consultant-roi-visibility-save/); assert.match(frontend, /\/api\/analysis\/consultant-roi\/visibility/);
   assert.match(frontend, /inputs: \{ baseSalary: true, commission: false, journalExpense: true, trafficSpend: true \}/);
   assert.match(frontend, /key: 'journalExpense', label: '报销费用'/); assert.match(frontend, /consultant-roi-reimbursement-open/); assert.match(frontend, /保存后应用于全员/); assert.match(frontend, /\/api\/analysis\/consultant-roi\/settings/);
@@ -2483,9 +2510,9 @@ test('集团顾问投入产出比联合工资表、营收明细和各公司序�
   assert.match(frontend, /key: 'hireDate', label: '入职日期'/); assert.match(frontend, /key: 'englishName', label: '英文名'/); assert.match(frontend, /key: 'companyName', label: '所属公司'/);
   assert.match(frontend, /const consultantRoiColumns = \[\s*\{ key: 'name'[\s\S]{0,90}\{ key: 'englishName'[\s\S]{0,90}\{ key: 'hireDate'[\s\S]{0,90}\{ key: 'companyName'/);
   assert.match(frontend, /roi-cell-name[\s\S]{0,900}roi-cell-english[\s\S]{0,180}roi-cell-date[\s\S]{0,180}roi-cell-company/);
-  assert.match(serverSource, /consultantDirectorySnapshot/); assert.match(serverSource, /directory: directory\.revision/); assert.match(serverSource, /employmentStatus === 'resigned'/); assert.match(serverSource, /departureDate/);
+  assert.match(serverSource, /consultantDirectorySnapshot/); assert.match(serverSource, /directory: directory\.revision/); assert.match(serverSource, /employmentStatus === 'resigned'/); assert.match(serverSource, /exitDate/);
   assert.match(directorySyncSource, /contact', 'users', 'search/); assert.match(directorySyncSource, /sheet', 'get', '--json/); assert.match(directorySyncSource, /sheet', 'ranges', 'get', '--json/); assert.match(directorySyncSource, /mode: 'default'/); assert.match(directorySyncSource, /exactColumnRows/); assert.doesNotMatch(directorySyncSource, /WECOM_ALLOW_WIDE_ROSTER_READ/);
-  assert.match(directorySyncSource, /schemaVersion: 2/); assert.match(directorySyncSource, /englishName: contactNames\.get\(key\) \|\| roster\?\.englishName/); assert.match(directorySyncSource, /D1:F\$\{rowCount\}/); assert.match(directorySyncSource, /B1:B\$\{rowCount\}/);
+  assert.match(directorySyncSource, /schemaVersion: 3/); assert.match(directorySyncSource, /englishName: contactNames\.get\(key\) \|\| roster\?\.englishName/); assert.match(directorySyncSource, /D1:F\$\{rowCount\}/); assert.match(directorySyncSource, /B1:B\$\{rowCount\}/); assert.match(directorySyncSource, /rowNumber/); assert.match(directorySyncSource, /exitDateByRow\.get\(record\.rowNumber\)/); assert.doesNotMatch(directorySyncSource, /B1:F|C1:C|departureDate/);
   assert.match(directorySyncSource, /CONSULTANT_DIRECTORY_INPUT_FILE/); assert.doesNotMatch(directorySyncSource, /better-sqlite3|14云端企微账簿/);
   assert.match(directoryInputSource, /payroll_statement/); assert.match(directoryInputSource, /people = publishedConsultantNames/); assert.doesNotMatch(directoryInputSource, /baseSalary|commission|salary|身份证|手机号/);
   assert.match(directoryInputRunner, /better-sqlite3/); assert.match(directoryInputRunner, /readonly: true/);
@@ -2508,6 +2535,8 @@ test('集团顾问投入产出比联合工资表、营收明细和各公司序�
   assert.match(stylesheet, /\.consultant-directory-guide/); assert.match(stylesheet, /\.consultant-directory-guide-modal/); assert.match(stylesheet, /\.consultant-directory-auth-actions/);
   assert.match(stylesheet, /\.consultant-roi-table\{width:100%;min-width:0!important;table-layout:fixed\}/);
   assert.match(stylesheet, /\.roi-filter-menu\{position:fixed/); assert.match(stylesheet, /\.roi-filter-trigger\.active/);
+  assert.match(stylesheet, /--app-header-height:82px/); assert.match(stylesheet, /\.topbar\{position:fixed;z-index:var\(--z-app-header\)/); assert.match(stylesheet, /\.sidebar\{z-index:var\(--z-app-sidebar\);top:var\(--app-header-height\)/);
+  assert.match(stylesheet, /\.content\{width:auto;min-width:0/); assert.match(stylesheet, /thead th\{position:static!important;top:auto!important/); assert.match(frontend, /ResizeObserver\(syncAppHeaderHeight\)/);
   const helperSource = frontend.slice(frontend.indexOf('const consultantRoiInputDefinitions'), frontend.indexOf('async function renderConsultantRoiInteractive'));
   assert.doesNotMatch(helperSource, /label: '来源'/); assert.doesNotMatch(helperSource, /'匹配状态', '来源'/);
   const context = { result: null, summary: null, escapeHtml: value => String(value ?? ''), showNotice: () => {}, URL: {}, Blob: function Blob() {}, document: {}, window: {} };

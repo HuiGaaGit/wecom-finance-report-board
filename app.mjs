@@ -31,7 +31,7 @@ try {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const dataDir = path.join(__dirname, 'data');
-const appVersion = '1.1.62';
+const appVersion = '1.1.63';
 const financialBriefModuleKey = 'financial_brief';
 const financialBriefNotesPermissionKey = 'module.financial_brief.notes.manage';
 const financialBriefMetricKeys = new Set(['expectedRevenue', 'accountBalance', 'operatingRevenue', 'operatingCost', 'sellingExpense', 'managementExpense', 'financeExpense', 'netProfit']);
@@ -1815,28 +1815,28 @@ const consultantExpenseSecondaryAccount = value => {
   return (account.replace(/^(?:销售费用|管理费用)[-—－]?/, '').trim().split(/[-—－]/)[0] || '未分类').trim() || '未分类';
 };
 const consultantDirectorySnapshot = () => {
-  const empty = (reason = '') => ({ available: false, revision: 'missing', generatedAt: '', records: new Map(), reason });
+  const empty = (reason = '') => ({ available: false, revision: 'missing', generatedAt: '', schemaVersion: 0, needsRefresh: false, records: new Map(), reason });
   if (!fs.existsSync(consultantDirectoryFile)) return empty('尚未同步企业微信花名册与通讯录');
   try {
     const stat = fs.statSync(consultantDirectoryFile);
     if (!stat.isFile() || stat.size <= 0 || stat.size > consultantDirectoryMaxBytes) return empty('顾问人事快照大小异常，已拒绝读取');
     const content = fs.readFileSync(consultantDirectoryFile, 'utf8'); const payload = JSON.parse(content);
-    if (![1, 2].includes(payload?.schemaVersion) || !Array.isArray(payload.people) || payload.people.length > 5000) return empty('顾问人事快照格式异常，已拒绝读取');
+    if (![1, 2, 3].includes(payload?.schemaVersion) || !Array.isArray(payload.people) || payload.people.length > 5000) return empty('顾问人事快照格式异常，已拒绝读取');
     const records = new Map();
     for (const source of payload.people) {
-      const allowedFields = new Set(['name', 'englishName', 'companyName', 'employmentStatus', 'departureDate']);
+      const allowedFields = payload.schemaVersion >= 3 ? new Set(['name', 'englishName', 'companyName', 'employmentStatus', 'exitDate']) : new Set(['name', 'englishName', 'companyName', 'employmentStatus', 'departureDate']);
       if (!source || Object.keys(source).some(key => !allowedFields.has(key))) return empty('顾问人事快照包含未授权字段，已拒绝读取');
       const name = String(source?.name || '').trim().slice(0, 40); const canonicalName = consultantCanonicalName(name);
       if (!canonicalName) continue;
       const englishName = String(source?.englishName || '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 80);
       const companyName = String(source?.companyName || '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 80);
       const employmentStatus = source?.employmentStatus === 'resigned' ? 'resigned' : 'active';
-      const departureDate = /^20\d{2}-\d{2}-\d{2}$/.test(String(source?.departureDate || '')) ? String(source.departureDate) : '';
+      const legacyOrCurrentExitDate = payload.schemaVersion >= 3 ? source?.exitDate : source?.departureDate; const exitDate = /^20\d{2}-\d{2}-\d{2}$/.test(String(legacyOrCurrentExitDate || '')) ? String(legacyOrCurrentExitDate) : '';
       const existing = records.get(canonicalName);
-      if (!existing) records.set(canonicalName, { name, englishName, companyName, employmentStatus, departureDate });
-      else if (existing.name === name) records.set(canonicalName, { name, englishName: existing.englishName || englishName, companyName: existing.companyName || companyName, employmentStatus: existing.employmentStatus === 'resigned' || employmentStatus === 'resigned' ? 'resigned' : 'active', departureDate: existing.departureDate || departureDate });
+      if (!existing) records.set(canonicalName, { name, englishName, companyName, employmentStatus, exitDate });
+      else if (existing.name === name) records.set(canonicalName, { name, englishName: existing.englishName || englishName, companyName: existing.companyName || companyName, employmentStatus: existing.employmentStatus === 'resigned' || employmentStatus === 'resigned' ? 'resigned' : 'active', exitDate: existing.exitDate || exitDate });
     }
-    return { available: true, revision: crypto.createHash('sha256').update(content).digest('hex').slice(0, 20), generatedAt: String(payload.generatedAt || ''), records, reason: '' };
+    return { available: true, revision: crypto.createHash('sha256').update(content).digest('hex').slice(0, 20), generatedAt: String(payload.generatedAt || ''), schemaVersion: payload.schemaVersion, needsRefresh: payload.schemaVersion < 3, records, reason: '' };
   } catch { return empty('顾问人事快照无法解析，已拒绝读取'); }
 };
 const boundedJsonFile = (file, maxBytes = 64 * 1024) => {
@@ -1872,7 +1872,7 @@ const writePrivateJsonAtomic = (file, value) => {
   try { fs.chmodSync(file, 0o600); } catch (error) { if (process.platform !== 'win32') throw error; }
 };
 const requestConsultantDirectoryRefresh = reason => {
-  const safeReasons = new Set(['manual', 'payroll_published', 'revenue_published', 'relevant_reports_published']);
+  const safeReasons = new Set(['manual', 'payroll_published', 'revenue_published', 'relevant_reports_published', 'directory_schema_upgrade']);
   const requestedAt = now(); const requestId = crypto.randomUUID();
   writeConsultantDirectoryInput(db, consultantDirectoryInputFile);
   writePrivateJsonAtomic(consultantDirectoryRefreshRequestFile, { schemaVersion: 1, requestId, requestedAt, reason: safeReasons.has(reason) ? reason : 'manual' });
@@ -2574,7 +2574,9 @@ const refreshedConsultantPayrollRawFor = (payroll, period) => {
 };
 const consultantRoiAnalysisFor = (employeeKey, period) => {
   const payroll = rawReportFor(payrollStatementReportType, 'group', period); const revenue = rawReportFor(revenueStatisticsReportType, 'group', period); const spend = rawReportFor(consultantSpendRevenueReportType, 'group', period);
-  const directory = consultantDirectorySnapshot(); const canManageAuthorization = hasModule(employeeKey, 'permission_admin', 'manage'); const directorySync = consultantDirectorySyncStatus(canManageAuthorization);
+  const directory = consultantDirectorySnapshot(); const canManageAuthorization = hasModule(employeeKey, 'permission_admin', 'manage');
+  if (directory.needsRefresh && !fs.existsSync(consultantDirectoryRefreshRequestFile)) { try { requestConsultantDirectoryRefresh('directory_schema_upgrade'); } catch {} }
+  const directorySync = consultantDirectorySyncStatus(canManageAuthorization);
   const payrollRaw = refreshedConsultantPayrollRawFor(payroll, period); const payrollRows = payrollRaw?.payrollRows || []; const consultantPayrollRows = payrollRows.filter(item => consultantDepartmentMatches(item.department)); const revenueRaw = refreshedRevenueStatisticsRawFor(revenue, period); const revenueDetail = revenueRaw?.consultantRevenue; const revenueRows = revenueDetail?.rows || []; const revenueSourceAvailable = !revenue.meta.noData && Boolean(revenueDetail?.sourceSheet); const spendRows = spend.raw?.spendRows || [];
   const consultants = new Map();
   const ensure = (canonicalName, displayName) => { if (!consultants.has(canonicalName)) consultants.set(canonicalName, { canonicalName, name: displayName || canonicalName, hireDates: new Set(), baseSalary: 0, commission: 0, journalExpense: 0, trafficSpend: 0, expectedRevenue: 0, payrollDetails: [], revenueDetails: [], expenseDetails: [], spendDetails: [] }); return consultants.get(canonicalName); };
@@ -2622,7 +2624,7 @@ const consultantRoiAnalysisFor = (employeeKey, period) => {
     const input = roundedAmount(item.baseSalary + item.commission + item.journalExpense + item.trafficSpend); const output = roundedAmount(item.expectedRevenue); const hireDate = [...item.hireDates].sort()[0] || '';
     const directoryPerson = directory.records.get(item.canonicalName);
     const matchStatus = !item.payrollDetails.length ? 'missing_payroll' : !revenueSourceAvailable ? 'missing_revenue' : Math.abs(output) < 0.000001 ? 'no_revenue' : 'matched';
-    return { name: item.name, canonicalName: item.canonicalName, hireDate, englishName: directoryPerson?.englishName || '', companyName: directoryPerson?.companyName || '待补充', isResigned: directoryPerson?.employmentStatus === 'resigned', departureDate: directoryPerson?.departureDate || '', isNewEmployee: Boolean(hireDate && hireDate.slice(0, 7) === period), baseSalary: roundedAmount(item.baseSalary), commission: roundedAmount(item.commission), journalExpense: roundedAmount(item.journalExpense), trafficSpend: roundedAmount(item.trafficSpend), input, output, roi: input ? output / input : null, matchStatus, payrollDetails: item.payrollDetails, revenueDetails: item.revenueDetails, expenseDetails: item.expenseDetails, spendDetails: item.spendDetails };
+    return { name: item.name, canonicalName: item.canonicalName, hireDate, englishName: directoryPerson?.englishName || '', companyName: directoryPerson?.companyName || '待补充', isResigned: directoryPerson?.employmentStatus === 'resigned', exitDate: directoryPerson?.employmentStatus === 'resigned' ? directoryPerson.exitDate || '' : '', isNewEmployee: Boolean(hireDate && hireDate.slice(0, 7) === period), baseSalary: roundedAmount(item.baseSalary), commission: roundedAmount(item.commission), journalExpense: roundedAmount(item.journalExpense), trafficSpend: roundedAmount(item.trafficSpend), input, output, roi: input ? output / input : null, matchStatus, payrollDetails: item.payrollDetails, revenueDetails: item.revenueDetails, expenseDetails: item.expenseDetails, spendDetails: item.spendDetails };
   }).sort((a, b) => b.output - a.output || b.input - a.input);
   const hiddenKeys = hiddenConsultantKeys(); const visibleRawRows = allRows.filter(item => !hiddenKeys.has(item.canonicalName));
   const reimbursementAccountMap = new Map();
@@ -2644,7 +2646,7 @@ const consultantRoiAnalysisFor = (employeeKey, period) => {
   const directoryMatchedRows = rows.filter(item => directory.records.has(item.canonicalName)).length;
   const canManageVisibility = hasModule(employeeKey, 'permission_admin', 'manage'); const canViewMatchDiagnostics = canManageVisibility; const canManageRoiSettings = canManageVisibility;
   const visibilityOptions = canManageVisibility ? [...new Map([...allRows.map(item => [item.canonicalName, { canonicalName: item.canonicalName, name: item.name, hidden: hiddenKeys.has(item.canonicalName) }]), ...[...hiddenKeys].filter(key => !allRows.some(item => item.canonicalName === key)).map(key => [key, { canonicalName: key, name: key, hidden: true }])]).values()].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN')) : undefined;
-  const publicRows = canViewMatchDiagnostics ? rows : rows.map(item => ({ name: item.name, hireDate: item.hireDate, englishName: item.englishName, companyName: item.companyName, isResigned: item.isResigned, departureDate: item.departureDate, isNewEmployee: item.isNewEmployee, baseSalary: item.baseSalary, commission: item.commission, journalExpense: item.journalExpense, trafficSpend: item.trafficSpend, input: item.input, output: item.output, roi: item.roi }));
+  const publicRows = canViewMatchDiagnostics ? rows : rows.map(item => ({ name: item.name, hireDate: item.hireDate, englishName: item.englishName, companyName: item.companyName, isResigned: item.isResigned, exitDate: item.exitDate, isNewEmployee: item.isNewEmployee, baseSalary: item.baseSalary, commission: item.commission, journalExpense: item.journalExpense, trafficSpend: item.trafficSpend, input: item.input, output: item.output, roi: item.roi }));
   const matchDiagnostics = canViewMatchDiagnostics ? { revenueExcludedPeriodRows: Number(revenueDetail?.excludedPeriodRows || 0), unmatchedRevenueRows, unmatchedRevenueAmount: roundedAmount(unmatchedRevenueAmount), matchedSpendRows, unmatchedSpendRows, ambiguousSpendRows, unmatchedSpendAmount: roundedAmount(unmatchedSpendAmount) } : {};
   return { company: '桉侨集团', period, sourceRevision, rows: publicRows, totals, canManageAuthorization, canManageVisibility, canViewMatchDiagnostics, canManageRoiSettings, roiSettings: { configured: roiSettings.configured, inputs: roiSettings.inputs, selectedAccountCount: roiSettings.selectedAccounts.length, availableAccountCount: reimbursementAccounts.length, ...(canManageRoiSettings ? { selectedAccounts: roiSettings.selectedAccounts, staleAccounts: roiSettings.staleAccounts, updatedAt: roiSettings.updatedAt } : {}) }, reimbursementAccounts: canManageRoiSettings ? reimbursementAccounts : undefined, visibility: canManageVisibility ? { hiddenCount: hiddenKeys.size, options: visibilityOptions } : undefined, sources: { payroll: payroll.meta, payrollSheet: payrollRaw?.sourceSheet || '', payrollFields: payrollRaw?.fieldMapping || {}, payrollConsultantDepartments: consultantDepartments, payrollConsultantRows: consultantPayrollRows.length, payrollExcludedRows: Math.max(0, payrollRows.length - consultantPayrollRows.length), directory: { available: directory.available, generatedAt: directory.generatedAt, matchedRows: directoryMatchedRows, reason: directory.reason, sync: directorySync }, revenue: revenue.meta, revenueSheet: revenueDetail?.sourceSheet || '', revenueFields: revenueDetail?.fieldMapping || {}, revenueSourceAvailable, spend: spend.meta, spendSheet: spend.raw?.sourceSheet || '', spendFields: spend.raw?.fieldMapping || {}, ...matchDiagnostics, journals: journalSources }, missing: [payroll.meta.noData ? '每月工资表' : '', !payroll.meta.noData && !consultantPayrollRows.length ? '工资表·顾问部门人员' : '', !revenueSourceAvailable ? '营收统计表·总营收明细表' : '', spend.meta.noData ? '顾问消耗-营收表·汇总' : '', ...journalSources.filter(item => item.noData).map(item => `${item.companyName}序时账`)].filter(Boolean) };
 };
