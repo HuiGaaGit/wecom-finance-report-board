@@ -34,6 +34,13 @@ try {
 } catch {}
 if (String(values.SESSION_SECRET || '').length < 32) errors.push('SESSION_SECRET 至少 32 个字符');
 if (!Number.isInteger(Number(values.PORT)) || Number(values.PORT) < 1024 || Number(values.PORT) > 65535) errors.push('PORT 必须是 1024 至 65535 的整数');
+if (/^(?:1|true|yes|on)$/i.test(String(values.UPLOAD_MAPPING_LLM_ENABLED || ''))) {
+  if (!/^https:\/\/[^/]+/i.test(values.UPLOAD_MAPPING_LLM_API_URL || '')) errors.push('上传映射模型启用时 UPLOAD_MAPPING_LLM_API_URL 必须是 HTTPS 地址');
+  try { if (new URL(values.UPLOAD_MAPPING_LLM_API_URL || '').hostname !== 'open.bigmodel.cn') errors.push('上传映射模型生产端点只允许 open.bigmodel.cn'); } catch {}
+  if (!String(values.UPLOAD_MAPPING_LLM_MODEL || '').trim()) errors.push('上传映射模型启用时缺少 UPLOAD_MAPPING_LLM_MODEL');
+  if (!String(values.UPLOAD_MAPPING_LLM_API_KEY || '').trim() || /CHANGE_ME/i.test(values.UPLOAD_MAPPING_LLM_API_KEY || '')) errors.push('上传映射模型启用时缺少项目专用 API Key');
+  if (Number(values.UPLOAD_MAPPING_LLM_TIMEOUT_MS || 8000) < 1000 || Number(values.UPLOAD_MAPPING_LLM_TIMEOUT_MS || 8000) > 15000) errors.push('UPLOAD_MAPPING_LLM_TIMEOUT_MS 必须为 1000 至 15000 毫秒');
+}
 for (const key of ['DB_FILE', 'UPLOADS_DIR', 'CONSULTANT_DIRECTORY_FILE', 'CONSULTANT_DIRECTORY_STATUS_FILE', 'CONSULTANT_DIRECTORY_REFRESH_REQUEST_FILE', 'CONSULTANT_DIRECTORY_AUTH_REQUEST_FILE', 'CONSULTANT_DIRECTORY_INPUT_FILE']) if (!path.posix.isAbsolute(String(values[key] || '').replaceAll('\\', '/'))) errors.push(`${key} 必须是绝对路径`);
 if (!allowPlaceholders) for (const key of required) if (/CHANGE_ME|example\.com/i.test(String(values[key] || ''))) errors.push(`${key} 仍是模板占位值`);
 
@@ -60,6 +67,7 @@ if (!appSource.includes('ensurePrivateDirectory(path.dirname(dbFile))')) errors.
 if (!frontendSource.includes("localStorage.getItem(platformAuthStorageKey)") || frontendSource.includes("localStorage.setItem(platformAuthStorageKey")) errors.push('同源登录必须只读取小Q短期令牌，禁止由财务页面写入小Q凭证');
 if (frontendSource.includes('refreshToken')) errors.push('财务页面禁止读取、刷新或复制小Q refresh token');
 if (!dockerfile.includes('APP_UID=20117') || !dockerfile.includes('USER ${APP_UID}:${APP_GID}')) errors.push('运行镜像未使用专用 UID/GID');
+if (!dockerfile.includes('upload-mapping-assistant.mjs')) errors.push('运行镜像未包含上传映射模型辅助模块');
 if (!composeSource.includes('user: "20117:20117"') || !composeSource.includes('127.0.0.1:3180:3180')) errors.push('Compose 未固定专用用户或回环端口');
 if (!composeSource.includes('read_only: true') || !composeSource.includes('no-new-privileges:true')) errors.push('Compose 最小权限设置缺失');
 if (!platformNginx.includes('location ^~ /platform/finance/') || !platformNginx.includes('proxy_pass http://127.0.0.1:3180/') || !platformNginx.includes('access_log off') || !platformNginx.includes('proxy_request_buffering off') || !platformNginx.includes('proxy_buffering off') || !platformNginx.includes('proxy_cache off')) errors.push('同源财务路径的反向代理、无日志或无缓冲配置缺失');

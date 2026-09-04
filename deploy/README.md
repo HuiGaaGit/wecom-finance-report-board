@@ -8,7 +8,7 @@
 - 持久数据：`/data/data/wecom-finance-report-board`
 - 容器：`wecom-finance-report-board`
 - 当前生产镜像：`aqllm/finance-report-board:1.1.54`（生产验收与回滚信息见 `docs/PRODUCTION_OPERATIONS.md`）
-- 当前源码版本：`1.1.59`（顾问公司口径、人事日期、管理员统一投入配置与权限预设候选）
+- 当前源码版本：`1.1.62`（顾问英文名与入职日期列顺序优化候选）
 - 本机端口：`127.0.0.1:3180`
 - 正式地址：`https://anqiaoyiminxq.com/platform/finance/`
 
@@ -25,6 +25,8 @@
 顾问名单显示范围由 `app_settings.consultant_roi_hidden_consultants` 保存，只有拥有权限管理能力的管理员可以通过顾问模块修改。过滤在服务端完成，普通用户响应不含被隐藏人员或配置候选；当前顾问模块不显示导出按钮。
 
 顾问模块把原“人员费用”统一展示为“报销费用”。后端只为权限管理员返回当前期间、唯一匹配到可见顾问的销售/管理费用二级科目候选，并继续排除工资、薪酬、提成和结转分录；普通员工不接收候选名称、金额或笔数。投入项目与报销科目按期间保存在 `app_settings`，管理员明确保存后全员使用同一口径；新期间未配置时默认计入基本工资、报销费用和投流消耗费用，提成默认不计入，报销科目默认全选。保存项在重传后不存在时忽略并提示，不自动纳入新出现科目。
+
+上传结构模型辅助复用同服务器 AQLLM 的智谱兼容接口和 `glm-5-turbo`，但不让财务容器读取整份共享 `LLM.env`。启用时由服务器管理员在不打印密钥的前提下，把统一配置中的接口地址、模型和 API Key 以 `UPLOAD_MAPPING_LLM_*` 四个项目专用变量写入 `/data/secrets/wecom-finance-report-board/report-board.env`，并设置 `UPLOAD_MAPPING_LLM_ENABLED=true`；该文件继续保持 `root` 专用权限。模型只接收字段结构白名单，不接收金额、客户、项目内容或原始文件。模型失败不会阻断上传，采纳结果仍须通过服务端字段和坐标校验。
 
 `1.1.25` 使用专用运行身份 `20117:20117`。首次切换前先创建 SQLite 一致性备份，再执行 `deploy/harden-finance-data.sh`；该脚本只接受精确目录 `/data/data/wecom-finance-report-board`。SQLite 备份和异机备份状态文件均按 `0600` 创建。启动后必须执行 `node deploy/check-runtime-isolation.mjs`，验证 owner/mode、其他容器挂载、Docker Socket、网络成员和回环端口。
 

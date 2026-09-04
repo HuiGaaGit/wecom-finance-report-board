@@ -7,6 +7,7 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import XLSX from 'xlsx';
+import { uploadMappingAssistantConfig } from './upload-mapping-assistant.mjs';
 
 let TestDatabase;
 try {
@@ -18,6 +19,7 @@ try {
 
 const testPort = 30000 + (process.pid % 20000);
 const base = `http://127.0.0.1:${testPort}`;
+const uploadMappingMockPort = testPort + 10;
 const projectDir = path.dirname(fileURLToPath(import.meta.url));
 const testDbPath = path.join(projectDir, 'data', `test-report-board-${process.pid}-${Date.now()}.db`);
 const testUploadsDir = path.join(projectDir, 'data', `test-uploads-${process.pid}-${Date.now()}`);
@@ -26,7 +28,7 @@ const testConsultantDirectoryStatusFile = path.join(projectDir, 'data', `test-co
 const testConsultantDirectoryRefreshRequestFile = path.join(projectDir, 'data', `test-consultant-directory-refresh-${process.pid}-${Date.now()}.json`);
 const testConsultantDirectoryAuthRequestFile = path.join(projectDir, 'data', `test-consultant-directory-auth-${process.pid}-${Date.now()}.json`);
 const testConsultantDirectoryInputFile = path.join(projectDir, 'data', `test-consultant-directory-input-${process.pid}-${Date.now()}.json`);
-let child;
+let child; let uploadMappingMockServer; const uploadMappingRequests = [];
 
 const { exactColumnRows, exactTwoColumnRows, exactRosterRows, consultantNamesFromInput, preservedAuthLink, safeRosterDate } = await import('./deploy/sync-consultant-directory.mjs');
 const { safeAuthUrl } = await import('./deploy/init-consultant-directory-auth.mjs');
@@ -68,6 +70,15 @@ test('企微花名册只接受结构化精确两列，异常响应仅有限重�
   const authUrlExpiresAt = new Date(Date.now() + 60_000).toISOString();
   assert.deepEqual(preservedAuthLink({ authUrl: valid, authUrlExpiresAt }), { authUrl: valid, authUrlExpiresAt });
   assert.deepEqual(preservedAuthLink({ authUrl: valid, authUrlExpiresAt: '2020-01-01T00:00:00.000Z' }), {});
+});
+
+test('上传模型辅助只接受显式最小配置且生产端点必须使用 HTTPS', () => {
+  assert.deepEqual(uploadMappingAssistantConfig({}), { enabled: false, ready: false, apiUrl: '', model: '', apiKey: '', timeoutMs: 8000 });
+  const unsafe = uploadMappingAssistantConfig({ NODE_ENV: 'production', UPLOAD_MAPPING_LLM_ENABLED: 'true', UPLOAD_MAPPING_LLM_API_URL: 'http://open.bigmodel.cn/api/paas/v4', UPLOAD_MAPPING_LLM_MODEL: 'glm-5-turbo', UPLOAD_MAPPING_LLM_API_KEY: 'hidden' });
+  assert.equal(unsafe.enabled, true); assert.equal(unsafe.ready, false); assert.equal(unsafe.apiUrl, '');
+  assert.equal(uploadMappingAssistantConfig({ NODE_ENV: 'production', UPLOAD_MAPPING_LLM_ENABLED: 'true', UPLOAD_MAPPING_LLM_API_URL: 'https://127.0.0.1/internal', UPLOAD_MAPPING_LLM_MODEL: 'mock', UPLOAD_MAPPING_LLM_API_KEY: 'hidden' }).ready, false);
+  const local = uploadMappingAssistantConfig({ NODE_ENV: 'test', UPLOAD_MAPPING_LLM_ENABLED: 'true', UPLOAD_MAPPING_LLM_API_URL: 'http://127.0.0.1:3199/', UPLOAD_MAPPING_LLM_MODEL: 'mock', UPLOAD_MAPPING_LLM_API_KEY: 'hidden', UPLOAD_MAPPING_LLM_TIMEOUT_MS: '200' });
+  assert.equal(local.ready, true); assert.equal(local.apiUrl, 'http://127.0.0.1:3199'); assert.equal(local.timeoutMs, 1000);
 });
 
 async function request(pathname, employee = 'admin') {
@@ -242,6 +253,24 @@ function revenueStatisticsWorkbookBuffer(period = '2026-07', legacyTitles = fals
   return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
 }
 
+function sparseRevenueCumulativeWorkbookBuffer() {
+  const workbook = XLSX.read(revenueStatisticsWorkbookBuffer('2026-06', true), { type: 'buffer' });
+  const sheet = workbook.Sheets['2026年数据统计汇总表（mia）'];
+  sheet[XLSX.utils.encode_cell({ r: 12, c: 27 })].v = '2026年客户来源年度汇总';
+  for (const [startColumn, endColumn] of [[11, 16], [18, 22], [40, 44], [53, 57]]) {
+    for (let row = 12; row <= 15; row += 1) {
+      for (let column = startColumn; column <= endColumn; column += 1) delete sheet[XLSX.utils.encode_cell({ r: row, c: column })];
+    }
+  }
+  XLSX.utils.sheet_add_aoa(sheet, [
+    ['非累计项目明细', null, null],
+    ['项目名称', '金额', '项目数量'],
+    ['无关项目甲', 175987.6975, 3],
+    ['无关项目乙', 30657, 1]
+  ], { origin: { r: 12, c: 37 } });
+  return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+}
+
 function payrollWorkbookBuffer() {
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([
@@ -327,7 +356,18 @@ function bundleWithStaleLedgerSourcesBuffer() {
 }
 
 before(async () => {
-  child = spawn(process.execPath, ['app.mjs'], { cwd: projectDir, env: { ...process.env, NODE_ENV: 'test', PORT: String(testPort), DB_FILE: testDbPath, UPLOADS_DIR: testUploadsDir, CONSULTANT_DIRECTORY_FILE: testConsultantDirectoryFile, CONSULTANT_DIRECTORY_STATUS_FILE: testConsultantDirectoryStatusFile, CONSULTANT_DIRECTORY_REFRESH_REQUEST_FILE: testConsultantDirectoryRefreshRequestFile, CONSULTANT_DIRECTORY_AUTH_REQUEST_FILE: testConsultantDirectoryAuthRequestFile, CONSULTANT_DIRECTORY_INPUT_FILE: testConsultantDirectoryInputFile }, stdio: 'ignore' });
+  uploadMappingMockServer = http.createServer(async (req, res) => {
+    let body = ''; for await (const chunk of req) body += chunk;
+    uploadMappingRequests.push({ url: req.url, authorization: req.headers.authorization, body });
+    if (uploadMappingRequests.length >= 3) { res.writeHead(503, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: 'temporary unavailable' })); return; }
+    const suggestion = uploadMappingRequests.length === 1
+      ? { year: '2026', key: 'L4', titleRow: 13, headerRow: 14, startColumn: 28, confidence: 0.99 }
+      : { year: '2026', key: 'L4', titleRow: 13, headerRow: 14, startColumn: 5000, confidence: 1 };
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ tables: [suggestion] }) } }] }));
+  });
+  await new Promise(resolve => uploadMappingMockServer.listen(uploadMappingMockPort, '127.0.0.1', resolve));
+  child = spawn(process.execPath, ['app.mjs'], { cwd: projectDir, env: { ...process.env, NODE_ENV: 'test', PORT: String(testPort), DB_FILE: testDbPath, UPLOADS_DIR: testUploadsDir, CONSULTANT_DIRECTORY_FILE: testConsultantDirectoryFile, CONSULTANT_DIRECTORY_STATUS_FILE: testConsultantDirectoryStatusFile, CONSULTANT_DIRECTORY_REFRESH_REQUEST_FILE: testConsultantDirectoryRefreshRequestFile, CONSULTANT_DIRECTORY_AUTH_REQUEST_FILE: testConsultantDirectoryAuthRequestFile, CONSULTANT_DIRECTORY_INPUT_FILE: testConsultantDirectoryInputFile, UPLOAD_MAPPING_LLM_ENABLED: 'true', UPLOAD_MAPPING_LLM_API_URL: `http://127.0.0.1:${uploadMappingMockPort}`, UPLOAD_MAPPING_LLM_MODEL: 'test-structure-model', UPLOAD_MAPPING_LLM_API_KEY: 'test-only-secret' }, stdio: 'ignore' });
   let started = false;
   for (let i = 0; i < 40; i++) {
     try { const response = await fetch(`${base}/api/health`); if (response.ok) { started = true; break; } } catch {}
@@ -340,7 +380,7 @@ before(async () => {
   await publishFixture('gz', '2026-08', ['journal']);
 });
 
-after(() => { child?.kill(); fs.rmSync(testUploadsDir, { recursive: true, force: true }); fs.rmSync(testConsultantDirectoryFile, { force: true }); fs.rmSync(testConsultantDirectoryStatusFile, { force: true }); fs.rmSync(testConsultantDirectoryRefreshRequestFile, { force: true }); fs.rmSync(testConsultantDirectoryAuthRequestFile, { force: true }); fs.rmSync(testConsultantDirectoryInputFile, { force: true }); });
+after(async () => { child?.kill(); await new Promise(resolve => uploadMappingMockServer?.close(resolve)); fs.rmSync(testUploadsDir, { recursive: true, force: true }); fs.rmSync(testConsultantDirectoryFile, { force: true }); fs.rmSync(testConsultantDirectoryStatusFile, { force: true }); fs.rmSync(testConsultantDirectoryRefreshRequestFile, { force: true }); fs.rmSync(testConsultantDirectoryAuthRequestFile, { force: true }); fs.rmSync(testConsultantDirectoryInputFile, { force: true }); });
 
 test('平台生产模式公开登录引导页并将未认证请求交给小Q登录', async () => {
   const authPort = testPort + 1; const authBase = `http://127.0.0.1:${authPort}`;
@@ -1043,10 +1083,10 @@ test('上传页使用独立公司期间选择器且移除全局范围锁定', ()
 test('页面与后台运行版本一致且旧响应不能覆盖上传操作后的列表', async () => {
   const bootstrap = await request('/api/bootstrap?company=gz&period=2026-06');
   assert.equal(bootstrap.response.status, 200);
-  assert.equal(bootstrap.payload.appVersion, '1.1.59');
+  assert.equal(bootstrap.payload.appVersion, '1.1.62');
   const index = fs.readFileSync(path.join(projectDir, 'public', 'index.html'), 'utf8');
   const frontend = fs.readFileSync(path.join(projectDir, 'public', 'app.js'), 'utf8');
-  assert.match(index, /<meta name="app-version" content="1\.1\.59">/);
+  assert.match(index, /<meta name="app-version" content="1\.1\.62">/);
   assert.match(frontend, /const expectedAppVersion = document\.querySelector\('meta\[name="app-version"\]'\)/);
   assert.match(frontend, /bootstrap\?\.appVersion === expectedAppVersion/);
   assert.match(frontend, /APP_VERSION_MISMATCH/);
@@ -2099,6 +2139,7 @@ test('集团营收统计表识别三维度八张子表并按集团权限发布',
 
   const uploaded = await post('/api/uploads', { companyKey: 'group', period: '2026-07', reportType, fileName, contentBase64 });
   assert.equal(uploaded.response.status, 201, JSON.stringify(uploaded.payload));
+  assert.equal(uploaded.payload.mappingAssistance, null); assert.equal(uploadMappingRequests.length, 0);
   assert.deepEqual(uploaded.payload.uploads.map(item => item.reportType), [reportType]);
   assert.equal(uploaded.payload.sheets.find(item => item.reportType === reportType)?.sourceSheet, '2026年数据统计汇总表（mia）');
 
@@ -2117,6 +2158,7 @@ test('集团营收统计表识别三维度八张子表并按集团权限发布',
   assert.deepEqual(cumulativeTables.find(item => item.key === 'L1').headers, ['月份', '预计营收', '营收占比', '项目数量']);
   assert.equal(cumulativeTables.find(item => item.key === 'L1').titleRow, 13);
   assert.equal(cumulativeTables.find(item => item.key === 'L2').rows[1].cells[1], '202601');
+  assert.equal(preview.payload.raw.cumulativeParserVersion, 2);
   assert.deepEqual(preview.payload.raw.cumulativeIssues, []);
   assert.match(preview.payload.raw.note, /实际营收以集团口径为准/);
   assert.equal(preview.payload.raw.consultantRevenue.sourceSheet, '总营收明细表');
@@ -2129,14 +2171,49 @@ test('集团营收统计表识别三维度八张子表并按集团权限发布',
 
   const rawPath = path.join(testUploadsDir, `${uploaded.payload.uploadKey.replace(/-revenue_statistics$/, '')}.json`);
   const legacyRaw = JSON.parse(fs.readFileSync(rawPath, 'utf8'));
-  delete legacyRaw.revenue_statistics.cumulativeYears; delete legacyRaw.revenue_statistics.cumulativeIssues;
+  delete legacyRaw.revenue_statistics.cumulativeParserVersion;
+  legacyRaw.revenue_statistics.cumulativeYears[0].tables.find(item => item.key === 'L4').headers.push('旧版误映射字段');
   fs.writeFileSync(rawPath, JSON.stringify(legacyRaw), 'utf8');
   const refreshedLegacy = await request(`/api/reports/${reportType}/raw?company=group&period=2026-07&uploadKey=${uploaded.payload.uploadKey}`);
   assert.deepEqual(refreshedLegacy.payload.raw.cumulativeYears[0].tables.map(item => item.key), ['L1', 'L2', 'L2-1', 'L3', 'L4', 'L5', 'L6']);
+  assert.equal(refreshedLegacy.payload.raw.cumulativeParserVersion, 2);
+  assert.equal(refreshedLegacy.payload.raw.cumulativeYears[0].tables.find(item => item.key === 'L4').headers.includes('旧版误映射字段'), false);
 
   const legacyTitles = await post('/api/uploads', { companyKey: 'group', period: '2026-06', reportType, fileName: '2026年营收统计表26.6v1.xlsx', contentBase64: revenueStatisticsWorkbookBuffer('2026-06', true).toString('base64') });
   assert.equal(legacyTitles.response.status, 201, JSON.stringify(legacyTitles.payload));
   assert.equal(legacyTitles.payload.sheets.find(item => item.reportType === reportType)?.sourceSheet, '2026年数据统计汇总表（mia）');
+
+  const mappingRequestCount = uploadMappingRequests.length;
+  const sparse = await post('/api/uploads', { companyKey: 'group', period: '2026-06', reportType, fileName: '2026年营收统计表26.6-稀疏累计.xlsx', contentBase64: sparseRevenueCumulativeWorkbookBuffer().toString('base64') });
+  assert.equal(sparse.response.status, 201, JSON.stringify(sparse.payload));
+  assert.deepEqual(sparse.payload.mappingAssistance, { status: 'applied', model: 'test-structure-model', sharedData: 'structural_labels_only', appliedTables: ['2026:L4'] });
+  assert.equal(uploadMappingRequests.length, mappingRequestCount + 1);
+  const mappingRequest = uploadMappingRequests.at(-1);
+  assert.equal(mappingRequest.url, '/chat/completions'); assert.equal(mappingRequest.authorization, 'Bearer test-only-secret');
+  assert.match(mappingRequest.body, /2026年客户来源年度汇总/); assert.match(mappingRequest.body, /来源（一级）/);
+  assert.doesNotMatch(mappingRequest.body, /无关项目甲|无关项目乙|175987\.6975|30657/);
+  const sparsePreview = await request(`/api/reports/${reportType}/raw?company=group&period=2026-06&uploadKey=${sparse.payload.uploadKey}`);
+  const sparseTables = sparsePreview.payload.raw.cumulativeYears[0].tables;
+  assert.deepEqual(sparseTables.map(item => item.key), ['L1', 'L2', 'L4']);
+  const sparseL4 = sparseTables.find(item => item.key === 'L4');
+  assert.deepEqual(sparseL4.headers, ['来源（一级）', '月份', '预计营收', '营收占比', '项目数量']);
+  assert.equal(sparseL4.rows.every(row => row.cells.length === 5), true);
+  assert.equal(sparseL4.rows.some(row => row.cells.includes('无关项目甲') || row.cells.includes('无关项目乙')), false);
+  assert.deepEqual(sparsePreview.payload.raw.mappingAssistance.appliedTables, ['2026:L4']);
+  assert.match(sparsePreview.payload.raw.cumulativeIssues.join('；'), /L2-1、L3、L5、L6/);
+
+  const invalidAdvice = await post('/api/uploads', { companyKey: 'group', period: '2026-06', reportType, fileName: '2026年营收统计表26.6-模型越界校验.xlsx', contentBase64: sparseRevenueCumulativeWorkbookBuffer().toString('base64') });
+  assert.equal(invalidAdvice.response.status, 201, JSON.stringify(invalidAdvice.payload));
+  assert.equal(invalidAdvice.payload.mappingAssistance.status, 'confirmed_no_change');
+  assert.deepEqual(invalidAdvice.payload.mappingAssistance.appliedTables, []);
+  const invalidAdvicePreview = await request(`/api/reports/${reportType}/raw?company=group&period=2026-06&uploadKey=${invalidAdvice.payload.uploadKey}`);
+  assert.deepEqual(invalidAdvicePreview.payload.raw.cumulativeYears[0].tables.map(item => item.key), ['L1', 'L2']);
+  assert.equal(invalidAdvicePreview.payload.raw.cumulativeYears[0].tables.some(table => table.headers.includes('项目名称')), false);
+
+  const unavailableAdvice = await post('/api/uploads', { companyKey: 'group', period: '2026-06', reportType, fileName: '2026年营收统计表26.6-模型不可用.xlsx', contentBase64: sparseRevenueCumulativeWorkbookBuffer().toString('base64') });
+  assert.equal(unavailableAdvice.response.status, 201, JSON.stringify(unavailableAdvice.payload));
+  assert.equal(unavailableAdvice.payload.mappingAssistance.status, 'failed');
+  assert.deepEqual(unavailableAdvice.payload.mappingAssistance.appliedTables, []);
 
   assert.equal((await post(`/api/uploads/${uploaded.payload.uploadKey}/publish`, {})).response.status, 200);
   const groupBootstrap = (await request('/api/bootstrap?company=group&period=2026-07')).payload;
@@ -2157,6 +2234,7 @@ test('集团营收统计表识别三维度八张子表并按集团权限发布',
   assert.match(frontend, /{ key: 'cumulative', name: '营收统计累计数据' }/);
   assert.match(frontend, /state\.revenueDimension === 'cumulative'/);
   assert.match(frontend, /revenueCumulativeTabLabelHtml/);
+  assert.match(frontend, /mappingAssistedTables/);
   assert.match(frontend, /年度累计子表独立查看/);
   assert.match(frontend, /revenueStatisticsReportType, '集团营收统计表'/);
   assert.match(stylesheet, /\.revenue-dimension-switch/);
@@ -2403,6 +2481,8 @@ test('集团顾问投入产出比联合工资表、营收明细和各公司序�
   assert.match(serverSource, /consultant_roi_hidden_consultants/); assert.match(serverSource, /set_consultant_roi_visibility/); assert.match(serverSource, /canManageVisibility/);
   assert.match(serverSource, /consultantExpenseSecondaryAccount/); assert.match(serverSource, /reimbursementAccounts/);
   assert.match(frontend, /key: 'hireDate', label: '入职日期'/); assert.match(frontend, /key: 'englishName', label: '英文名'/); assert.match(frontend, /key: 'companyName', label: '所属公司'/);
+  assert.match(frontend, /const consultantRoiColumns = \[\s*\{ key: 'name'[\s\S]{0,90}\{ key: 'englishName'[\s\S]{0,90}\{ key: 'hireDate'[\s\S]{0,90}\{ key: 'companyName'/);
+  assert.match(frontend, /roi-cell-name[\s\S]{0,900}roi-cell-english[\s\S]{0,180}roi-cell-date[\s\S]{0,180}roi-cell-company/);
   assert.match(serverSource, /consultantDirectorySnapshot/); assert.match(serverSource, /directory: directory\.revision/); assert.match(serverSource, /employmentStatus === 'resigned'/); assert.match(serverSource, /departureDate/);
   assert.match(directorySyncSource, /contact', 'users', 'search/); assert.match(directorySyncSource, /sheet', 'get', '--json/); assert.match(directorySyncSource, /sheet', 'ranges', 'get', '--json/); assert.match(directorySyncSource, /mode: 'default'/); assert.match(directorySyncSource, /exactColumnRows/); assert.doesNotMatch(directorySyncSource, /WECOM_ALLOW_WIDE_ROSTER_READ/);
   assert.match(directorySyncSource, /schemaVersion: 2/); assert.match(directorySyncSource, /englishName: contactNames\.get\(key\) \|\| roster\?\.englishName/); assert.match(directorySyncSource, /D1:F\$\{rowCount\}/); assert.match(directorySyncSource, /B1:B\$\{rowCount\}/);
@@ -2422,6 +2502,7 @@ test('集团顾问投入产出比联合工资表、营收明细和各公司序�
   assert.match(stylesheet, /\.consultant-roi-page-actions\{[^}]*flex-wrap:nowrap/); assert.match(stylesheet, /#consultant-roi-refresh-status\{[^}]*position:absolute/);
   assert.match(stylesheet, /\.consultant-roi-average-card/); assert.match(stylesheet, /\.consultant-roi-average-modal/); assert.match(stylesheet, /\.consultant-status-badge/); assert.match(stylesheet, /\.consultant-personnel-popover/);
   assert.match(stylesheet, /roi-col-hireDate/); assert.match(stylesheet, /roi-col-englishName/); assert.match(stylesheet, /roi-col-companyName/); assert.match(stylesheet, /roi-col-trafficSpend/);
+  assert.match(stylesheet, /\.roi-cell-name,\.consultant-roi-table \.roi-cell-english,\.consultant-roi-table \.roi-cell-company\{text-align:left\}/); assert.match(stylesheet, /\.roi-cell-date\{text-align:center\}/);
   assert.match(stylesheet, /\.consultant-roi-input-group/); assert.match(stylesheet, /\.consultant-roi-utility-actions/); assert.match(stylesheet, /\.consultant-roi-visibility-modal/);
   assert.match(stylesheet, /\.consultant-roi-reimbursement-picker/); assert.match(stylesheet, /\.consultant-roi-reimbursement-menu/);
   assert.match(stylesheet, /\.consultant-directory-guide/); assert.match(stylesheet, /\.consultant-directory-guide-modal/); assert.match(stylesheet, /\.consultant-directory-auth-actions/);

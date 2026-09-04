@@ -307,7 +307,7 @@ select{min-height:42px;padding:9px 40px 9px 12px;background-position:right 13px 
 @media(max-width:700px){.financial-brief-item-add{top:22px}.financial-brief-subrow,.financial-brief-item-editor{grid-template-columns:minmax(0,1fr) auto}.financial-brief-copy .financial-brief-subrow>span,.financial-brief-subrow-actions,.financial-brief-item-editor>div{padding-left:0}.financial-brief-item-editor input{min-width:0}.financial-brief-item-editor>div{grid-column:1/-1;justify-self:start}}
 
 /* v1.1.39 · 顾问人事状态、英文名和入职日期。 */
-.consultant-roi-table td:nth-child(-n+4){text-align:left}
+.consultant-roi-table .roi-cell-name,.consultant-roi-table .roi-cell-english,.consultant-roi-table .roi-cell-company{text-align:left}.consultant-roi-table .roi-cell-date{text-align:center}
 .consultant-roi-table col.roi-col-name{width:10%}.consultant-roi-table col.roi-col-hireDate{width:8%}.consultant-roi-table col.roi-col-englishName{width:8%}.consultant-roi-table col.roi-col-region{width:8%}.consultant-roi-table col.roi-col-baseSalary{width:8.5%}.consultant-roi-table col.roi-col-commission{width:7.5%}.consultant-roi-table col.roi-col-journalExpense{width:9%}.consultant-roi-table col.roi-col-input{width:9%}.consultant-roi-table col.roi-col-output{width:10%}.consultant-roi-table col.roi-col-roi{width:11%}.consultant-roi-table col.roi-col-matchLabel{width:11%}
 .consultant-name-cell{gap:4px}.consultant-resigned-badge{flex:0 0 auto;display:grid;place-items:center;width:25px;height:25px;border:1px solid rgba(183,40,50,.34);border-radius:50%;background:linear-gradient(145deg,#ef6c70,#bd2e3d);color:#fff;font:850 8px/1 inherit;box-shadow:0 5px 12px rgba(175,42,52,.2)}
 @media(max-width:900px){.consultant-roi-table{min-width:1020px!important}}

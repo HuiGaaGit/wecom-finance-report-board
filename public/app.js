@@ -978,8 +978,8 @@ const consultantRoiInputDefinitions = [
   { key: 'trafficSpend', label: '投流消耗费用' }
 ];
 const consultantRoiColumns = [
-  { key: 'name', label: '顾问', type: 'text' }, { key: 'hireDate', label: '入职日期', type: 'date' },
-  { key: 'englishName', label: '英文名', type: 'text' }, { key: 'companyName', label: '所属公司', type: 'text' },
+  { key: 'name', label: '顾问', type: 'text' }, { key: 'englishName', label: '英文名', type: 'text' },
+  { key: 'hireDate', label: '入职日期', type: 'date' }, { key: 'companyName', label: '所属公司', type: 'text' },
   { key: 'baseSalary', label: '基本工资', type: 'number' }, { key: 'commission', label: '提成', type: 'number' },
   { key: 'journalExpense', label: '报销费用', type: 'number' }, { key: 'trafficSpend', label: '投流消耗费用', type: 'number' }, { key: 'input', label: '投入合计', type: 'number' },
   { key: 'output', label: '预计营收', type: 'number' }, { key: 'roi', label: '投入产出比', type: 'number' },
@@ -1221,7 +1221,7 @@ async function renderConsultantRoiInteractive({ trigger = 'initial' } = {}) {
         const resigned = kind === 'resigned'; const date = resigned ? row.departureDate : row.hireDate; const label = resigned ? '离职' : '新'; const title = resigned ? '离职日期' : '入职日期';
         return `<button type="button" class="consultant-status-badge ${resigned ? 'resigned' : 'new'}" data-consultant-status-date="${escapeHtml(date || '')}" data-consultant-status-title="${title}" aria-describedby="consultant-personnel-popover" aria-label="${escapeHtml(row.name)}${label}员工，查看${title}">${label}</button>`;
       };
-      $('#consultant-roi-body').innerHTML = rows.map(row => `<tr><td class="roi-cell-name"><span class="consultant-name-cell"><strong>${escapeHtml(row.name)}</strong>${row.isNewEmployee ? statusBadge(row, 'new') : ''}${row.isResigned ? statusBadge(row, 'resigned') : ''}</span></td><td class="roi-cell-date">${escapeHtml(row.hireDate || '—')}</td><td title="${escapeHtml(row.englishName || '')}">${escapeHtml(row.englishName || '—')}</td><td class="roi-cell-company" title="${escapeHtml(row.companyName || '待补充')}">${escapeHtml(row.companyName || '待补充')}</td>${optionalAmountCell(row, 'baseSalary')}${optionalAmountCell(row, 'commission')}${optionalAmountCell(row, 'journalExpense')}${optionalAmountCell(row, 'trafficSpend')}<td class="num">${money(row.input)}</td><td class="num">${money(row.output)}</td><td class="num roi-value">${row.roi == null ? '—' : `${row.roi.toFixed(2)} 倍`}</td>${statusCell(row)}</tr>`).join('') || `<tr><td colspan="${visibleColumns.length}" class="empty">当前口径或筛选条件下暂无顾问数据</td></tr>`;
+      $('#consultant-roi-body').innerHTML = rows.map(row => `<tr><td class="roi-cell-name"><span class="consultant-name-cell"><strong>${escapeHtml(row.name)}</strong>${row.isNewEmployee ? statusBadge(row, 'new') : ''}${row.isResigned ? statusBadge(row, 'resigned') : ''}</span></td><td class="roi-cell-english" title="${escapeHtml(row.englishName || '')}">${escapeHtml(row.englishName || '—')}</td><td class="roi-cell-date">${escapeHtml(row.hireDate || '—')}</td><td class="roi-cell-company" title="${escapeHtml(row.companyName || '待补充')}">${escapeHtml(row.companyName || '待补充')}</td>${optionalAmountCell(row, 'baseSalary')}${optionalAmountCell(row, 'commission')}${optionalAmountCell(row, 'journalExpense')}${optionalAmountCell(row, 'trafficSpend')}<td class="num">${money(row.input)}</td><td class="num">${money(row.output)}</td><td class="num roi-value">${row.roi == null ? '—' : `${row.roi.toFixed(2)} 倍`}</td>${statusCell(row)}</tr>`).join('') || `<tr><td colspan="${visibleColumns.length}" class="empty">当前口径或筛选条件下暂无顾问数据</td></tr>`;
       const personnelPopover = $('#consultant-personnel-popover'); let pinnedBadge = null;
       closePersonnelPopover = () => { personnelPopover.classList.add('hidden'); page.querySelectorAll('[data-consultant-status-date]').forEach(item => item.setAttribute('aria-expanded', 'false')); pinnedBadge = null; window.removeEventListener('scroll', closePersonnelPopover); };
       const showPersonnelPopover = (button, pinned = false) => {
@@ -1709,7 +1709,7 @@ async function renderUploads() {
     const requiresAccountingPeriod = entries.some(([reportType]) => reportType !== quotationLedgerReportType);
     if (!state.bootstrap.companies.some(company => company.key === companyKey)) return showNotice('上传公司未选择或已失效，请重新选择公司', true);
     if (requiresAccountingPeriod && !/^\d{4}-\d{2}$/.test(period)) return showNotice('报表期间未选择或格式无效，请重新选择期间', true);
-    state.uploadCompany = companyKey; if (requiresAccountingPeriod) state.uploadPeriod = period; let success = 0; const trimmedSheets = []; const periodExcludedReports = []; const successfulScopes = []; uploadButton.disabled = true;
+    state.uploadCompany = companyKey; if (requiresAccountingPeriod) state.uploadPeriod = period; let success = 0; const trimmedSheets = []; const periodExcludedReports = []; const mappingAssistedTables = []; const successfulScopes = []; uploadButton.disabled = true;
     for (const [reportType, file] of entries) {
       try {
         let entryCompanyKey = reportType === quotationLedgerReportType ? 'group' : companyKey;
@@ -1737,7 +1737,7 @@ async function renderUploads() {
           }
         }
         if (!result) throw new Error('范围校验次数过多，请拆分文件后重试');
-        success += result.uploads?.length || 1; successfulScopes.push(...((result.uploads || [{ companyKey: entryCompanyKey, period: entryPeriod }]).map(item => ({ company: item.companyKey || entryCompanyKey, period: item.period || entryPeriod })))); trimmedSheets.push(...(result.trimmedSheets || [])); periodExcludedReports.push(...(result.periodExcludedReports || []));
+        success += result.uploads?.length || 1; successfulScopes.push(...((result.uploads || [{ companyKey: entryCompanyKey, period: entryPeriod }]).map(item => ({ company: item.companyKey || entryCompanyKey, period: item.period || entryPeriod })))); trimmedSheets.push(...(result.trimmedSheets || [])); periodExcludedReports.push(...(result.periodExcludedReports || [])); mappingAssistedTables.push(...(result.mappingAssistance?.appliedTables || []));
       } catch (error) { showNotice(`${reportType === 'bundle' ? '汇总财务报表' : reportNames[reportType]}：${error.message}`, true); }
     }
     uploadButton.disabled = false;
@@ -1747,7 +1747,7 @@ async function renderUploads() {
       state.uploadHistoryView = 'pending'; state.uploadHistoryPage = 1;
       state.uploadHistoryFilters = { company: successfulCompanies.length === 1 ? successfulCompanies[0] : '', period: successfulPeriods.length === 1 ? successfulPeriods[0] : '', reportType: '', search: '' };
       const excludedNames = [...new Set(periodExcludedReports.map(item => reportNames[item.reportType] || item.reportType))];
-      showNotice(`已上传并校验 ${success} 个报表批次${trimmedSheets.length ? `；已自动裁剪 ${trimmedSheets.length} 个工作表的尾部空白范围` : ''}${excludedNames.length ? `；因期间不符未生成：${excludedNames.join('、')}` : ''}`); await renderUploads();
+      showNotice(`已上传并校验 ${success} 个报表批次${mappingAssistedTables.length ? `；模型辅助确认累计子表 ${[...new Set(mappingAssistedTables)].join('、')}` : ''}${trimmedSheets.length ? `；已自动裁剪 ${trimmedSheets.length} 个工作表的尾部空白范围` : ''}${excludedNames.length ? `；因期间不符未生成：${excludedNames.join('、')}` : ''}`); await renderUploads();
     }
   };
   page.querySelectorAll('[data-publish]').forEach(button => button.onclick = async () => {

@@ -14,6 +14,7 @@ import {
 import { parseAssetLiabilityAnalysis } from './asset-liability-analysis.mjs';
 import { parseCashFlowAnalysis } from './cash-flow-analysis.mjs';
 import { writeConsultantDirectoryInput } from './consultant-directory-input.mjs';
+import { requestUploadMappingAdvice, uploadMappingAssistantConfig } from './upload-mapping-assistant.mjs';
 
 // 财务文件、SQLite WAL/SHM 与临时解析产物默认仅允许当前专用运行用户访问。
 process.umask(0o077);
@@ -30,7 +31,7 @@ try {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const dataDir = path.join(__dirname, 'data');
-const appVersion = '1.1.59';
+const appVersion = '1.1.62';
 const financialBriefModuleKey = 'financial_brief';
 const financialBriefNotesPermissionKey = 'module.financial_brief.notes.manage';
 const financialBriefMetricKeys = new Set(['expectedRevenue', 'accountBalance', 'operatingRevenue', 'operatingCost', 'sellingExpense', 'managementExpense', 'financeExpense', 'netProfit']);
@@ -87,6 +88,7 @@ const quotationLedgerPeriod = 'all-history';
 const groupStatementReportTypes = new Set(['consolidated_income_statement', revenueProfitReportType]);
 const groupOnlyReportTypes = new Set([...groupStatementReportTypes, revenueStatisticsReportType, payrollStatementReportType, quotationLedgerReportType, consultantSpendRevenueReportType]);
 const sourceOnlyReportTypes = new Set([payrollStatementReportType, quotationLedgerReportType, consultantSpendRevenueReportType]);
+const uploadMappingLlm = uploadMappingAssistantConfig(process.env);
 const authMode = String(process.env.AUTH_MODE || (process.env.NODE_ENV === 'production' ? 'platform' : 'demo')).trim().toLowerCase();
 const accessDeniedMessage = '当前账号不在财务模块授权范围内，请联系管理员加入总经理、管理员或财务组';
 const publicBaseUrl = String(process.env.PUBLIC_BASE_URL || '').trim().replace(/\/+$/, '');
@@ -2344,6 +2346,82 @@ const parseUploadedFile = (buffer, fileName, fileType, options = {}) => {
   if (!Object.keys(reports).length && !periodExcludedReports.length) throw new Error('未找到可识别的资产负债表、利润表、集团合并利润表、营收利润口径合并利润表、营收统计汇总表、工资表、顾问消耗-营收表、报单表、现金流量表、科目余额表或序时账工作表');
   return reports;
 };
+const revenueCumulativeSemanticHeaders = new Set(['月份', '预计营收', '实际营收', '实收营收', '营收金额', '营收总额', '营收占比', '占比', '项目数量', '项目数', '业绩归属', '区域', '地区', '项目', '项目名称', '项目负责人', '项目经理', '来源', '来源一级', '项目来源', '顾问', '渠道顾问', '渠道', '合计', '总计']);
+const revenueCumulativeSemanticText = value => {
+  const text = String(value || '').trim(); const normalized = normalizedHeader(text);
+  if (!text || text.length > 80) return '';
+  if (revenueCumulativeSemanticHeaders.has(normalized.replace(/[（）()]/g, ''))) return text;
+  if (revenueCumulativeTitleKey(text) || /营收.*(?:累计|年度|统计|汇总|表)|(?:累计|年度).*(?:来源|渠道|顾问|区域|地区).*(?:汇总|统计|表)|(?:来源|渠道|顾问|区域|地区).*(?:累计|年度).*(?:汇总|统计|表)/.test(normalized)) return text;
+  if (/^20\d{2}年(?:度)?累计(?:统计)?数据$/.test(normalized)) return text;
+  return '';
+};
+const revenueCumulativeSemanticOutline = (buffer, sourceSheet) => {
+  const workbook = XLSX.read(buffer, { type: 'buffer', cellDates: false }); const sheet = workbook.Sheets[sourceSheet];
+  if (!sheet) return null;
+  const rows = uploadSheetRows(sheet, sourceSheet).rows;
+  const sections = rows.map((row, rowIndex) => {
+    const cell = (row || []).map((value, column) => ({ text: revenueCumulativeSemanticText(value), column })).find(item => /^20\d{2}年(?:度)?累计(?:统计)?数据$/.test(normalizedHeader(item.text)));
+    const year = cell?.text.match(/(20\d{2})年/)?.[1]; return year ? { year, rowIndex, column: cell.column } : null;
+  }).filter(Boolean);
+  const outline = []; const allowedCoordinates = new Set();
+  for (let sectionIndex = 0; sectionIndex < sections.length; sectionIndex += 1) {
+    const section = sections[sectionIndex]; const end = sections[sectionIndex + 1]?.rowIndex ?? rows.length;
+    for (let rowIndex = section.rowIndex; rowIndex < end && outline.length < 240; rowIndex += 1) {
+      const cells = (rows[rowIndex] || []).map((value, column) => ({ column: column + 1, text: revenueCumulativeSemanticText(value) })).filter(item => item.text);
+      if (!cells.length) continue;
+      outline.push({ row: rowIndex + 1, cells }); cells.forEach(cell => allowedCoordinates.add(`${rowIndex + 1}:${cell.column}`));
+    }
+  }
+  return { rows, sections, outline, allowedCoordinates };
+};
+const assistedRevenueCumulativeTable = ({ rows, section, sectionEnd, suggestion, definition, allowedCoordinates }) => {
+  const titleRow = Number(suggestion.titleRow); const headerRow = Number(suggestion.headerRow); const startColumn = Number(suggestion.startColumn);
+  if (![titleRow, headerRow, startColumn].every(Number.isInteger) || Number(suggestion.confidence) < 0.9) return null;
+  if (titleRow <= section.rowIndex || titleRow > sectionEnd || headerRow <= titleRow || headerRow > Math.min(sectionEnd, titleRow + 12) || startColumn < 1) return null;
+  if (!allowedCoordinates.has(`${titleRow}:${startColumn}`)) return null;
+  const title = String(rows[titleRow - 1]?.[startColumn - 1] || '').trim(); if (!title) return null;
+  const candidateHeaders = (rows[headerRow - 1] || []).slice(startColumn - 1);
+  const headerWidth = revenueCumulativeHeaderWidth(candidateHeaders, definition.headers); if (!headerWidth) return null;
+  const headers = candidateHeaders.slice(0, headerWidth); const dataRows = []; let emptyStreak = 0; let started = false;
+  for (let rowIndex = headerRow; rowIndex < sectionEnd; rowIndex += 1) {
+    const cells = (rows[rowIndex] || []).slice(startColumn - 1, startColumn - 1 + headerWidth);
+    if (!cells.some(revenueCellHasValue)) { if (started && ++emptyStreak >= 3) break; continue; }
+    started = true; emptyStreak = 0; dataRows.push({ row: rowIndex + 1, cells });
+  }
+  if (!dataRows.length) return null;
+  return { key: definition.key, title, shortTitle: title.replace(/^20\d{2}年/, '').replace(/L(?:2-1|[1-6])$/i, '').trim(), titleRow, headerRow, headers: headers.map(value => String(value ?? '').trim()), rows: dataRows };
+};
+const assistRevenueCumulativeMapping = async (buffer, revenue, selectedPeriod) => {
+  if (!uploadMappingLlm.enabled || !revenue?.cumulativeIssues?.length) return revenue;
+  const structure = revenueCumulativeSemanticOutline(buffer, revenue.sourceSheet);
+  if (!structure) return { ...revenue, mappingAssistance: { status: 'unavailable', model: uploadMappingLlm.model || '', sharedData: 'structural_labels_only', appliedTables: [] } };
+  const task = {
+    version: 1, reportType: revenueStatisticsReportType, purpose: '定位规则未识别的年度累计子表', sourceSheet: '目标营收统计汇总工作表', selectedPeriod,
+    expectedTables: revenueCumulativeTableDefinitions.map(item => item.key),
+    existingTables: (revenue.cumulativeYears || []).flatMap(item => item.tables.map(table => ({ year: item.year, key: table.key }))),
+    outline: structure.outline,
+    output: { tables: [{ year: 'YYYY', key: 'L1|L2|L2-1|L3|L4|L5|L6', titleRow: 1, headerRow: 2, startColumn: 1, confidence: 0.9 }] }
+  };
+  const advice = await requestUploadMappingAdvice({ config: uploadMappingLlm, task }); const appliedTables = [];
+  if (advice.status === 'completed') {
+    for (const suggestion of advice.tables.slice(0, 14)) {
+      const definition = revenueCumulativeTableDefinitions.find(item => item.key === String(suggestion?.key || '').toUpperCase());
+      const yearRecord = revenue.cumulativeYears?.find(item => item.year === String(suggestion?.year || ''));
+      const sectionIndex = structure.sections.findIndex(item => item.year === yearRecord?.year); const section = structure.sections[sectionIndex];
+      if (!definition || !yearRecord || !section || yearRecord.tables.some(table => table.key === definition.key)) continue;
+      const sectionEnd = structure.sections[sectionIndex + 1]?.rowIndex ?? structure.rows.length;
+      const table = assistedRevenueCumulativeTable({ rows: structure.rows, section, sectionEnd, suggestion, definition, allowedCoordinates: structure.allowedCoordinates });
+      if (!table) continue;
+      yearRecord.tables.push(table); yearRecord.tables.sort((a, b) => revenueCumulativeTableDefinitions.findIndex(item => item.key === a.key) - revenueCumulativeTableDefinitions.findIndex(item => item.key === b.key)); appliedTables.push(`${yearRecord.year}:${table.key}`);
+    }
+  }
+  const issues = revenue.cumulativeIssues.filter(issue => !/累计数据缺少可识别子表/.test(issue));
+  for (const yearRecord of revenue.cumulativeYears || []) {
+    const missing = revenueCumulativeTableDefinitions.filter(definition => !yearRecord.tables.some(table => table.key === definition.key)).map(item => item.key);
+    if (missing.length) issues.push(`${yearRecord.year}年累计数据缺少可识别子表：${missing.join('、')}`);
+  }
+  return { ...revenue, cumulativeIssues: [...new Set(issues)], mappingAssistance: { status: appliedTables.length ? 'applied' : advice.status === 'completed' ? 'confirmed_no_change' : advice.status, model: uploadMappingLlm.model || '', sharedData: 'structural_labels_only', appliedTables } };
+};
 const uploadPeriodHint = (fileName, reports, selectedPeriod) => {
   const sources = [fileName, ...Object.values(reports).flatMap(item => [item?.sourceSheet, item?.sourcePeriod])].filter(Boolean).map(String);
   const explicit = sources.flatMap(source => periodHintsFromText(source).periods.map(period => ({ period, source })));
@@ -2910,6 +2988,7 @@ const server = http.createServer(async (req, res) => {
       if (!selectedTypes.length && periodExcludedReports.length) return bad(res, 400, `文件中的报表数据不属于所选期间 ${period}，已阻止生成上传批次`, { code: 'REPORT_PERIOD_EXCLUDED', periodExcludedReports });
       if (!selectedTypes.length) return bad(res, 400, reportType ? '文件中没有找到指定报表工作表' : '文件中没有找到可识别的报表工作表');
       if (reports.consolidated_income_statement?.reconciliationPassed === false) return bad(res, 400, '合并利润表与公司分表加总不一致，请检查源文件公式和保存结果');
+      if (reports[revenueStatisticsReportType]) reports[revenueStatisticsReportType] = await assistRevenueCumulativeMapping(buffer, reports[revenueStatisticsReportType], period);
       fs.writeFileSync(storagePath, buffer); fs.writeFileSync(rawPath, JSON.stringify(reports, null, 2), 'utf8');
       const hash = crypto.createHash('sha256').update(buffer).digest('hex');
       const trimmedSheets = Object.values(reports).filter(item => item?.rangeTrimmed).map(item => `${item.sourceSheet}（${item.declaredRange} → ${item.effectiveRange}）`);
@@ -2918,13 +2997,13 @@ const server = http.createServer(async (req, res) => {
       const createdUploads = [];
       for (const type of selectedTypes) {
         const uploadKey = `${bundleKey}-${type}`;
-        const recordNote = type === quotationLedgerReportType ? `；有效合同 ${Number(reports[type]?.recordCount || 0)} 条` : '';
+        const recordNote = type === quotationLedgerReportType ? `；有效合同 ${Number(reports[type]?.recordCount || 0)} 条` : type === revenueStatisticsReportType && reports[type]?.mappingAssistance?.status === 'applied' ? `；模型辅助确认累计子表 ${reports[type].mappingAssistance.appliedTables.join('、')}` : '';
         insertUpload.run(uploadKey, employee.employee_key, companyKey, period, type, fileName, fileType, storagePath, rawPath, hash, 'parsed', `已从汇总文件识别 ${selectedTypes.length} 张报表工作表${reports[type]?.sourceSheet ? `：${reports[type].sourceSheet}` : ''}${recordNote}${trimmedNote}`, now(), notes || (selectedTypes.length > 1 ? '汇总财务报表自动拆分批次' : ''));
         createNormalizedSnapshot({ upload_key: uploadKey, company_key: companyKey, period, report_type: type, file_name: fileName }, reports);
         db.prepare("UPDATE upload_batches SET status = 'validated' WHERE upload_key = ?").run(uploadKey); log(employee.employee_key, 'upload_report', uploadKey, `${companyKey}/${period}/${type}/${fileName}`, { moduleKey: 'uploads', companyKey, period });
         createdUploads.push({ uploadKey, companyKey, period, reportType: type, sourceVersion: type === quotationLedgerReportType ? reports[type]?.sourceVersion || '' : '', status: 'validated' });
       }
-      return json(res, 201, { uploadKey: createdUploads[0].uploadKey, uploadKeys: createdUploads.map(item => item.uploadKey), status: 'validated', uploads: createdUploads, trimmedSheets, periodExcludedReports, sheets: Object.entries(reports).map(([key, value]) => ({ reportType: key, sourceSheet: value.sourceSheet, rows: value.maxRow, columns: value.maxCol, hidden: Boolean(value.hidden), declaredRange: value.declaredRange || '', effectiveRange: value.effectiveRange || '', trimmed: Boolean(value.rangeTrimmed) })) });
+      return json(res, 201, { uploadKey: createdUploads[0].uploadKey, uploadKeys: createdUploads.map(item => item.uploadKey), status: 'validated', uploads: createdUploads, trimmedSheets, periodExcludedReports, mappingAssistance: reports[revenueStatisticsReportType]?.mappingAssistance || null, sheets: Object.entries(reports).map(([key, value]) => ({ reportType: key, sourceSheet: value.sourceSheet, rows: value.maxRow, columns: value.maxCol, hidden: Boolean(value.hidden), declaredRange: value.declaredRange || '', effectiveRange: value.effectiveRange || '', trimmed: Boolean(value.rangeTrimmed) })) });
     }
     if (url.pathname === '/api/uploads/bulk-publish' && req.method === 'POST') {
       const employee = requireImport(req, res, 'publish'); if (!employee) return;

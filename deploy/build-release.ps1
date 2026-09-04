@@ -7,7 +7,7 @@ New-Item -ItemType Directory -Force -Path $absoluteOutput | Out-Null
 $staging = Join-Path ([System.IO.Path]::GetTempPath()) ("wecom-finance-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $staging | Out-Null
 try {
-  foreach ($name in @(".dockerignore", "Dockerfile", "app.mjs", "app.test.mjs", "asset-liability-analysis.mjs", "asset-liability-analysis.test.mjs", "cash-flow-analysis.mjs", "cash-flow-analysis.test.mjs", "consultant-directory-input.mjs", "permission-center.test.mjs", "platform-auth.mjs", "platform-auth.test.mjs", "package.json", "package-lock.json", "README.md")) { Copy-Item -LiteralPath (Join-Path $projectDirectory $name) -Destination $staging }
+  foreach ($name in @(".dockerignore", "Dockerfile", "app.mjs", "app.test.mjs", "asset-liability-analysis.mjs", "asset-liability-analysis.test.mjs", "cash-flow-analysis.mjs", "cash-flow-analysis.test.mjs", "consultant-directory-input.mjs", "permission-center.test.mjs", "platform-auth.mjs", "platform-auth.test.mjs", "upload-mapping-assistant.mjs", "package.json", "package-lock.json", "README.md")) { Copy-Item -LiteralPath (Join-Path $projectDirectory $name) -Destination $staging }
   foreach ($name in @("public", "deploy", "docs")) { Copy-Item -Recurse -LiteralPath (Join-Path $projectDirectory $name) -Destination $staging }
   # The same-origin package excludes retired standalone-domain bridge files.
   foreach ($name in @("deploy\nginx\finance-origin.conf", "deploy\nginx\finance-auth-bridge.html", "deploy\nginx\finance-auth-bridge.js")) {
