@@ -1,8 +1,8 @@
 # 桉侨财务模块生产说明
 
 更新日期：2026-09-04
-当前生产版本：1.1.53
-最近发布包：1.1.53（已部署）
+当前生产版本：1.1.54
+最近发布包：1.1.54（已部署）
 正式地址：<https://anqiaoyiminxq.com/platform/finance/>
 
 ## 1. 系统归属与隔离
@@ -75,7 +75,7 @@ ssh -F deploy/ssh_config wecom-finance-prod "hostname && whoami"
 
 - Compose 项目：`wecom-finance-report-board`
 - 容器：`wecom-finance-report-board`
-- 当前镜像：`aqllm/finance-report-board:1.1.35`
+- 当前镜像：`aqllm/finance-report-board:1.1.54`
 - 容器运行用户：`20117:20117`
 - 容器端口：`3180`
 - 主机监听：`127.0.0.1:3180`
@@ -530,9 +530,15 @@ cat /data/data/wecom-finance-report-board/backups/offsite-last-success.meta
 - 财务专用企微授权保持 `authorized`；directory path/timer 与 auth path 的 unit 文件哈希和发布前快照逐一一致，三个监听均继续为 `enabled/active`，目录 timer 按小时等待。未修改财务专用 CLI/HOME、同步快照、环境授权配置、小W、小Q或其他项目。
 - 发布前完整回滚快照位于 `/data/backups/wecom-finance-report-board/pre-1.1.53-20260904T055021Z`，旧源码位于 `/data/repos/wecom-finance-report-board-pre-1.1.53-20260904T055021Z`。回滚时恢复快照中的源码与 Compose，启动 `aqllm/finance-report-board:1.1.52`；企微监听与环境文件保持现状，数据库完整性正常时不得用旧备份覆盖现有业务数据。
 
-## 43. 顾问报销费用二级科目筛选候选（1.1.54，待部署）
+## 43. 顾问报销费用二级科目筛选生产发布（1.1.54）
 
 - 顾问投入标签把“人员费用”统一更名为“报销费用”；基本工资、报销费用和投流消耗费用默认选择，提成默认不选择。
 - 顾问报销费用沿用费用分析的二级科目层级：取销售费用或管理费用后的第一段。后端只汇总当前期间、当前授权公司、唯一匹配到当前可见顾问且金额非零的明细，继续排除工资、薪酬、提成和结转分录。
 - 报销费用标签右侧增加二级科目下拉，支持逐项勾选、全选和清空。科目选择只保存在浏览器当前期间视图，并同步重算报销费用列、投入合计、投入产出比、平均投入产出比、地区汇总、筛选和排序，不写回数据库或上传原件。
 - 本版本不改变数据库结构、顾问隐藏名单、企微独立授权、目录同步脚本或 systemd 单元。发布时须保留三个企微监听及五个 unit 哈希和状态；异常时恢复 1.1.53 镜像与源码，数据库完整时不得覆盖现有数据。
+- `2026-09-04 14:53 CST` 使用提交 `1cd65f8449034e34507f9654f0237a87dda3ba7e` 的固定发布包完成生产发布；包 SHA256 为 `9C56259A9FB1CEAE9BDD1DDD348B7BBD4402400C4F3EB8577A6DFB7EB089D1C7`。服务器 Docker tests 为 `104/104`，正式镜像为 `aqllm/finance-report-board:1.1.54`，镜像 ID 为 `sha256:d61882a62ea2d3ca466947b1c7e3b1afeee06795c670d4f676e816de1e8cae4b`。
+- 容器为 `healthy`，回环与公网健康接口均返回 `1.1.54/platform`；Nginx、运行时隔离和真实平台登录通过。生产集团 `2026-07` 实际映射到 5 个报销二级科目：首次进入为全选且提成未选；清空、单选、全选均正常，投入及投入产出指标随选择联动，恢复全选后回到初始结果。页面没有旧“人员费用”和导出按钮，浏览器无警告或错误。
+- 本次发布前已有一笔正常业务上传：集团 `2026-07` 顾问消耗-营收表于 `2026-09-04 14:28 CST` 发布，因此生产基线自然增长为 8 家公司、236 个上传批次、236 份报表快照和 13,090 条报表行。发布前后 SQLite 完整性均为 `ok`、四项计数不变；管理员此前保存的 1 项隐藏设置也保持不变，验收期间未打开保存入口。
+- 发布前一致性数据库备份为 `/data/data/wecom-finance-report-board/backups/report-board-20260904T065000Z.db`，SHA256 为 `b38bc8a07b9bcd80dc96ce00b5555289966f1839f558e35bf09bf5dcd6ebc04f`；发布后备份为 `/data/data/wecom-finance-report-board/backups/report-board-20260904T065937Z.db`，SHA256 为 `2be26faf7d0e10ed010f69aa6acd039e23a601aad28f43992ecc250814dab95e`。两者均为 `0600`、`20117:20117`。
+- 财务专用企微授权保持 `authorized`；directory path/timer 与 auth path 均为 `enabled/active/waiting`，五个 unit 文件哈希与发布前逐一一致。未修改 CLI、独立 HOME、环境授权配置、目录同步、小W、小Q或其他项目。
+- 发布前完整回滚快照位于 `/data/backups/wecom-finance-report-board/pre-1.1.54-20260904T065000Z`，旧源码位于 `/data/repos/wecom-finance-report-board-pre-1.1.54-20260904T065000Z`。回滚时恢复快照中的源码与 Compose，启动 `aqllm/finance-report-board:1.1.53`；企微监听与环境文件保持现状，数据库完整性正常时不得用旧备份覆盖现有业务数据。
