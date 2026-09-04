@@ -589,7 +589,7 @@ cat /data/data/wecom-finance-report-board/backups/offsite-last-success.meta
 - SQLite 完整性发布前后均为 `ok`；核心业务事实保持 8 家公司、238 个上传批次、238 份报表快照和 13,090 条报表行。发布前备份为 `/data/data/wecom-finance-report-board/backups/report-board-20260904T084234Z.db`，SHA256 为 `A62A1ADF5384FD9ACC1AA2DAE44DAEA20A5E797039E25EA7D50777C7B72119BB`；发布后备份为 `/data/data/wecom-finance-report-board/backups/report-board-20260904T090916Z.db`，SHA256 为 `346CC83D4AB4C0BFE72CFE026D645B5C6E252F02A4B80B5EB92205A88EC29683`。两者均为 `0600`、`20117:20117`。
 - 发布前完整回滚快照位于 `/data/backups/wecom-finance-report-board/pre-1.1.61-20260904T084234Z`；旧源码分别保留于 `/data/repos/wecom-finance-report-board-pre-1.1.61-20260904T084234Z` 和 `/data/repos/wecom-finance-report-board-live-1.1.54-20260904T091900Z`。回滚时恢复快照中的 Compose、环境和源码并启动 `aqllm/finance-report-board:1.1.54`；数据库完整时不得用旧备份覆盖现有业务数据。
 
-## 49. 离职日期同步与全站滚动层级修复候选（1.1.63，待部署）
+## 49. 离职日期同步与全站滚动层级修复候选（1.1.63，已安全回滚）
 
 - 财务专用企微同步器对“离职”工作表分别请求 `B:B` 的离职日期和 `D:F` 的所属公司、姓名、英文名，并使用原始工作表行号合并。它不请求连续 `B:F`，不读取 `C` 列离职原因；任一响应起始行列、有效宽度、字段表头或两段表头行号不一致时，同范围最多重试 3 次后安全停止且不覆盖旧快照。
 - WPS 文本日期及安全范围内的 Excel 日期序列统一规范为 `YYYY-MM-DD`。脱敏目录升级为 schema 3，人员字段严格限定为 `name`、`englishName`、`companyName`、`employmentStatus`、`exitDate`；应用可兼容旧 schema 1/2，但会通过现有刷新请求与 `systemd.path` 触发一次同范围升级同步。普通员工只接收标签展示所需日期，不接收同步诊断或管理员配置。
@@ -597,3 +597,10 @@ cat /data/data/wecom-finance-report-board/backups/offsite-last-success.meta
 - 本地完整回归 `109/109`，服务端、前端、企微同步脚本语法检查、部署模板和差异检查均通过。合成脱敏样例验证了有日期、空日期、表头移动、非连续列、原始行号合并、旧快照兼容、普通员工字段裁剪和离职原因不泄露。
 - 真实浏览器验收覆盖管理员与普通员工：离职标签显示格式化日期，普通员工仍无匹配状态和报销配置入口。`1280`、`1440`、等效 `1280@125%` 的 `1024` CSS 宽度及 `390×844` 下反复上下滚动均保持顶部栏/侧栏位置稳定、整页无横向溢出；窄屏只由顾问表格内部滚动。开关报销浮层、折叠面板和跨模块检查没有标题裁切、白块、横向位移或控制台 warning/error。
 - 生产当前仍为 `1.1.62`。上线前固定候选包后，先在候选源码执行宿主机同步脚本纯 import，再手工同步一次；只以脱敏方式确认已知有日期记录不再显示“待补充”，不得在命令输出、日志或发布记录中写真实人员信息。同步成功并确认 schema 3、`0600`、`20117:20117` 后，才运行服务器 Docker 全测、SQLite 一致性备份、容器切换与公网验收；任一步异常立即恢复 `1.1.62` 源码、镜像与同步脚本，数据库完整时不得覆盖业务数据。
+- `2026-09-04` 实际上线门槛中，固定包 SHA256 `BEA8C54F7F3D053DB77940359F6E0CAE850F2A3E2A0AA3F0767EEE87C42F9695` 在本地与服务器一致，服务器 Docker tests 为 `109/109`。候选手工同步虽返回成功，但 15 名离职人员的 `exitDate` 全为空，已知有日期的脱敏验收记录也未命中，因此在正式镜像构建和容器切换前安全停止。
+- 回滚已恢复 `1.1.62` 同步脚本、schema 2 快照和三个 `enabled/active` 监听；生产容器始终为 `aqllm/finance-report-board:1.1.62` 且健康，SQLite 完整性为 `ok`，8 家公司、238 个上传批次、238 份快照和 13,090 条明细未变。发布前快照为 `/data/backups/wecom-finance-report-board/pre-1.1.63-20260904T111100Z`；数据库一致性备份为 `/data/data/wecom-finance-report-board/backups/report-board-20260904T111129Z.db`，SHA256 `209D4E8838E117A55816E81784F7FF33B1FBFF21318BC1CD828412AFB429C37A`。
+
+## 50. 企业微信时间对象兼容候选（1.1.64，待部署）
+
+- 只读结构探针确认离职日期 B 列的有效日期使用 `cell_value.time` 对象，键严格为 `year`、`month`、`day`；探针没有输出日期值、人员信息、文档标识、链接参数或令牌。`1.1.64` 在原有文本和 Excel 日期序列之外增加该对象的严格解析，再由 `safeRosterDate` 校验真实日历日期并规范为 `YYYY-MM-DD`。
+- 继续使用 `B:B` 与 `D:F` 两段精确读取、原始行号合并、schema 3 字段白名单及全站滚动修复，不扩大花名册读取范围。重新上线必须从服务器 Docker tests、手工同步、已知日期脱敏匹配、权限/字段检查、文件权限、正式镜像、运行隔离和公网浏览器验收全部重跑；任一步异常继续恢复 `1.1.62`。

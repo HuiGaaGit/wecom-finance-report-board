@@ -1,6 +1,6 @@
 # 桉侨集团财务报表看板
 
-版本：`1.1.63`
+版本：`1.1.64`
 生产环境继续使用 `https://anqiaoyiminxq.com/platform/finance/`，复用桉侨小Q现有企微登录但不接收财务正文。财务页面只在建立会话时读取小Q现有短期 access token，不读取或刷新 refresh token；财务服务动态校验 `admin`、`general_manager`、`finance` 三个组并换取 15 分钟、Path 限定为 `/platform/finance` 的 HttpOnly 会话。旧财务自建应用和独立企微 OAuth 已停用，财务模块不连接 AQLLM 数据库或数据卷。
 
 同域名路径可以实现文件、容器、网络、日志和接口的强隔离，但不是浏览器安全边界：小Q页面脚本与财务页面具有相同 Origin，根作用域 Service Worker 也可能覆盖财务路径。若需要阻止同源前端脚本、XSS 或 Service Worker 读取财务响应，必须使用独立 Origin 或独立服务器。

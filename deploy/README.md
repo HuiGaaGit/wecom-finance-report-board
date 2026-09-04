@@ -8,7 +8,7 @@
 - 持久数据：`/data/data/wecom-finance-report-board`
 - 容器：`wecom-finance-report-board`
 - 当前生产镜像：`aqllm/finance-report-board:1.1.62`（生产验收与回滚信息见 `docs/PRODUCTION_OPERATIONS.md`）
-- 当前源码版本：`1.1.63`（离职日期行号合并与全站滚动层级修复候选）
+- 当前源码版本：`1.1.64`（离职日期行号合并与全站滚动层级修复候选）
 - 本机端口：`127.0.0.1:3180`
 - 正式地址：`https://anqiaoyiminxq.com/platform/finance/`
 
@@ -20,7 +20,7 @@
 
 同步器使用 CLI 1.2.0 的 `sheet get --json` 和 `sheet ranges get --json` 结构化接口，在“在职”“离职”工作表精确读取 `D:F`（所属公司、姓名、英文名），并对“离职”表另行精确读取 `B:B`（离职日期）；两段数据只按相同行号合并，禁止读取 `C` 列离职原因。全空行可跳过。单次响应起始列、有效宽度、表头或行对齐异常时会丢弃整次响应并以完全相同的窄范围请求有限重试，连续 3 次异常才报错，且始终不覆盖安全快照。结构诊断只记录起始列、最大宽度和尝试次数，不含单元格值。不得增加扩大读取范围的开关。授权约 7 天失效后，小时级目录同步会写入 `consultant-directory-auth-request.json`，由新增 `wecom-finance-consultant-auth.path/.service` 生成 15 分钟临时授权链接；链接只通过管理员接口展示。管理员确认后授权服务自动复检并提交刷新请求。
 
-`1.1.63` 将脱敏目录升级为 schema 3，离职日期字段统一为 `exitDate`，并兼容读取 schema 1/2 的旧 `departureDate`。运行中的旧快照不会被直接扩大或改写；应用只提交一次 `directory_schema_upgrade` 刷新请求，由现有财务专用 `systemd.path` 触发同范围同步。生产切换前必须先执行同步脚本纯 import 和手工同步，确认 schema 3、字段白名单、`0600` 与 `20117:20117` 后，才允许切换容器。
+`1.1.64` 将脱敏目录升级为 schema 3，离职日期字段统一为 `exitDate`，并兼容读取 schema 1/2 的旧 `departureDate`。同步器同时支持企业微信在线表格实际返回的 `cell_value.time.year/month/day`，规范化后再进入日期白名单。运行中的旧快照不会被直接扩大或改写；应用只提交一次 `directory_schema_upgrade` 刷新请求，由现有财务专用 `systemd.path` 触发同范围同步。生产切换前必须先执行同步脚本纯 import 和手工同步，确认 schema 3、字段白名单、`0600` 与 `20117:20117` 后，才允许切换容器。
 
 页面滚动统一由文档主滚动区承担：顶部栏固定且层级最高，侧栏从其实际高度下方开始；表格表头随表格自然滚动，避免进入顶部品牌区。桌面与移动端都只允许具体宽表容器横向滚动，不允许整页横向溢出。
 

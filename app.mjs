@@ -31,7 +31,7 @@ try {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const dataDir = path.join(__dirname, 'data');
-const appVersion = '1.1.63';
+const appVersion = '1.1.64';
 const financialBriefModuleKey = 'financial_brief';
 const financialBriefNotesPermissionKey = 'module.financial_brief.notes.manage';
 const financialBriefMetricKeys = new Set(['expectedRevenue', 'accountBalance', 'operatingRevenue', 'operatingCost', 'sellingExpense', 'managementExpense', 'financeExpense', 'netProfit']);

@@ -60,6 +60,10 @@ const gridCellText = cell => {
   if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return String(value).trim();
   if (value.text != null && String(value.text).trim()) return String(value.text).trim();
   if (value.number != null) return String(value.number).trim();
+  if (value.time && typeof value.time === 'object') {
+    const year = Number(value.time.year); const month = Number(value.time.month); const day = Number(value.time.day);
+    if (Number.isInteger(year) && Number.isInteger(month) && Number.isInteger(day)) return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  }
   if (value.link?.text != null) return String(value.link.text).trim();
   if (value.display_value != null) return String(value.display_value).trim();
   return '';

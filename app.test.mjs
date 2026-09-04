@@ -30,7 +30,7 @@ const testConsultantDirectoryAuthRequestFile = path.join(projectDir, 'data', `te
 const testConsultantDirectoryInputFile = path.join(projectDir, 'data', `test-consultant-directory-input-${process.pid}-${Date.now()}.json`);
 let child; let uploadMappingMockServer; const uploadMappingRequests = [];
 
-const { exactColumnRows, exactColumnRecords, exactTwoColumnRows, exactRosterRows, rosterPeopleFromRecords, consultantNamesFromInput, preservedAuthLink, safeRosterDate } = await import('./deploy/sync-consultant-directory.mjs');
+const { gridCellText, exactColumnRows, exactColumnRecords, exactTwoColumnRows, exactRosterRows, rosterPeopleFromRecords, consultantNamesFromInput, preservedAuthLink, safeRosterDate } = await import('./deploy/sync-consultant-directory.mjs');
 const { safeAuthUrl } = await import('./deploy/init-consultant-directory-auth.mjs');
 
 test('企微花名册只接受非连续精确窄范围并按原始行号合并离职日期', () => {
@@ -44,6 +44,7 @@ test('企微花名册只接受非连续精确窄范围并按原始行号合并�
   assert.deepEqual(exactColumnRows({ grid_data: { start_column: 1, rows: [{ values: [{ cell_value: { text: '离职日期 (last day)' } }] }, { values: [{ cell_value: { text: '2026/7/28' } }] }] } }, { startColumn: 1, width: 1, label: '离职日期' }), [['离职日期 (last day)'], ['2026/7/28']]);
   assert.throws(() => exactColumnRows({ grid_data: { start_column: 1, rows: [{ values: [{ cell_value: { text: '2026/7/28' } }, { cell_value: { text: '辞退' } }] }] } }, { startColumn: 1, width: 1, label: '离职日期' }), /超出离职日期允许列/);
   assert.equal(safeRosterDate('2026/7/28'), '2026-07-28'); assert.equal(safeRosterDate('2026年8月4日'), '2026-08-04'); assert.equal(safeRosterDate('46262'), '2026-08-28'); assert.equal(safeRosterDate('非日期'), '');
+  assert.equal(gridCellText({ cell_value: { time: { year: 2026, month: 8, day: 28 } } }), '2026-08-28');
   const profileRecords = exactColumnRecords({ grid_data: { start_column: 3, start_row: 0, rows: [
     { values: [] },
     { values: [] },
@@ -1100,10 +1101,10 @@ test('上传页使用独立公司期间选择器且移除全局范围锁定', ()
 test('页面与后台运行版本一致且旧响应不能覆盖上传操作后的列表', async () => {
   const bootstrap = await request('/api/bootstrap?company=gz&period=2026-06');
   assert.equal(bootstrap.response.status, 200);
-  assert.equal(bootstrap.payload.appVersion, '1.1.63');
+  assert.equal(bootstrap.payload.appVersion, '1.1.64');
   const index = fs.readFileSync(path.join(projectDir, 'public', 'index.html'), 'utf8');
   const frontend = fs.readFileSync(path.join(projectDir, 'public', 'app.js'), 'utf8');
-  assert.match(index, /<meta name="app-version" content="1\.1\.63">/);
+  assert.match(index, /<meta name="app-version" content="1\.1\.64">/);
   assert.match(frontend, /const expectedAppVersion = document\.querySelector\('meta\[name="app-version"\]'\)/);
   assert.match(frontend, /bootstrap\?\.appVersion === expectedAppVersion/);
   assert.match(frontend, /APP_VERSION_MISMATCH/);

@@ -347,7 +347,7 @@ select{min-height:42px;padding:9px 40px 9px 12px;background-position:right 13px 
 @media(max-width:600px){.consultant-roi-table{min-width:1080px!important}.consultant-roi-table-toolbar>div:first-child{padding-right:38px}.consultant-roi-actions{gap:10px}.consultant-roi-tags{gap:6px}.consultant-roi-tag{min-height:34px;padding:7px 9px}.consultant-roi-utility-actions{width:100%}.consultant-roi-utility-actions .button{flex:1;min-width:120px}.consultant-roi-reimbursement-menu>footer{align-items:stretch;flex-direction:column}.consultant-roi-reimbursement-menu>footer>div{width:100%}.consultant-roi-reimbursement-menu>footer .button{flex:1}}
 .consultant-roi-reimbursement-picker>#consultant-roi-reimbursement-open{width:29px;height:29px;min-height:29px;padding:7px;border:1px solid rgba(132,161,193,.36);border-radius:9px;background:rgba(247,251,255,.62);color:#7990a7}.consultant-roi-reimbursement-picker>#consultant-roi-reimbursement-open:hover,.consultant-roi-reimbursement-picker>#consultant-roi-reimbursement-open:focus-visible,.consultant-roi-reimbursement-picker>#consultant-roi-reimbursement-open[aria-expanded="true"],.consultant-roi-reimbursement-picker>#consultant-roi-reimbursement-open.dirty{border:1px solid #7eafe0;border-radius:9px;background:#e9f4ff;color:#246fac;outline:0;box-shadow:0 0 0 3px rgba(45,123,198,.12)}
 
-/* v1.1.63 · 全站顶部栏、导航和表格滚动层级统一。 */
+/* v1.1.64 · 全站顶部栏、导航和表格滚动层级统一。 */
 :root{--app-header-height:82px;--z-app-header:300;--z-app-sidebar:210;--z-module-sticky:180;--z-table-sticky:160}
 html,body{width:100%;min-width:0;min-height:100%;overflow-x:clip}body{padding-top:var(--app-header-height)}
 .app-shell{min-width:0;min-height:calc(100vh - var(--app-header-height));overflow-x:clip}
