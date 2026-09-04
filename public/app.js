@@ -335,6 +335,36 @@ function applyAnalysisBlockLayout(container, pageKey) {
     const visible = new Set(visibleOrder); let cursor = 0;
     return complete.map(key => visible.has(key) ? visibleOrder[cursor++] : key);
   };
+  let reorderSaving = false;
+  let dragState = null;
+  const visibleOrder = () => [...container.querySelectorAll(':scope > [data-analysis-block]')].map(item => item.dataset.analysisBlock);
+  const restoreVisibleOrder = order => {
+    const byBlockKey = new Map([...container.querySelectorAll(':scope > [data-analysis-block]')].map(item => [item.dataset.analysisBlock, item]));
+    animateAnalysisReflow(container, () => order.forEach(key => { const item = byBlockKey.get(key); if (item) container.appendChild(item); }));
+  };
+  const lockDragHandles = locked => {
+    reorderSaving = locked; container.classList.toggle('analysis-layout-saving', locked);
+    container.toggleAttribute('aria-busy', locked);
+    container.querySelectorAll('.analysis-drag-handle').forEach(item => { item.disabled = locked; });
+  };
+  const positionDragGhost = (ghost, x, y) => {
+    const width = ghost.getBoundingClientRect().width;
+    ghost.style.left = `${Math.max(8, Math.min(window.innerWidth - width - 8, x - 30))}px`;
+    ghost.style.top = `${Math.max(8, Math.min(window.innerHeight - 58, y - 20))}px`;
+  };
+  const startVisibleDrag = session => {
+    if (session.started) return;
+    session.started = true; session.active.classList.add('analysis-block-dragging'); container.classList.add('dragging');
+    const rect = session.active.getBoundingClientRect(); const ghost = document.createElement('div');
+    ghost.className = 'analysis-drag-ghost'; ghost.style.width = `${Math.min(rect.width, 360)}px`;
+    const grip = document.createElement('span'); grip.textContent = '⠿'; grip.setAttribute('aria-hidden', 'true');
+    const title = document.createElement('strong'); title.textContent = session.label; ghost.append(grip, title); document.body.appendChild(ghost);
+    session.ghost = ghost; positionDragGhost(ghost, session.latestPointer.x, session.latestPointer.y);
+  };
+  const clearDragVisuals = session => {
+    session.active.classList.remove('analysis-block-dragging'); container.classList.remove('dragging'); session.ghost?.remove();
+    container.querySelectorAll('.analysis-drop-before,.analysis-drop-after').forEach(item => item.classList.remove('analysis-drop-before', 'analysis-drop-after'));
+  };
   if (canReorder) container.classList.add('analysis-layout-editable');
   blocks.forEach(block => {
     block.classList.add('analysis-layout-block');
@@ -360,33 +390,57 @@ function applyAnalysisBlockLayout(container, pageKey) {
     const handle = document.createElement('button');
     handle.type = 'button'; handle.className = 'analysis-drag-handle'; handle.setAttribute('aria-label', `拖动${label}`); handle.title = '按住拖动调整位置'; handle.innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="7" cy="5" r="1.25"/><circle cx="13" cy="5" r="1.25"/><circle cx="7" cy="10" r="1.25"/><circle cx="13" cy="10" r="1.25"/><circle cx="7" cy="15" r="1.25"/><circle cx="13" cy="15" r="1.25"/></svg>';
     overlay.appendChild(handle); block.appendChild(overlay);
-    let active = null; let moved = false; let moveFrame = 0; let latestPointer = null;
-    const finish = event => {
-      if (!active) return;
-      if (moveFrame) { cancelAnimationFrame(moveFrame); moveFrame = 0; }
-      handle.releasePointerCapture?.(event.pointerId); active.classList.remove('analysis-block-dragging'); container.classList.remove('dragging');
-      if (moved && !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) block.animate([{ transform: 'scale(.992)' }, { transform: 'scale(1.006)', offset: .55 }, { transform: 'scale(1)' }], { duration: 180, easing: 'cubic-bezier(.2,.8,.25,1)' });
-      const visibleOrder = [...container.querySelectorAll(':scope > [data-analysis-block]')].map(item => item.dataset.analysisBlock); const order = fullOrderFor(visibleOrder); active = null; latestPointer = null;
-      if (!moved) return;
-      api('/api/admin/analysis-block-order', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ pageKey, order }) })
-        .then(result => { state.bootstrap.analysisBlockOrder[pageKey] = result.order; showNotice('分析板块顺序已保存'); })
-        .catch(error => { showNotice(error.message, true); refresh(); });
+    const finish = async (event, cancelled = false) => {
+      const session = dragState;
+      if (!session || session.handle !== handle || session.pointerId !== event.pointerId) return;
+      if (session.moveFrame) cancelAnimationFrame(session.moveFrame);
+      session.removeGlobalListeners?.();
+      if (handle.hasPointerCapture?.(event.pointerId)) handle.releasePointerCapture(event.pointerId);
+      dragState = null; clearDragVisuals(session);
+      const nextVisibleOrder = visibleOrder(); const changed = nextVisibleOrder.join('\u0000') !== session.initialVisibleOrder.join('\u0000');
+      if (cancelled) { if (changed) restoreVisibleOrder(session.initialVisibleOrder); return; }
+      if (!session.started || !changed) return;
+      if (!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) block.animate([{ transform: 'scale(.992)' }, { transform: 'scale(1.006)', offset: .55 }, { transform: 'scale(1)' }], { duration: 180, easing: 'cubic-bezier(.2,.8,.25,1)' });
+      const order = fullOrderFor(nextVisibleOrder); lockDragHandles(true);
+      try {
+        const result = await api('/api/admin/analysis-block-order', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ pageKey, order }) });
+        state.bootstrap.analysisBlockOrder[pageKey] = result.order; showNotice('分析板块顺序已保存，已应用于所有公司和员工');
+      } catch (error) {
+        restoreVisibleOrder(session.initialVisibleOrder); showNotice(`顺序保存失败，已恢复原位置：${error.message}`, true);
+      } finally { lockDragHandles(false); }
     };
-    handle.addEventListener('pointerdown', event => { event.preventDefault(); active = block; moved = false; handle.setPointerCapture?.(event.pointerId); block.classList.add('analysis-block-dragging'); container.classList.add('dragging'); });
+    handle.addEventListener('pointerdown', event => {
+      if (reorderSaving || dragState) return;
+      event.preventDefault(); event.stopPropagation(); handle.setPointerCapture?.(event.pointerId);
+      dragState = { active: block, handle, label, pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, latestPointer: { x: event.clientX, y: event.clientY }, initialVisibleOrder: visibleOrder(), started: false, moveFrame: 0, ghost: null };
+      const finishFromWindow = pointerEvent => finish(pointerEvent);
+      const cancelFromWindow = pointerEvent => finish(pointerEvent, true);
+      dragState.removeGlobalListeners = () => {
+        window.removeEventListener('pointerup', finishFromWindow, true); window.removeEventListener('pointercancel', cancelFromWindow, true);
+      };
+      window.addEventListener('pointerup', finishFromWindow, true); window.addEventListener('pointercancel', cancelFromWindow, true);
+    });
     handle.addEventListener('pointermove', event => {
-      if (!active) return;
-      event.preventDefault(); latestPointer = { x: event.clientX, y: event.clientY };
-      if (moveFrame) return;
-      moveFrame = requestAnimationFrame(() => {
-        moveFrame = 0; if (!active || !latestPointer) return;
-        const { x, y } = latestPointer; const target = document.elementFromPoint(x, y)?.closest?.('[data-analysis-block]');
-        if (!target || target === active || target.parentElement !== container) return;
-        const rect = target.getBoundingClientRect(); const activeRect = active.getBoundingClientRect(); const sameRow = Math.abs(rect.top - activeRect.top) < Math.min(rect.height, activeRect.height) / 2; const after = sameRow ? x > rect.left + rect.width / 2 : y > rect.top + rect.height / 2;
-        const placement = after ? target.nextElementSibling : target; if (placement === active || (!after && active.nextElementSibling === target)) return;
-        animateAnalysisReflow(container, () => container.insertBefore(active, placement)); moved = true;
+      const session = dragState;
+      if (!session || session.handle !== handle || session.pointerId !== event.pointerId) return;
+      event.preventDefault(); session.latestPointer = { x: event.clientX, y: event.clientY };
+      if (session.moveFrame) return;
+      session.moveFrame = requestAnimationFrame(() => {
+        session.moveFrame = 0; if (dragState !== session) return;
+        const { x, y } = session.latestPointer;
+        if (!session.started && Math.hypot(x - session.startX, y - session.startY) < 5) return;
+        startVisibleDrag(session); positionDragGhost(session.ghost, x, y);
+        const target = document.elementFromPoint(x, y)?.closest?.('[data-analysis-block]');
+        if (!target || target === session.active || target.parentElement !== container) return;
+        const rect = target.getBoundingClientRect(); const activeRect = session.active.getBoundingClientRect(); const sameRow = Math.abs(rect.top - activeRect.top) < Math.min(rect.height, activeRect.height) / 2; const after = sameRow ? x > rect.left + rect.width / 2 : y > rect.top + rect.height / 2;
+        container.querySelectorAll('.analysis-drop-before,.analysis-drop-after').forEach(item => item.classList.remove('analysis-drop-before', 'analysis-drop-after'));
+        target.classList.add(after ? 'analysis-drop-after' : 'analysis-drop-before');
+        const placement = after ? target.nextElementSibling : target; if (placement === session.active || (!after && session.active.nextElementSibling === target)) return;
+        animateAnalysisReflow(container, () => container.insertBefore(session.active, placement));
       });
     });
-    handle.addEventListener('pointerup', finish); handle.addEventListener('pointercancel', finish);
+    handle.addEventListener('pointerup', event => finish(event)); handle.addEventListener('pointercancel', event => finish(event, true));
+    handle.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); });
   });
 }
 

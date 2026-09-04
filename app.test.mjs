@@ -947,10 +947,10 @@ test('上传页使用独立公司期间选择器且移除全局范围锁定', ()
 test('页面与后台运行版本一致且旧响应不能覆盖上传操作后的列表', async () => {
   const bootstrap = await request('/api/bootstrap?company=gz&period=2026-06');
   assert.equal(bootstrap.response.status, 200);
-  assert.equal(bootstrap.payload.appVersion, '1.1.47');
+  assert.equal(bootstrap.payload.appVersion, '1.1.48');
   const index = fs.readFileSync(path.join(projectDir, 'public', 'index.html'), 'utf8');
   const frontend = fs.readFileSync(path.join(projectDir, 'public', 'app.js'), 'utf8');
-  assert.match(index, /<meta name="app-version" content="1\.1\.47">/);
+  assert.match(index, /<meta name="app-version" content="1\.1\.48">/);
   assert.match(frontend, /const expectedAppVersion = document\.querySelector\('meta\[name="app-version"\]'\)/);
   assert.match(frontend, /bootstrap\?\.appVersion === expectedAppVersion/);
   assert.match(frontend, /APP_VERSION_MISMATCH/);
@@ -972,6 +972,8 @@ test('管理员可分别保存分析板块顺序，普通员工只读', async ()
   assert.deepEqual(saved.payload.order, reordered);
   const inherited = await request('/api/bootstrap?company=gz&period=2026-06', 'manager');
   assert.deepEqual(inherited.payload.analysisBlockOrder.cash_analysis, reordered);
+  const anotherCompany = await request('/api/bootstrap?company=qd&period=2026-06');
+  assert.deepEqual(anotherCompany.payload.analysisBlockOrder.cash_analysis, reordered);
   const forbidden = await post('/api/admin/analysis-block-order', { pageKey: 'cash_analysis', order: original }, 'manager');
   assert.equal(forbidden.response.status, 403);
   const restored = await post('/api/admin/analysis-block-order', { pageKey: 'cash_analysis', order: original });
@@ -989,13 +991,23 @@ test('分析布局升级只追加新板块且生产数据目录独立于应用�
   assert.match(compose, /DB_FILE: \/var\/lib\/wecom-finance\/report-board\.db/);
 });
 
-test('分析拖动合并到动画帧并以完整顺序保存，切页请求丢弃过期结果', () => {
+test('分析拖动稳定命中、锁定落位并以完整顺序保存，切页请求丢弃过期结果', () => {
   const frontend = fs.readFileSync(path.join(projectDir, 'public', 'app.js'), 'utf8');
+  const stylesheet = fs.readFileSync(path.join(projectDir, 'public', 'styles.css'), 'utf8');
   const layoutSource = frontend.slice(frontend.indexOf('function animateAnalysisReflow'), frontend.indexOf('async function loadBootstrap'));
   assert.match(layoutSource, /requestAnimationFrame\(\(\) =>/);
-  assert.match(layoutSource, /if \(moveFrame\) return/);
-  assert.match(layoutSource, /const order = fullOrderFor\(visibleOrder\)/);
+  assert.match(layoutSource, /Math\.hypot\(x - session\.startX, y - session\.startY\) < 5/);
+  assert.match(layoutSource, /window\.addEventListener\('pointerup', finishFromWindow, true\)/);
+  assert.match(layoutSource, /window\.addEventListener\('pointercancel', cancelFromWindow, true\)/);
+  assert.match(layoutSource, /lockDragHandles\(true\)/);
+  assert.match(layoutSource, /restoreVisibleOrder\(session\.initialVisibleOrder\)/);
+  assert.match(layoutSource, /const order = fullOrderFor\(nextVisibleOrder\)/);
+  assert.match(layoutSource, /已应用于所有公司和员工/);
   assert.match(layoutSource, /duration: 180[\s\S]*cubic-bezier/);
+  assert.match(stylesheet, /\.analysis-drag-overlay:hover>\.analysis-drag-handle/);
+  assert.match(stylesheet, /\.analysis-drag-ghost\{/);
+  assert.match(stylesheet, /\.analysis-block-dragging\{[^}]*pointer-events:none/);
+  assert.match(stylesheet, /\.analysis-layout-saving>\.analysis-layout-block\{cursor:wait\}/);
   assert.match(frontend, /let pageRequestRevision = 0/);
   assert.match(frontend, /revision !== pageRequestRevision \|\| state\.page !== 'expense_analysis'/);
   assert.doesNotMatch(frontend.slice(frontend.indexOf('async function renderCashAnalysis'), frontend.indexOf('const coreLiquidityTrendSvg')), /\/api\/reports\/cash_flow\/summary/);
