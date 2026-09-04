@@ -1,8 +1,8 @@
 # 桉侨财务模块生产说明
 
 更新日期：2026-09-04
-当前生产版本：1.1.49
-最近发布包：1.1.49（已部署）
+当前生产版本：1.1.52
+最近发布包：1.1.52（已部署）
 正式地址：<https://anqiaoyiminxq.com/platform/finance/>
 
 ## 1. 系统归属与隔离
@@ -505,9 +505,15 @@ cat /data/data/wecom-finance-report-board/backups/offsite-last-success.meta
 - 上线仍先构建服务器 Docker 测试镜像并跑完整回归，再做数据库一致性备份和手工同步。只有手工同步成功、快照权限及字段复核通过后，才能切换正式容器并启用 directory path/timer 与 auth path；任一步异常继续恢复 `1.1.49`，不得覆盖完整数据库。
 - `2026-09-04` 服务器 Docker 测试镜像已通过 `104/104`，但上线前手工同步在约 `0.08` 秒内因宿主机缺少 `better-sqlite3` 原生模块而失败，尚未进入 E:F 读取和重试。正式容器未构建、未切换，自动监听始终未启用，并已完整恢复 `1.1.49`。快照为 `/data/backups/wecom-finance-report-board/pre-1.1.51-20260904T034358Z`，一致性数据库备份为 `/data/data/wecom-finance-report-board/backups/report-board-20260904T034358Z.db`，SHA256 `81fea3c6cb3ea25ac574586787e9b1dedfd292ea7e9231a9e311c829e7287dc9`。
 
-## 41. 宿主机零原生依赖的顾问同步候选（1.1.52，待部署）
+## 41. 宿主机零原生依赖的顾问同步生产发布（1.1.52）
 
 - 财务应用在每次工资表或营收统计表发布、以及管理员手动刷新前，从已发布工资表生成 `consultant-directory-input.json`。文件最多 5000 人、最大 256 KiB，每个人只允许 `name` 一个字段；不含部门、工资、提成、身份证号、手机号、文件名或金额，按 `0600` 保存在财务专用数据卷。
 - 宿主机 `sync-consultant-directory.mjs` 不再导入 `better-sqlite3`，不打开 SQLite，不再回退到 `14云端企微账簿` 或任何其他项目目录。它只读取上述最小清单和财务专用企微 CLI，再输出约定的脱敏目录与状态文件。
 - 首次部署在候选运行镜像内执行 `deploy/prepare-consultant-directory-input.mjs`：容器内已有项目锁定的 SQLite 依赖，以只读模式打开数据库，仅写最小清单。随后必须先执行宿主机同步脚本纯启动/import预检，再手工同步；成功后才允许切换正式容器和启用三个监听。
 - E:F 精确范围、最多 3 次同范围重试、管理员限定临时授权链接、独立 CLI/HOME、无小W复用及任一步异常回滚原则保持不变。
+- `2026-09-04 12:09 CST` 使用提交 `3405932` 的固定发布包完成生产发布；包 SHA256 为 `1A012A9BFB00DE7C615CFFDD9B5726CA77F6FFEC8F7A650C782A9C87C0115718`。服务器 Docker tests 为 `104/104`，正式镜像为 `aqllm/finance-report-board:1.1.52`，镜像 ID 为 `sha256:e1f470f9fc6a9417ca3611334b977427c51c15a080f2ad329970f98b466cbf6d`。
+- 候选镜像以 UID/GID `20117:20117`、只读根文件系统和无网络方式生成首次最小清单；清单共 42 项、每项仅含 `name`，文件为 `0600`、`20117:20117`。宿主机同步脚本纯 import 成功，手工同步及监听启用后的首次自动同步均成功；脱敏目录共 42 项，每项字段严格为 `name`、`englishName`、`employmentStatus`，文件继续为 `0600`、`20117:20117`。发布记录不包含人员值、内部 ID、单元格值、授权链接参数或令牌。
+- 财务专用 CLI 授权保持 `authorized`；`wecom-finance-consultant-directory.path`、`wecom-finance-consultant-directory.timer`、`wecom-finance-consultant-auth.path` 均为 `enabled/active`，目录定时器处于 `waiting` 并按小时计划。CLI、HOME/XDG_CONFIG_HOME、数据目录和 systemd 单元均限定在财务看板范围，未读取或修改小W、小Q及其他项目配置。
+- 容器为 `healthy`，回环与公网健康接口均返回 `1.1.52/platform`；Nginx、运行时隔离、生产真实登录、静态资源一致性和页面无可见错误检查通过。有效授权状态下管理员页面不显示多余授权入口；普通用户无法取得授权 URL 或调用重新授权接口的隔离由生产镜像回归覆盖，未通过破坏有效授权模拟到期。
+- SQLite 完整性发布前后均为 `ok`，核心业务事实保持 8 家公司、235 个上传批次、235 份报表快照和 13,061 条报表行。发布前一致性备份为 `/data/data/wecom-finance-report-board/backups/report-board-20260904T035940Z.db`，SHA256 为 `68d20c58b30fc6d9599681cf11dbfcc0354233013ce05ad066f7e5291164326e`；发布后备份为 `/data/data/wecom-finance-report-board/backups/report-board-20260904T041231Z.db`，SHA256 为 `7595c72beff8eb2f3a85c4b9120c6e28727d2d8dd1d1c852e77487a4d6f72018`。两者均为 `0600`、`20117:20117`。
+- 发布前完整回滚快照位于 `/data/backups/wecom-finance-report-board/pre-1.1.52-20260904T035940Z`，旧源码位于 `/data/repos/wecom-finance-report-board-pre-1.1.52-20260904T035940Z`。回滚时先执行 `systemctl disable --now wecom-finance-consultant-auth.path wecom-finance-consultant-directory.path wecom-finance-consultant-directory.timer`，恢复快照中的源码、Compose、环境文件、五个财务专用 unit 和 drop-in，再启动 `aqllm/finance-report-board:1.1.49`；数据库完整性正常时不得用备份覆盖现有业务数据。
