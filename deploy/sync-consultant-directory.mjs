@@ -29,8 +29,8 @@ const windowsCliScript = path.join(process.env.APPDATA || '', 'npm', 'node_modul
 const wecomCli = configuredWecomCli || (process.platform === 'win32' && fs.existsSync(windowsCliScript) ? process.execPath : 'wecom-cli');
 const wecomCliPrefix = !configuredWecomCli && process.platform === 'win32' && fs.existsSync(windowsCliScript) ? [windowsCliScript] : [];
 
-class SyncError extends Error { constructor(code, message) { super(message); this.code = code; } }
-const fail = (message, code = 'SYNC_FAILED') => { throw new SyncError(code, message); };
+class SyncError extends Error { constructor(code, message, diagnostic = {}) { super(message); this.code = code; this.diagnostic = diagnostic; } }
+const fail = (message, code = 'SYNC_FAILED', diagnostic = {}) => { throw new SyncError(code, message, diagnostic); };
 const privateJson = (file, payload) => {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 }); fs.chmodSync(path.dirname(file), 0o700);
   const temporary = `${file}.${process.pid}.tmp`; fs.writeFileSync(temporary, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600 }); fs.renameSync(temporary, file); fs.chmodSync(file, 0o600);
@@ -62,13 +62,27 @@ const gridCellText = cell => {
 const exactTwoColumnRows = result => {
   const sourceRows = result?.grid_data?.rows;
   if (!Array.isArray(sourceRows)) fail('企业微信表格未返回结构化区域数据', 'WECOM_INVALID_RESPONSE');
+  const startColumn = Number(result?.grid_data?.start_column);
+  if (startColumn !== 4) fail('企业微信返回区域的起始列不是预期的 E 列；为避免扩大花名册暴露面，已拒绝生成快照', 'SOURCE_SCOPE_REQUIRED', { startColumn: Number.isFinite(startColumn) ? startColumn : null, maximumWidth: 0 });
   return sourceRows.map(row => {
     const values = Array.isArray(row?.values) ? row.values : [];
     const cells = values.map(gridCellText); let effectiveWidth = cells.length;
     while (effectiveWidth && !cells[effectiveWidth - 1]) effectiveWidth -= 1;
-    if (effectiveWidth > 2) fail('企业微信当前返回了超出姓名/英文名允许列的内容；为避免扩大花名册暴露面，已拒绝生成快照', 'SOURCE_SCOPE_REQUIRED');
+    if (effectiveWidth > 2) fail('企业微信当前返回了超出姓名/英文名允许列的内容；为避免扩大花名册暴露面，已拒绝生成快照', 'SOURCE_SCOPE_REQUIRED', { startColumn, maximumWidth: effectiveWidth });
     return [cells[0] || '', cells[1] || ''];
   });
+};
+const exactRosterRows = (commandArgs, read = cliJson, pause = milliseconds => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds)) => {
+  let lastError;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try { return exactTwoColumnRows(read(commandArgs)); }
+    catch (error) {
+      if (error.code !== 'SOURCE_SCOPE_REQUIRED') throw error;
+      lastError = new SyncError(error.code, error.message, { ...error.diagnostic, attempts: attempt });
+      if (attempt < 3) pause(attempt * 500);
+    }
+  }
+  throw lastError;
 };
 const preservedAuthLink = source => {
   try {
@@ -112,8 +126,7 @@ const rosterPeople = (doc, title, status) => {
   const docid = documentIdFor(doc); const info = cliJson(['sheet', 'get', '--json', JSON.stringify({ docid })]); const sheet = (info.sheets || []).find(item => item.title === title);
   if (!sheet) fail(`花名册中未找到“${title}”工作表`, 'ROSTER_SHEET_MISSING');
   const range = `E1:F${Math.max(2, Number(sheet.row_count || 200))}`;
-  const result = cliJson(['sheet', 'ranges', 'get', '--json', JSON.stringify({ docid, sheet_id: sheet.sheet_id, mode: 'default', range })]);
-  const rows = exactTwoColumnRows(result); const headerRowIndex = rows.findIndex(row => row.some(Boolean)); const header = rows[headerRowIndex] || [];
+  const rows = exactRosterRows(['sheet', 'ranges', 'get', '--json', JSON.stringify({ docid, sheet_id: sheet.sheet_id, mode: 'default', range })]); const headerRowIndex = rows.findIndex(row => row.some(Boolean)); const header = rows[headerRowIndex] || [];
   let nameIndex = header.findIndex(value => String(value).trim() === '姓名'); let englishIndex = header.findIndex(value => String(value).trim() === '英文名');
   if (nameIndex < 0 || englishIndex < 0) fail(`“${title}”工作表未识别到姓名和英文名字段`, 'ROSTER_FIELDS_MISSING');
   const people = new Map();
@@ -171,7 +184,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     const [state, message, action] = guide[error.code] || ['error', '企业微信人事匹配刷新失败', '检查同步服务日志与企业微信连接状态后重试'];
     try {
       let priorStatus = {}; try { priorStatus = JSON.parse(fs.readFileSync(statusFile, 'utf8')); } catch {}
-      privateJson(statusFile, statusPayload(state, message, action, { lastSuccessAt: String(priorStatus.lastSuccessAt || ''), ...(error.code === 'AUTH_REQUIRED' ? preservedAuthLink(priorStatus) : {}) }));
+      privateJson(statusFile, statusPayload(state, message, action, { lastSuccessAt: String(priorStatus.lastSuccessAt || ''), ...(error.code === 'AUTH_REQUIRED' ? preservedAuthLink(priorStatus) : {}), ...(error.code === 'SOURCE_SCOPE_REQUIRED' ? { diagnostic: error.diagnostic } : {}) }));
     } catch {}
     if (error.code === 'AUTH_REQUIRED') {
       try { privateJson(authRequestFile, { schemaVersion: 1, requestId: crypto.randomUUID(), requestedAt: new Date().toISOString(), reason: 'authorization_expired' }); } catch {}
@@ -181,4 +194,4 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   }
 }
 
-export { gridCellText, exactTwoColumnRows, preservedAuthLink };
+export { gridCellText, exactTwoColumnRows, exactRosterRows, preservedAuthLink };

@@ -8,7 +8,7 @@
 - 持久数据：`/data/data/wecom-finance-report-board`
 - 容器：`wecom-finance-report-board`
 - 当前生产镜像：`aqllm/finance-report-board:1.1.49`（生产验收与回滚信息见 `docs/PRODUCTION_OPERATIONS.md`）
-- 当前源码版本：`1.1.50`（顾问花名册精确两列读取及财务专用授权到期提醒候选）
+- 当前源码版本：`1.1.51`（顾问花名册精确两列有限重试及财务专用授权到期提醒候选）
 - 本机端口：`127.0.0.1:3180`
 - 正式地址：`https://anqiaoyiminxq.com/platform/finance/`
 
@@ -18,7 +18,7 @@
 
 顾问英文名和离职状态不经小Q接口传递。宿主机安装 `deploy/systemd/wecom-finance-consultant-directory.service/.path/.timer`，由财务专用 `/opt/wecom-finance/wecom-cli/node_modules/.bin/wecom-cli` 和独立凭证目录 `/var/lib/wecom-finance-cli` 读取数据：工资表或营收统计表发布后，财务容器只写入不含人员、文件名和金额的刷新请求，`.path` 立即启动同步器，`.timer` 每小时兜底并检查授权。同步器只把姓名、英文名、在职/离职状态和同步时间写入 `consultant-directory.json`，另把不含人员信息的执行结果写入 `consultant-directory-status.json`；文件最终固定为 `20117:20117`、`0600`。
 
-同步器使用 CLI 1.2.0 的 `sheet get --json` 和 `sheet ranges get --json` 结构化接口，只读取花名册“在职”“离职”工作表 `E:F`；全空行可跳过，任何非空行有效列宽超过 2 都会报错且不覆盖安全快照。不得增加扩大读取范围的开关。授权约 7 天失效后，小时级目录同步会写入 `consultant-directory-auth-request.json`，由新增 `wecom-finance-consultant-auth.path/.service` 生成 15 分钟临时授权链接；链接只通过管理员接口展示。管理员确认后授权服务自动复检并提交刷新请求。首次启用前依次手工验证目录同步和授权模拟，再执行 `systemctl enable --now wecom-finance-consultant-directory.path wecom-finance-consultant-directory.timer wecom-finance-consultant-auth.path`。
+同步器使用 CLI 1.2.0 的 `sheet get --json` 和 `sheet ranges get --json` 结构化接口，只读取花名册“在职”“离职”工作表 `E:F`；全空行可跳过。单次响应起始列不是 E 或非空行有效列宽超过 2 时会丢弃整次响应并以完全相同的 E:F 请求有限重试，连续 3 次异常才报错，且始终不覆盖安全快照。结构诊断只记录起始列、最大宽度和尝试次数，不含单元格值。不得增加扩大读取范围的开关。授权约 7 天失效后，小时级目录同步会写入 `consultant-directory-auth-request.json`，由新增 `wecom-finance-consultant-auth.path/.service` 生成 15 分钟临时授权链接；链接只通过管理员接口展示。管理员确认后授权服务自动复检并提交刷新请求。首次启用前依次手工验证目录同步和授权模拟，再执行 `systemctl enable --now wecom-finance-consultant-directory.path wecom-finance-consultant-directory.timer wecom-finance-consultant-auth.path`。
 
 `1.1.25` 使用专用运行身份 `20117:20117`。首次切换前先创建 SQLite 一致性备份，再执行 `deploy/harden-finance-data.sh`；该脚本只接受精确目录 `/data/data/wecom-finance-report-board`。SQLite 备份和异机备份状态文件均按 `0600` 创建。启动后必须执行 `node deploy/check-runtime-isolation.mjs`，验证 owner/mode、其他容器挂载、Docker Socket、网络成员和回环端口。
 

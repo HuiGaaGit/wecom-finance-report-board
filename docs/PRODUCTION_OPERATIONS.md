@@ -485,7 +485,7 @@ cat /data/data/wecom-finance-report-board/backups/offsite-last-success.meta
 - 发布前 Compose、受限环境、Nginx、容器信息及源码快照位于 `/data/backups/wecom-finance-report-board/pre-1.1.49-20260904T025146Z`；旧源码位于 `/data/repos/wecom-finance-report-board-pre-1.1.49-20260904T025146Z`，旧镜像 `1.1.47` 保留。回滚时恢复该快照的 Compose 和旧源码并启动 `aqllm/finance-report-board:1.1.47`；数据库完整性正常时不得用备份覆盖业务数据。
 - 财务专用企业微信 CLI 的 `.path/.timer` 在本次发布前后均保持 `disabled/inactive`，现金流部署没有修改其独立授权、systemd drop-in 或其他服务器项目。
 
-## 39. 财务专用企业微信授权到期检测候选（1.1.50，待部署）
+## 39. 财务专用企业微信授权到期检测候选（1.1.50，已安全回滚）
 
 - 顾问目录同步切换到企业微信 CLI 1.2.0 的结构化 `sheet get --json`、`sheet ranges get --json` 接口，只读取“在职”“离职”工作表 `E:F`。全空行可跳过；任一非空行有效宽度超过两列立即停止且不覆盖旧快照，也不存在扩大范围开关。
 - 目录 timer 每小时先执行财务专用 `auth show --status`。授权失效时写入不含人员、文档和财务数据的 `consultant-directory-auth-request.json`，由新增 `wecom-finance-consultant-auth.path/.service` 启动 15 分钟授权进程。CLI 固定为 `/opt/wecom-finance/wecom-cli/node_modules/.bin/wecom-cli`，HOME/XDG_CONFIG_HOME 固定为 `/var/lib/wecom-finance-cli`，不读取小W或其他服务凭据。
@@ -494,3 +494,12 @@ cat /data/data/wecom-finance-report-board/backups/offsite-last-success.meta
 - 本地回归 `104/104`，服务端、前端、同步与授权脚本语法检查、部署配置检查和差异检查通过；桌面管理员弹窗包含授权/重建入口，`390×844` 下弹窗宽 `355px` 且页面无横向溢出，普通财务负责人接口和 DOM 均不含授权链接，桌面与手机控制台无告警。
 - 生产切换时先创建 SQLite 一致性备份并记录现有 unit/drop-in；添加 `CONSULTANT_DIRECTORY_AUTH_REQUEST_FILE=/var/lib/wecom-finance/consultant-directory-auth-request.json`，安装目录同步及授权五个 unit，`daemon-reload` 后先手工启动 directory service 并确认快照字段/权限，再启用 `wecom-finance-consultant-directory.path`、`wecom-finance-consultant-directory.timer`、`wecom-finance-consultant-auth.path`。不得为验收主动注销当前有效授权。
 - 回滚时执行 `systemctl disable --now wecom-finance-consultant-auth.path wecom-finance-consultant-directory.path wecom-finance-consultant-directory.timer`，恢复旧 unit、drop-in、Compose 和 `1.1.49` 镜像；本版本无数据库结构迁移，数据库完整时不得以旧备份覆盖业务数据。保留财务专用 CLI 与凭证不会影响旧版，也不会影响小W。
+- `2026-09-04` 的生产预检在切换容器前手工运行目录同步时得到 `source_scope_required`，因此按“任一步异常立即停止”完成回滚；正式容器始终为 `1.1.49`，三个自动监听均未启用，数据库和现有财务专用授权未变。发布前快照为 `/data/backups/wecom-finance-report-board/pre-1.1.50-20260904T032356Z`。
+- 回滚后的只读脱敏探针以同一 CLI、同一授权和同一 E:F 范围复测：“在职”208 行、“离职”200 行，起始列均为 4，所有行返回宽度均不超过 2；未输出单元格值、姓名、文档标识、链接参数或令牌。失败更符合单次响应结构波动，不能据此放宽字段范围。
+
+## 40. 企业微信精确范围瞬态重试候选（1.1.51，待部署）
+
+- 保留 `1.1.50` 的独立 CLI、独立 HOME、授权到期检测、管理员限定授权链接和花名册 E:F 两列边界；不读取或复用小W配置。
+- 每张花名册子表仍只发送相同的 E:F 精确范围请求。若单次响应起始列不是 E，或任一非空行有效宽度超过 2，整次响应会被丢弃，不解析、不匹配、不保存，并在 500/1000 毫秒间隔后有限重试；连续 3 次异常才写入 `source_scope_required`。
+- 失败状态中的结构诊断仅含 `startColumn`、`maximumWidth` 和 `attempts` 三个数字，不包含单元格值、姓名、内部 ID、URL 参数或令牌；任何成功写入的脱敏快照仍只允许 `name`、`englishName`、`employmentStatus`。
+- 上线仍先构建服务器 Docker 测试镜像并跑完整回归，再做数据库一致性备份和手工同步。只有手工同步成功、快照权限及字段复核通过后，才能切换正式容器并启用 directory path/timer 与 auth path；任一步异常继续恢复 `1.1.49`，不得覆盖完整数据库。

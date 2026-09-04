@@ -27,17 +27,28 @@ const testConsultantDirectoryRefreshRequestFile = path.join(projectDir, 'data', 
 const testConsultantDirectoryAuthRequestFile = path.join(projectDir, 'data', `test-consultant-directory-auth-${process.pid}-${Date.now()}.json`);
 let child;
 
-const { exactTwoColumnRows, preservedAuthLink } = await import('./deploy/sync-consultant-directory.mjs');
+const { exactTwoColumnRows, exactRosterRows, preservedAuthLink } = await import('./deploy/sync-consultant-directory.mjs');
 const { safeAuthUrl } = await import('./deploy/init-consultant-directory-auth.mjs');
 
-test('企微花名册只接受结构化精确两列，授权链接严格限定官方临时入口', () => {
-  const rows = exactTwoColumnRows({ grid_data: { rows: [
+test('企微花名册只接受结构化精确两列，异常响应仅有限重试，授权链接严格限定官方临时入口', () => {
+  const rows = exactTwoColumnRows({ grid_data: { start_column: 4, rows: [
     { values: [] },
     { values: [{ cell_value: { text: '姓名' }, data_type: 'TEXT' }, { cell_value: { text: '英文名' }, data_type: 'TEXT' }] },
     { values: [{ cell_value: { text: '测试顾问' }, data_type: 'TEXT' }, { cell_value: { text: 'Tester' }, data_type: 'TEXT' }, { cell_value: { text: '' }, data_type: 'TEXT' }] }
   ] } });
   assert.deepEqual(rows, [['', ''], ['姓名', '英文名'], ['测试顾问', 'Tester']]);
-  assert.throws(() => exactTwoColumnRows({ grid_data: { rows: [{ values: [{ cell_value: { text: '甲' } }, { cell_value: { text: 'A' } }, { cell_value: { text: '手机号' } }] }] } }), /超出姓名\/英文名允许列/);
+  assert.throws(() => exactTwoColumnRows({ grid_data: { start_column: 4, rows: [{ values: [{ cell_value: { text: '甲' } }, { cell_value: { text: 'A' } }, { cell_value: { text: '手机号' } }] }] } }), /超出姓名\/英文名允许列/);
+  assert.throws(() => exactTwoColumnRows({ grid_data: { start_column: 3, rows: [] } }), /起始列不是预期的 E 列/);
+  let attempts = 0; const waits = [];
+  const retried = exactRosterRows(['sheet', 'ranges', 'get'], () => {
+    attempts += 1;
+    return attempts < 3
+      ? { grid_data: { start_column: 4, rows: [{ values: [{ cell_value: { text: '甲' } }, { cell_value: { text: 'A' } }, { cell_value: { text: '额外列' } }] }] } }
+      : { grid_data: { start_column: 4, rows: [{ values: [{ cell_value: { text: '姓名' } }, { cell_value: { text: '英文名' } }] }] } };
+  }, milliseconds => waits.push(milliseconds));
+  assert.deepEqual(retried, [['姓名', '英文名']]);
+  assert.equal(attempts, 3); assert.deepEqual(waits, [500, 1000]);
+  assert.throws(() => exactRosterRows([], () => ({ grid_data: { start_column: 5, rows: [] } }), () => {}), error => error.code === 'SOURCE_SCOPE_REQUIRED' && error.diagnostic.attempts === 3);
   const valid = 'https://work.weixin.qq.com/ai/qc/gen?source=wecom_cli_external&scode=Abc_123-def';
   assert.equal(safeAuthUrl(valid), valid);
   assert.equal(safeAuthUrl('https://example.com/ai/qc/gen?source=wecom_cli_external&scode=Abc_123-def'), '');
@@ -968,10 +979,10 @@ test('上传页使用独立公司期间选择器且移除全局范围锁定', ()
 test('页面与后台运行版本一致且旧响应不能覆盖上传操作后的列表', async () => {
   const bootstrap = await request('/api/bootstrap?company=gz&period=2026-06');
   assert.equal(bootstrap.response.status, 200);
-  assert.equal(bootstrap.payload.appVersion, '1.1.50');
+  assert.equal(bootstrap.payload.appVersion, '1.1.51');
   const index = fs.readFileSync(path.join(projectDir, 'public', 'index.html'), 'utf8');
   const frontend = fs.readFileSync(path.join(projectDir, 'public', 'app.js'), 'utf8');
-  assert.match(index, /<meta name="app-version" content="1\.1\.50">/);
+  assert.match(index, /<meta name="app-version" content="1\.1\.51">/);
   assert.match(frontend, /const expectedAppVersion = document\.querySelector\('meta\[name="app-version"\]'\)/);
   assert.match(frontend, /bootstrap\?\.appVersion === expectedAppVersion/);
   assert.match(frontend, /APP_VERSION_MISMATCH/);
