@@ -8,7 +8,7 @@
 - 持久数据：`/data/data/wecom-finance-report-board`
 - 容器：`wecom-finance-report-board`
 - 当前生产镜像：`aqllm/finance-report-board:1.1.47`（生产验收与回滚信息见 `docs/PRODUCTION_OPERATIONS.md`）
-- 当前源码版本：`1.1.48`（分析模块拖动手柄稳定显示，落位保存期间锁定并在取消或失败时回滚；待部署）
+- 当前源码版本：`1.1.49`（现金流量表新增与资产负债分析统一的动态现金收支弹窗；待部署）
 - 本机端口：`127.0.0.1:3180`
 - 正式地址：`https://anqiaoyiminxq.com/platform/finance/`
 

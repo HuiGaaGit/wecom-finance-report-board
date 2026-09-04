@@ -947,10 +947,10 @@ test('上传页使用独立公司期间选择器且移除全局范围锁定', ()
 test('页面与后台运行版本一致且旧响应不能覆盖上传操作后的列表', async () => {
   const bootstrap = await request('/api/bootstrap?company=gz&period=2026-06');
   assert.equal(bootstrap.response.status, 200);
-  assert.equal(bootstrap.payload.appVersion, '1.1.48');
+  assert.equal(bootstrap.payload.appVersion, '1.1.49');
   const index = fs.readFileSync(path.join(projectDir, 'public', 'index.html'), 'utf8');
   const frontend = fs.readFileSync(path.join(projectDir, 'public', 'app.js'), 'utf8');
-  assert.match(index, /<meta name="app-version" content="1\.1\.48">/);
+  assert.match(index, /<meta name="app-version" content="1\.1\.49">/);
   assert.match(frontend, /const expectedAppVersion = document\.querySelector\('meta\[name="app-version"\]'\)/);
   assert.match(frontend, /bootstrap\?\.appVersion === expectedAppVersion/);
   assert.match(frontend, /APP_VERSION_MISMATCH/);
@@ -1414,7 +1414,9 @@ test('现金流量表识别年份累计表头且仅本期金额可下钻', () =>
   const statementAmount = value => value === null || value === undefined || value === '' ? '' : Number(value).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const context = {
     result: null,
-    state: { period: '2026-07' },
+    state: { company: 'gz', period: '2026-07' },
+    api: async () => ({}),
+    currentCompanyName: () => '广州桉侨',
     $: () => page,
     escapeHtml,
     statementAmount,
@@ -1426,7 +1428,9 @@ test('现金流量表识别年份累计表头且仅本期金额可下钻', () =>
     reportSourceNote: () => '',
     canViewCurrentReportDetail: () => true,
     trimTrailingEmptyRows: rows => rows,
-    bindRawNumbers: () => {}
+    bindRawNumbers: () => {},
+    cashFlowAnalysisButtonHtml: () => '<button id="cash-flow-analysis-open">现金收支分析</button>',
+    bindCashFlowAnalysis: () => {}
   };
   vm.runInNewContext(`${rendererSource}; result = renderCashFlowStatement;`, context);
   context.result({ raw: { rows: [
@@ -2460,4 +2464,53 @@ test('资产负债分析读取当前发布批次并在新版本发布后即时�
   assert.match(feature, /\/api\/reports\/balance_sheet\/analysis/); assert.match(feature, /setInterval\(\(\) => load\(\{ quiet: true \}\), 60000\)/);
   assert.match(feature, /setAttribute\('role', 'dialog'\)/); assert.match(feature, /assetLiabilityChartSegments/); assert.match(feature, /assetLiabilityChartLabels/);
   assert.match(feature, /data-analysis-switch/); assert.doesNotMatch(feature, /源表项目与金额/); assert.match(featureStyle, /asset-liability-direct-label/);
+});
+
+test('现金流分析读取动态收支项目并随当前发布版本即时切换', async () => {
+  const period = '2027-06';
+  const cashRaw = (salesAmount, extraLabel = '其他收入') => ({ cash_flow: {
+    sourceSheet: '现金流量表-钱去向', maxRow: 15, maxCol: 12, rows: [
+      { row: 1, cells: ['现金流量表'] },
+      { row: 3, cells: ['项目', '2027年累计', '前期累计金额', '本期金额'] },
+      { row: 4, cells: ['一、经营活动产生的现金流量'] },
+      { row: 5, cells: ['销售商品、提供劳务收到的现金', salesAmount, 0, salesAmount] },
+      { row: 7, cells: [null, null, null, null, null, null, '累计现金收支明细'] },
+      { row: 8, cells: [null, null, null, null, null, null, '增减项', '项目', null, '金额', '占比'] },
+      { row: 9, cells: [null, null, null, null, null, null, '期初', '期初现金', null, 100] },
+      { row: 10, cells: [null, null, null, null, null, null, '加', '销售收入', null, salesAmount] },
+      { row: 11, cells: [null, null, null, null, null, null, '加', extraLabel, null, 50] },
+      { row: 12, cells: [null, null, null, null, null, null, '合计', '', null, salesAmount + 150] },
+      { row: 13, cells: [null, null, null, null, null, null, '减', '经营成本', null, 40] },
+      { row: 14, cells: [null, null, null, null, null, null, '减', '新增月度项目', null, 10] },
+      { row: 15, cells: [null, null, null, null, null, null, '合计', '', null, 50] }
+    ]
+  } });
+  const uploadAndPublish = async (amount, versionName, extraLabel) => {
+    const uploaded = await post('/api/uploads', { companyKey: 'gz', period, reportType: 'cash_flow', fileName: `广州桉侨-${period}-现金流量表-${versionName}.json`, fileType: 'application/json', contentBase64: Buffer.from(JSON.stringify(cashRaw(amount, extraLabel))).toString('base64') });
+    assert.equal(uploaded.response.status, 201, JSON.stringify(uploaded.payload));
+    const published = await post(`/api/uploads/${uploaded.payload.uploadKey}/publish`, {});
+    assert.equal(published.response.status, 200, JSON.stringify(published.payload));
+    return { uploadKey: uploaded.payload.uploadKey, version: published.payload.version };
+  };
+
+  const first = await uploadAndPublish(1000, '第一版', '其他收入');
+  const firstAnalysis = await request(`/api/reports/cash_flow/analysis?company=gz&period=${period}`);
+  assert.equal(firstAnalysis.response.status, 200); assert.equal(firstAnalysis.response.headers.get('cache-control'), 'no-store');
+  assert.equal(firstAnalysis.payload.meta.uploadKey, first.uploadKey); assert.equal(firstAnalysis.payload.meta.version, first.version);
+  assert.deepEqual(firstAnalysis.payload.source.items.map(item => item.label), ['期初现金', '销售收入', '其他收入']);
+  assert.deepEqual(firstAnalysis.payload.destination.items.map(item => item.label), ['经营成本', '新增月度项目']);
+  assert.equal(firstAnalysis.payload.source.total, 1150); assert.equal(firstAnalysis.payload.destination.total, 50);
+  assert.equal((await request(`/api/reports/cash_flow/analysis?company=gz&period=${period}`, 'viewer')).response.status, 403);
+
+  const second = await uploadAndPublish(1600, '第二版', '新增融资流入');
+  const refreshed = await request(`/api/reports/cash_flow/analysis?company=gz&period=${period}`);
+  assert.equal(refreshed.payload.meta.uploadKey, second.uploadKey); assert.equal(refreshed.payload.meta.version, second.version);
+  assert.notEqual(refreshed.payload.meta.uploadKey, firstAnalysis.payload.meta.uploadKey);
+  assert.equal(refreshed.payload.source.total, 1750); assert.equal(refreshed.payload.source.items.at(-1).label, '新增融资流入');
+
+  const frontend = fs.readFileSync(path.join(projectDir, 'public', 'app.js'), 'utf8');
+  const feature = fs.readFileSync(path.join(projectDir, 'public', 'cash-flow-analysis.js'), 'utf8');
+  assert.match(frontend, /cashFlowAnalysisButtonHtml/); assert.match(frontend, /bindCashFlowAnalysis/);
+  assert.match(feature, /\/api\/reports\/cash_flow\/analysis/); assert.match(feature, /累计现金收支明细/);
+  assert.match(feature, /data-analysis-switch/); assert.match(feature, /assetLiabilityChartLabels/);
 });

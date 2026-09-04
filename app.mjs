@@ -12,6 +12,7 @@ import {
   unwrapPlatformData,
 } from './platform-auth.mjs';
 import { parseAssetLiabilityAnalysis } from './asset-liability-analysis.mjs';
+import { parseCashFlowAnalysis } from './cash-flow-analysis.mjs';
 
 // 财务文件、SQLite WAL/SHM 与临时解析产物默认仅允许当前专用运行用户访问。
 process.umask(0o077);
@@ -28,7 +29,7 @@ try {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const dataDir = path.join(__dirname, 'data');
-const appVersion = '1.1.48';
+const appVersion = '1.1.49';
 const financialBriefModuleKey = 'financial_brief';
 const financialBriefNotesPermissionKey = 'module.financial_brief.notes.manage';
 const financialBriefMetricKeys = new Set(['expectedRevenue', 'accountBalance', 'operatingRevenue', 'operatingCost', 'sellingExpense', 'managementExpense', 'financeExpense', 'netProfit']);
@@ -2887,6 +2888,16 @@ const server = http.createServer(async (req, res) => {
       const snapshot = source.meta.uploadKey ? db.prepare("SELECT version, status FROM report_snapshots WHERE company_key = ? AND period = ? AND report_type = 'balance_sheet' AND snapshot_key LIKE ? ORDER BY version DESC LIMIT 1").get(companyKey, period, `%${source.meta.uploadKey}`) : null;
       const analysis = parseAssetLiabilityAnalysis(source.raw);
       log(employee.employee_key, 'view_asset_liability_analysis', 'balance_sheet:analysis', `${companyKey}/${period}`, { moduleKey: 'balance_sheet', companyKey, period });
+      return json(res, 200, { ...analysis, company: companyRow(companyKey).company_name, period, meta: { ...source.meta, version: snapshot?.version || null, snapshotStatus: snapshot?.status || source.meta.status } });
+    }
+    if (url.pathname === '/api/reports/cash_flow/analysis' && req.method === 'GET') {
+      const companyKey = url.searchParams.get('company') || 'gz'; const period = url.searchParams.get('period') || '2026-06';
+      if (!companyRow(companyKey)) return bad(res, 404, '公司不存在');
+      const employee = requireReport(req, res, 'cash_flow', 'summary', 'view', companyKey, period); if (!employee) return;
+      const source = rawReportFor('cash_flow', companyKey, period);
+      const snapshot = source.meta.uploadKey ? db.prepare("SELECT version, status FROM report_snapshots WHERE company_key = ? AND period = ? AND report_type = 'cash_flow' AND snapshot_key LIKE ? ORDER BY version DESC LIMIT 1").get(companyKey, period, `%${source.meta.uploadKey}`) : null;
+      const analysis = parseCashFlowAnalysis(source.raw);
+      log(employee.employee_key, 'view_cash_flow_statement_analysis', 'cash_flow:analysis', `${companyKey}/${period}`, { moduleKey: 'cash_flow', companyKey, period });
       return json(res, 200, { ...analysis, company: companyRow(companyKey).company_name, period, meta: { ...source.meta, version: snapshot?.version || null, snapshotStatus: snapshot?.status || source.meta.status } });
     }
     const rawMatch = url.pathname.match(/^\/api\/reports\/([^/]+)\/raw$/);
