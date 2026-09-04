@@ -8,7 +8,7 @@
 - 持久数据：`/data/data/wecom-finance-report-board`
 - 容器：`wecom-finance-report-board`
 - 当前生产镜像：`aqllm/finance-report-board:1.1.49`（生产验收与回滚信息见 `docs/PRODUCTION_OPERATIONS.md`）
-- 当前源码版本：`1.1.52`（容器生成最小顾问清单、宿主机零原生依赖及财务专用授权到期提醒候选）
+- 当前源码版本：`1.1.53`（管理员顾问名单显示设置与工具栏布局优化候选）
 - 本机端口：`127.0.0.1:3180`
 - 正式地址：`https://anqiaoyiminxq.com/platform/finance/`
 
@@ -21,6 +21,8 @@
 同步器使用 CLI 1.2.0 的 `sheet get --json` 和 `sheet ranges get --json` 结构化接口，只读取花名册“在职”“离职”工作表 `E:F`；全空行可跳过。单次响应起始列不是 E 或非空行有效列宽超过 2 时会丢弃整次响应并以完全相同的 E:F 请求有限重试，连续 3 次异常才报错，且始终不覆盖安全快照。结构诊断只记录起始列、最大宽度和尝试次数，不含单元格值。不得增加扩大读取范围的开关。授权约 7 天失效后，小时级目录同步会写入 `consultant-directory-auth-request.json`，由新增 `wecom-finance-consultant-auth.path/.service` 生成 15 分钟临时授权链接；链接只通过管理员接口展示。管理员确认后授权服务自动复检并提交刷新请求。首次启用前依次手工验证目录同步和授权模拟，再执行 `systemctl enable --now wecom-finance-consultant-directory.path wecom-finance-consultant-directory.timer wecom-finance-consultant-auth.path`。
 
 首次启用或更换源码目录后，先在候选运行镜像中挂载财务数据卷并执行 `node /app/deploy/prepare-consultant-directory-input.mjs`；该容器内工具以只读方式打开 SQLite，只在数据卷写入最小顾问匹配清单。随后宿主机可直接执行目录同步脚本的纯启动/import 预检，整个宿主机服务没有 npm 原生依赖。
+
+顾问名单显示范围由 `app_settings.consultant_roi_hidden_consultants` 保存，只有拥有权限管理能力的管理员可以通过顾问模块修改。过滤在服务端完成，普通用户响应不含被隐藏人员或配置候选；当前顾问模块不显示导出按钮。
 
 `1.1.25` 使用专用运行身份 `20117:20117`。首次切换前先创建 SQLite 一致性备份，再执行 `deploy/harden-finance-data.sh`；该脚本只接受精确目录 `/data/data/wecom-finance-report-board`。SQLite 备份和异机备份状态文件均按 `0600` 创建。启动后必须执行 `node deploy/check-runtime-isolation.mjs`，验证 owner/mode、其他容器挂载、Docker Socket、网络成员和回环端口。
 

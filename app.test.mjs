@@ -987,10 +987,10 @@ test('上传页使用独立公司期间选择器且移除全局范围锁定', ()
 test('页面与后台运行版本一致且旧响应不能覆盖上传操作后的列表', async () => {
   const bootstrap = await request('/api/bootstrap?company=gz&period=2026-06');
   assert.equal(bootstrap.response.status, 200);
-  assert.equal(bootstrap.payload.appVersion, '1.1.52');
+  assert.equal(bootstrap.payload.appVersion, '1.1.53');
   const index = fs.readFileSync(path.join(projectDir, 'public', 'index.html'), 'utf8');
   const frontend = fs.readFileSync(path.join(projectDir, 'public', 'app.js'), 'utf8');
-  assert.match(index, /<meta name="app-version" content="1\.1\.52">/);
+  assert.match(index, /<meta name="app-version" content="1\.1\.53">/);
   assert.match(frontend, /const expectedAppVersion = document\.querySelector\('meta\[name="app-version"\]'\)/);
   assert.match(frontend, /bootstrap\?\.appVersion === expectedAppVersion/);
   assert.match(frontend, /APP_VERSION_MISMATCH/);
@@ -2187,6 +2187,21 @@ test('集团顾问投入产出比联合工资表、营收明细和各公司序�
   assert.deepEqual({ available: result.payload.sources.directory.available, matchedRows: result.payload.sources.directory.matchedRows, generatedAt: result.payload.sources.directory.generatedAt }, { available: true, matchedRows: 2, generatedAt: '2027-03-31T08:00:00.000Z' });
   assert.equal(result.payload.sources.directory.sync.state, 'success');
   assert.match(result.payload.sourceRevision, /^[a-f0-9]{20}$/);
+  assert.equal(result.payload.canManageVisibility, true);
+  assert.deepEqual(result.payload.visibility.options.map(item => ({ name: item.name, hidden: item.hidden })), [{ name: '詹志坚', hidden: false }, { name: '张莎莎', hidden: false }]);
+  const managerBeforeVisibility = await request(`/api/analysis/consultant-roi?company=group&period=${period}`, 'manager');
+  assert.equal(managerBeforeVisibility.payload.canManageVisibility, false); assert.equal(managerBeforeVisibility.payload.visibility, undefined);
+  assert.equal((await put('/api/analysis/consultant-roi/visibility', { hiddenConsultants: ['张莎莎'] }, 'manager')).response.status, 403);
+  const hiddenSaved = await put('/api/analysis/consultant-roi/visibility', { hiddenConsultants: ['张莎莎'] });
+  assert.equal(hiddenSaved.response.status, 200); assert.equal(hiddenSaved.payload.hiddenCount, 1);
+  const hiddenAdminView = await request(`/api/analysis/consultant-roi?company=group&period=${period}`);
+  assert.deepEqual(hiddenAdminView.payload.rows.map(item => item.name), ['詹志坚']); assert.equal(hiddenAdminView.payload.totals.input, 41890.2); assert.equal(hiddenAdminView.payload.totals.output, 120000);
+  assert.equal(hiddenAdminView.payload.visibility.options.find(item => item.name === '张莎莎').hidden, true);
+  const hiddenManagerView = await request(`/api/analysis/consultant-roi?company=group&period=${period}`, 'manager');
+  assert.deepEqual(hiddenManagerView.payload.rows.map(item => item.name), ['詹志坚']); assert.equal(hiddenManagerView.payload.visibility, undefined);
+  assert.equal((await put('/api/analysis/consultant-roi/visibility', { hiddenConsultants: '张莎莎' })).response.status, 400);
+  assert.equal((await put('/api/analysis/consultant-roi/visibility', { hiddenConsultants: [] })).response.status, 200);
+  assert.equal((await request(`/api/analysis/consultant-roi?company=group&period=${period}`)).payload.rows.length, 2);
 
   fs.writeFileSync(testConsultantDirectoryFile, JSON.stringify({ schemaVersion: 1, generatedAt: '2027-03-31T09:00:00.000Z', people: [
     { name: '詹志坚', englishName: 'James', employmentStatus: 'active' }, { name: '张莎莎', englishName: 'Sasa', employmentStatus: 'active' }
@@ -2256,12 +2271,14 @@ test('集团顾问投入产出比联合工资表、营收明细和各公司序�
   const directoryAuthUnit = fs.readFileSync(path.join(projectDir, 'deploy', 'systemd', 'wecom-finance-consultant-auth.service'), 'utf8');
   assert.match(frontend, /data-roi-input/); assert.match(frontend, /data-roi-filter-toggle/); assert.match(frontend, /data-roi-filter-draft/); assert.match(frontend, /data-roi-sort/);
   assert.match(frontend, /consultant-roi-filter-menu/); assert.match(frontend, /positionColumnFilter/); assert.doesNotMatch(frontend, /roi-filter-row/);
-  assert.match(frontend, /consultant-roi-export/); assert.match(frontend, /顾问投入产出比\.csv/);
+  assert.doesNotMatch(frontend, /id="consultant-roi-export"/); assert.match(frontend, /顾问投入产出比\.csv/);
   assert.match(frontend, /key: 'trafficSpend', label: '投流消耗费用'/); assert.match(frontend, /consultantSpendRevenueReportType, '集团顾问消耗-营收表'/);
   assert.match(frontend, /投流取数字段/); assert.match(frontend, /unmatchedSpendRows/);
   assert.match(frontend, /工资取数字段/); assert.match(frontend, /payrollFields/);
   assert.match(serverSource, /refreshedConsultantPayrollRawFor/); assert.match(serverSource, /hireDate\.slice\(0, 7\) === period/);
   assert.match(frontend, /consultantRoiAverageSummary/); assert.match(frontend, /consultant-roi-average-modal/); assert.match(frontend, /consultant-new-hire-badge/); assert.match(frontend, /入职时间/);
+  assert.match(frontend, /consultant-roi-visibility-open/); assert.match(frontend, /consultant-roi-visibility-save/); assert.match(frontend, /\/api\/analysis\/consultant-roi\/visibility/);
+  assert.match(serverSource, /consultant_roi_hidden_consultants/); assert.match(serverSource, /set_consultant_roi_visibility/); assert.match(serverSource, /canManageVisibility/);
   assert.match(frontend, /key: 'hireDate', label: '入职日期'/); assert.match(frontend, /key: 'englishName', label: '英文名'/); assert.match(frontend, /consultant-resigned-badge/);
   assert.match(serverSource, /consultantDirectorySnapshot/); assert.match(serverSource, /directory: directory\.revision/); assert.match(serverSource, /employmentStatus === 'resigned'/);
   assert.match(directorySyncSource, /contact', 'users', 'search/); assert.match(directorySyncSource, /sheet', 'get', '--json/); assert.match(directorySyncSource, /sheet', 'ranges', 'get', '--json/); assert.match(directorySyncSource, /mode: 'default'/); assert.match(directorySyncSource, /exactTwoColumnRows/); assert.doesNotMatch(directorySyncSource, /WECOM_ALLOW_WIDE_ROSTER_READ/);
@@ -2282,6 +2299,7 @@ test('集团顾问投入产出比联合工资表、营收明细和各公司序�
   assert.match(stylesheet, /\.consultant-roi-page-actions\{[^}]*flex-wrap:nowrap/); assert.match(stylesheet, /#consultant-roi-refresh-status\{[^}]*position:absolute/);
   assert.match(stylesheet, /\.consultant-roi-average-card/); assert.match(stylesheet, /\.consultant-roi-average-modal/); assert.match(stylesheet, /\.consultant-new-hire-badge/);
   assert.match(stylesheet, /\.consultant-resigned-badge/); assert.match(stylesheet, /roi-col-hireDate/); assert.match(stylesheet, /roi-col-englishName/); assert.match(stylesheet, /roi-col-trafficSpend/);
+  assert.match(stylesheet, /\.consultant-roi-input-group/); assert.match(stylesheet, /\.consultant-roi-utility-actions/); assert.match(stylesheet, /\.consultant-roi-visibility-modal/);
   assert.match(stylesheet, /\.consultant-directory-guide/); assert.match(stylesheet, /\.consultant-directory-guide-modal/); assert.match(stylesheet, /\.consultant-directory-auth-actions/);
   assert.match(stylesheet, /\.consultant-roi-table\{width:100%;min-width:0!important;table-layout:fixed\}/);
   assert.match(stylesheet, /\.roi-filter-menu\{position:fixed/); assert.match(stylesheet, /\.roi-filter-trigger\.active/);

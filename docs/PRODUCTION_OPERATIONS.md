@@ -517,3 +517,10 @@ cat /data/data/wecom-finance-report-board/backups/offsite-last-success.meta
 - 容器为 `healthy`，回环与公网健康接口均返回 `1.1.52/platform`；Nginx、运行时隔离、生产真实登录、静态资源一致性和页面无可见错误检查通过。有效授权状态下管理员页面不显示多余授权入口；普通用户无法取得授权 URL 或调用重新授权接口的隔离由生产镜像回归覆盖，未通过破坏有效授权模拟到期。
 - SQLite 完整性发布前后均为 `ok`，核心业务事实保持 8 家公司、235 个上传批次、235 份报表快照和 13,061 条报表行。发布前一致性备份为 `/data/data/wecom-finance-report-board/backups/report-board-20260904T035940Z.db`，SHA256 为 `68d20c58b30fc6d9599681cf11dbfcc0354233013ce05ad066f7e5291164326e`；发布后备份为 `/data/data/wecom-finance-report-board/backups/report-board-20260904T041231Z.db`，SHA256 为 `7595c72beff8eb2f3a85c4b9120c6e28727d2d8dd1d1c852e77487a4d6f72018`。两者均为 `0600`、`20117:20117`。
 - 发布前完整回滚快照位于 `/data/backups/wecom-finance-report-board/pre-1.1.52-20260904T035940Z`，旧源码位于 `/data/repos/wecom-finance-report-board-pre-1.1.52-20260904T035940Z`。回滚时先执行 `systemctl disable --now wecom-finance-consultant-auth.path wecom-finance-consultant-directory.path wecom-finance-consultant-directory.timer`，恢复快照中的源码、Compose、环境文件、五个财务专用 unit 和 drop-in，再启动 `aqllm/finance-report-board:1.1.49`；数据库完整性正常时不得用备份覆盖现有业务数据。
+
+## 42. 顾问名单显示设置候选（1.1.53，待部署）
+
+- 顾问投入产出模块向权限管理员显示“名单显示设置”，支持姓名搜索、逐人显示/隐藏和全部恢复显示；普通用户不返回设置候选，也不能调用保存接口。
+- 隐藏名单以顾问规范姓名键全局保存到 `app_settings`。服务端在返回分析结果前过滤人员，因此隐藏顾问不会进入明细列表、指标合计、平均投入产出比、地区投入产出比或前端数据；源数据和上传记录不删除。
+- 当前页面移除“导出当前视图”按钮；投入数据标签独立分组，名单设置与清除筛选放入紧凑操作组，并保留手机端单列自适应。
+- 本版本不改变数据库结构、企微同步脚本、独立授权、财务专用 systemd 单元或数据卷权限。回滚只需恢复 1.1.52 镜像与源码；数据库完整时不得覆盖现有数据。
