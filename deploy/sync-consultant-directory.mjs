@@ -40,6 +40,14 @@ const canonicalName = value => {
   return text.match(/[\u4e00-\u9fa5]{2,6}/g)?.at(-1) || text.replace(/[^A-Za-z0-9]/g, '').toLowerCase();
 };
 const safeEnglishName = value => String(value || '').replace(/[\u0000-\u001f\u007f\u4e00-\u9fff]/g, '').replace(/\s+/g, ' ').trim().slice(0, 80);
+const safeCompanyName = value => String(value || '').replace(/[\u0000-\u001f\u007f]/g, '').replace(/\s+/g, ' ').trim().slice(0, 80);
+const safeRosterDate = value => {
+  const text = String(value || '').replace(/[\u0000-\u001f\u007f]/g, '').trim();
+  const match = text.match(/^(20\d{2})[年/.\-](1[0-2]|0?[1-9])[月/.\-](3[01]|[12]\d|0?[1-9])日?$/);
+  if (!match) return '';
+  const year = Number(match[1]); const month = Number(match[2]); const day = Number(match[3]); const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day ? `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}` : '';
+};
 const documentIdFor = doc => String(doc?.docid || doc?.url || '').match(/\/sheet\/([^?/#]+)/)?.[1] || String(doc?.docid || doc?.url || '');
 const gridCellText = cell => {
   const value = cell?.cell_value ?? cell?.value ?? cell;
@@ -51,23 +59,24 @@ const gridCellText = cell => {
   if (value.display_value != null) return String(value.display_value).trim();
   return '';
 };
-const exactTwoColumnRows = result => {
+const exactColumnRows = (result, { startColumn = 4, width = 2, label = '姓名/英文名' } = {}) => {
   const sourceRows = result?.grid_data?.rows;
   if (!Array.isArray(sourceRows)) fail('企业微信表格未返回结构化区域数据', 'WECOM_INVALID_RESPONSE');
-  const startColumn = Number(result?.grid_data?.start_column);
-  if (startColumn !== 4) fail('企业微信返回区域的起始列不是预期的 E 列；为避免扩大花名册暴露面，已拒绝生成快照', 'SOURCE_SCOPE_REQUIRED', { startColumn: Number.isFinite(startColumn) ? startColumn : null, maximumWidth: 0 });
+  const actualStartColumn = Number(result?.grid_data?.start_column);
+  if (actualStartColumn !== startColumn) fail(`企业微信返回区域的起始列不是预期列；为避免扩大${label}暴露面，已拒绝生成快照`, 'SOURCE_SCOPE_REQUIRED', { startColumn: Number.isFinite(actualStartColumn) ? actualStartColumn : null, expectedStartColumn: startColumn, maximumWidth: 0, allowedWidth: width });
   return sourceRows.map(row => {
     const values = Array.isArray(row?.values) ? row.values : [];
     const cells = values.map(gridCellText); let effectiveWidth = cells.length;
     while (effectiveWidth && !cells[effectiveWidth - 1]) effectiveWidth -= 1;
-    if (effectiveWidth > 2) fail('企业微信当前返回了超出姓名/英文名允许列的内容；为避免扩大花名册暴露面，已拒绝生成快照', 'SOURCE_SCOPE_REQUIRED', { startColumn, maximumWidth: effectiveWidth });
-    return [cells[0] || '', cells[1] || ''];
+    if (effectiveWidth > width) fail(`企业微信当前返回了超出${label}允许列的内容；为避免扩大花名册暴露面，已拒绝生成快照`, 'SOURCE_SCOPE_REQUIRED', { startColumn: actualStartColumn, expectedStartColumn: startColumn, maximumWidth: effectiveWidth, allowedWidth: width });
+    return Array.from({ length: width }, (_, index) => cells[index] || '');
   });
 };
-const exactRosterRows = (commandArgs, read = cliJson, pause = milliseconds => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds)) => {
+const exactTwoColumnRows = result => exactColumnRows(result);
+const exactRosterRows = (commandArgs, read = cliJson, pause = milliseconds => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds), options = {}) => {
   let lastError;
   for (let attempt = 1; attempt <= 3; attempt += 1) {
-    try { return exactTwoColumnRows(read(commandArgs)); }
+    try { return exactColumnRows(read(commandArgs), options); }
     catch (error) {
       if (error.code !== 'SOURCE_SCOPE_REQUIRED') throw error;
       lastError = new SyncError(error.code, error.message, { ...error.diagnostic, attempts: attempt });
@@ -113,14 +122,23 @@ const rosterDocument = () => {
 const rosterPeople = (doc, title, status) => {
   const docid = documentIdFor(doc); const info = cliJson(['sheet', 'get', '--json', JSON.stringify({ docid })]); const sheet = (info.sheets || []).find(item => item.title === title);
   if (!sheet) fail(`花名册中未找到“${title}”工作表`, 'ROSTER_SHEET_MISSING');
-  const range = `E1:F${Math.max(2, Number(sheet.row_count || 200))}`;
-  const rows = exactRosterRows(['sheet', 'ranges', 'get', '--json', JSON.stringify({ docid, sheet_id: sheet.sheet_id, mode: 'default', range })]); const headerRowIndex = rows.findIndex(row => row.some(Boolean)); const header = rows[headerRowIndex] || [];
-  let nameIndex = header.findIndex(value => String(value).trim() === '姓名'); let englishIndex = header.findIndex(value => String(value).trim() === '英文名');
-  if (nameIndex < 0 || englishIndex < 0) fail(`“${title}”工作表未识别到姓名和英文名字段`, 'ROSTER_FIELDS_MISSING');
+  const rowCount = Math.max(2, Number(sheet.row_count || 200)); const profileRange = `D1:F${rowCount}`;
+  const rows = exactRosterRows(['sheet', 'ranges', 'get', '--json', JSON.stringify({ docid, sheet_id: sheet.sheet_id, mode: 'default', range: profileRange })], cliJson, undefined, { startColumn: 3, width: 3, label: '所属公司/姓名/英文名' });
+  const headerRowIndex = rows.findIndex(row => row.some(Boolean)); const header = rows[headerRowIndex] || [];
+  const companyIndex = header.findIndex(value => String(value).trim() === '所属公司'); const nameIndex = header.findIndex(value => String(value).trim() === '姓名'); const englishIndex = header.findIndex(value => String(value).trim() === '英文名');
+  if (companyIndex < 0 || nameIndex < 0 || englishIndex < 0) fail(`“${title}”工作表未识别到所属公司、姓名和英文名字段`, 'ROSTER_FIELDS_MISSING');
+  let departureRows = [];
+  if (status === 'resigned') {
+    const departureRange = `B1:B${rowCount}`;
+    departureRows = exactRosterRows(['sheet', 'ranges', 'get', '--json', JSON.stringify({ docid, sheet_id: sheet.sheet_id, mode: 'default', range: departureRange })], cliJson, undefined, { startColumn: 1, width: 1, label: '离职日期' });
+    const departureHeaderIndex = departureRows.findIndex(row => /离职日期|last\s*day/i.test(String(row[0] || '').replace(/[（）()]/g, ' ')));
+    if (departureHeaderIndex < 0 || departureHeaderIndex !== headerRowIndex) fail(`“${title}”工作表未识别到与人员行对齐的离职日期字段`, 'ROSTER_FIELDS_MISSING');
+  }
   const people = new Map();
-  for (const row of rows.slice(headerRowIndex + 1)) {
+  for (let rowIndex = headerRowIndex + 1; rowIndex < rows.length; rowIndex += 1) {
+    const row = rows[rowIndex];
     const name = String(row[nameIndex] || '').trim(); const key = canonicalName(name); if (!key) continue;
-    people.set(key, { name, englishName: safeEnglishName(row[englishIndex]), employmentStatus: status });
+    people.set(key, { name, englishName: safeEnglishName(row[englishIndex]), companyName: safeCompanyName(row[companyIndex]), employmentStatus: status, departureDate: status === 'resigned' ? safeRosterDate(departureRows[rowIndex]?.[0]) : '' });
   }
   return people;
 };
@@ -148,9 +166,9 @@ const main = () => {
   const active = rosterPeople(doc, '在职', 'active'); const resigned = rosterPeople(doc, '离职', 'resigned'); const contactNames = contactEnglishNames(consultantNames);
   const people = [...consultantNames].map(([key, name]) => {
     const roster = resigned.get(key) || active.get(key);
-    return { name, englishName: contactNames.get(key) || roster?.englishName || '', employmentStatus: resigned.has(key) ? 'resigned' : 'active' };
+    return { name, englishName: contactNames.get(key) || roster?.englishName || '', companyName: roster?.companyName || '', employmentStatus: resigned.has(key) ? 'resigned' : 'active', departureDate: resigned.has(key) ? roster?.departureDate || '' : '' };
   }).sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'));
-  const generatedAt = new Date().toISOString(); const payload = { schemaVersion: 1, generatedAt, source: { roster: '企业微信在线表格·花名册', contacts: '企业微信通讯录' }, people };
+  const generatedAt = new Date().toISOString(); const payload = { schemaVersion: 2, generatedAt, source: { roster: '企业微信在线表格·花名册', contacts: '企业微信通讯录' }, people };
   privateJson(outputFile, payload);
   privateJson(statusFile, statusPayload('success', '企业微信花名册与通讯录已完成匹配', '', { lastSuccessAt: generatedAt, matchedPeople: people.length, englishNames: people.filter(item => item.englishName).length, resignedPeople: people.filter(item => item.employmentStatus === 'resigned').length }));
   try { fs.unlinkSync(requestFile); } catch (error) { if (error.code !== 'ENOENT') throw error; }
@@ -161,12 +179,12 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   try { main(); } catch (error) {
     const guide = {
       AUTH_REQUIRED: ['auth_required', '需要管理员重新授权企业微信', '运行 wecom-cli auth init 完成授权后重试'],
-      SOURCE_SCOPE_REQUIRED: ['source_scope_required', '花名册返回范围超出允许字段，已停止读取', '建立仅含姓名和英文名的受控同步表，或由管理员确认连接器列范围'],
+      SOURCE_SCOPE_REQUIRED: ['source_scope_required', '花名册返回范围超出允许字段，已停止读取', '确认花名册 D:F 为所属公司、姓名、英文名，离职表 B 列为离职日期'],
       SOURCE_DATA_REQUIRED: ['source_data_required', '尚无可匹配的已发布顾问工资数据', '先上传并发布含顾问部门和姓名的每月工资表'],
       ROSTER_NOT_FOUND: ['source_permission_required', '未找到企业微信在线表格“花名册”', '确认文档名称，并向同步账号授予查看权限'],
       ROSTER_AMBIGUOUS: ['source_permission_required', '找到多个同名“花名册”，无法安全选择', '配置唯一花名册链接 WECOM_ROSTER_URL 后重试'],
       ROSTER_SHEET_MISSING: ['source_permission_required', '花名册缺少“在职”或“离职”工作表', '检查工作表名称及同步账号权限'],
-      ROSTER_FIELDS_MISSING: ['source_permission_required', '花名册未识别到姓名和英文名字段', '检查表头名称和字段位置后重试'],
+      ROSTER_FIELDS_MISSING: ['source_permission_required', '花名册未识别到所属公司、姓名、英文名或离职日期字段', '确认在职/离职表 D:F 与离职表 B 列表头及行号一致'],
       WECOM_PERMISSION_OR_CONNECTION: ['source_permission_required', '企业微信读取失败', '检查文档授权、通讯录权限与服务器网络后重试']
     };
     const [state, message, action] = guide[error.code] || ['error', '企业微信人事匹配刷新失败', '检查同步服务日志与企业微信连接状态后重试'];
@@ -182,4 +200,4 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   }
 }
 
-export { gridCellText, exactTwoColumnRows, exactRosterRows, consultantNamesFromInput, preservedAuthLink };
+export { gridCellText, exactColumnRows, exactTwoColumnRows, exactRosterRows, consultantNamesFromInput, preservedAuthLink, safeRosterDate };

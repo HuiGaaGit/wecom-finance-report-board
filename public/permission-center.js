@@ -22,9 +22,18 @@ const profileSignature = profile => JSON.stringify({
   showDirection: profile?.showDirection !== false,
   showFullEntry: profile?.showFullEntry !== false
 });
-const permissionLeaves = node => {
+const permissionLeaves = (node, inheritedCompanyKey = '') => {
   const nodes = Array.isArray(node) ? node : [node];
-  return nodes.flatMap(item => item?.key ? [item] : permissionLeaves(item?.children || []));
+  return nodes.flatMap(item => {
+    const requiredCompanyKey = item?.requiredCompanyKey || inheritedCompanyKey;
+    return item?.key ? [{ ...item, requiredCompanyKey }] : permissionLeaves(item?.children || [], requiredCompanyKey);
+  });
+};
+const companyScopeIncludes = (companyKeys, companyKey) => (companyKeys || []).includes('*') || (companyKeys || []).includes(companyKey);
+const scopedPermissionLeaves = (node, companyKeys) => permissionLeaves(node).filter(item => !item.requiredCompanyKey || companyScopeIncludes(companyKeys, item.requiredCompanyKey));
+const permissionKeysForCompanyScope = (permissionKeys, companyKeys, catalog) => {
+  const allowed = new Set(scopedPermissionLeaves(catalog, companyKeys).map(item => item.key));
+  return [...new Set(permissionKeys || [])].filter(key => allowed.has(key)).sort();
 };
 const riskPermission = key => key === 'module.uploads.publish' || key === 'module.permissions.manage' || key === 'module.database.manage';
 const categoryColumns = {
@@ -71,6 +80,10 @@ const matrixRows = group => {
   }
   return [];
 };
+const scopedMatrixRows = (group, companyKeys) => matrixRows(group).map(row => ({
+  ...row,
+  leaves: row.leaves.filter(item => !item.requiredCompanyKey || companyScopeIncludes(companyKeys, item.requiredCompanyKey))
+})).filter(row => row.leaves.length);
 const applyDependencies = (selected, changedKey = '', enabled = true) => {
   if (changedKey === financialBriefViewPermission && !enabled) selected.delete(financialBriefNotesPermission);
   if (selected.has(financialBriefNotesPermission)) selected.add(financialBriefViewPermission);
@@ -112,7 +125,11 @@ export async function renderPermissionCenter(options) {
   const employee = () => data.employees.find(item => item.employeeKey === ui.selectedEmployeeKey);
   const profile = key => data.profiles.find(item => item.employeeKey === key);
   const isDirty = () => profileSignature(model.draft) !== profileSignature(model.original);
-  const setProfile = value => { model.draft = cloneProfile(value); model.original = cloneProfile(value); };
+  const setProfile = value => {
+    const scoped = cloneProfile(value);
+    scoped.permissionKeys = permissionKeysForCompanyScope(scoped.permissionKeys, scoped.companyKeys, data.permissionCatalog);
+    model.draft = cloneProfile(scoped); model.original = cloneProfile(scoped);
+  };
   const validSelected = data.profiles.some(item => item.employeeKey === ui.selectedEmployeeKey);
   ui.selectedEmployeeKey = validSelected ? ui.selectedEmployeeKey : (profile(state.employeeKey)?.employeeKey || data.profiles[0]?.employeeKey || '');
   if (ui.selectedEmployeeKey) setProfile(profile(ui.selectedEmployeeKey));
@@ -151,10 +168,10 @@ export async function renderPermissionCenter(options) {
   };
 
   const matrixHtml = () => {
-    const draft = model.draft; const selected = new Set(draft.permissionKeys); const baseline = new Set(roleDefault(draft.presetRoleKey)?.permissionKeys || []);
+    const draft = model.draft; const selected = new Set(draft.permissionKeys); const baseline = new Set(permissionKeysForCompanyScope(roleDefault(draft.presetRoleKey)?.permissionKeys || [], draft.companyKeys, data.permissionCatalog));
     const group = data.permissionCatalog.find(item => item.id === ui.category); const columns = categoryColumns[ui.category] || [];
     const search = ui.matrixSearch.trim().toLowerCase();
-    const rows = matrixRows(group).filter(row => {
+    const rows = scopedMatrixRows(group, draft.companyKeys).filter(row => {
       const adjusted = row.leaves.some(item => selected.has(item.key) !== baseline.has(item.key));
       const enabled = row.leaves.some(item => selected.has(item.key));
       const risky = row.leaves.some(item => riskPermission(item.key));
@@ -164,7 +181,7 @@ export async function renderPermissionCenter(options) {
       if (ui.matrixFilter === 'risk' && !risky) return false;
       return true;
     });
-    const allKeys = permissionLeaves(group || []).map(item => item.key); const enabledCount = allKeys.filter(key => selected.has(key)).length;
+    const allKeys = scopedPermissionLeaves(group || [], draft.companyKeys).map(item => item.key); const enabledCount = allKeys.filter(key => selected.has(key)).length;
     return `<div class="permission-matrix-toolbar"><span>本分类已开启 <strong>${enabledCount}</strong> / ${allKeys.length}</span><div><button type="button" class="button compact" data-category-action="enable">全部开启</button><button type="button" class="button compact" data-category-action="clear">全部关闭</button><button type="button" class="button compact" data-category-action="reset">恢复预设</button></div></div><div class="permission-matrix" style="--permission-action-columns:${columns.length}"><div class="permission-matrix-head"><span>模块</span>${columns.map(column => `<span>${escapeHtml(column.name)}</span>`).join('')}<span>状态</span><span>操作</span></div>${rows.map(row => `<div class="permission-matrix-row"><div class="permission-module-name"><strong>${escapeHtml(row.name)}</strong>${row.description ? `<small>${escapeHtml(row.description)}</small>` : ''}</div>${columns.map(column => { const leaf = row.leaves.find(item => actionFor(ui.category, item.key) === column.key); return leaf ? `<label class="permission-action-toggle ${riskPermission(leaf.key) ? 'risky' : ''}" title="${escapeHtml(leaf.name)}"><input type="checkbox" data-permission-key="${escapeHtml(leaf.key)}" ${selected.has(leaf.key) ? 'checked' : ''}><span aria-hidden="true"></span><b class="sr-only">${escapeHtml(leaf.name)}</b></label>` : '<span class="permission-action-na">—</span>'; }).join('')}<div>${permissionStatus(row.leaves, selected, baseline)}</div><button type="button" class="permission-row-reset" data-reset-row="${escapeHtml(row.id)}">重置</button></div>`).join('') || '<div class="permission-matrix-empty">没有符合当前筛选条件的模块</div>'}</div>`;
   };
 
@@ -175,12 +192,12 @@ export async function renderPermissionCenter(options) {
       applyDependencies(selected, input.dataset.permissionKey, input.checked); model.draft.permissionKeys = [...selected].sort(); renderEditor();
     });
     host.querySelectorAll('[data-category-action]').forEach(button => button.onclick = () => {
-      const group = data.permissionCatalog.find(item => item.id === ui.category); const keys = permissionLeaves(group || []).map(item => item.key); const baseline = new Set(roleDefault(model.draft.presetRoleKey)?.permissionKeys || []); const selected = new Set(model.draft.permissionKeys);
+      const group = data.permissionCatalog.find(item => item.id === ui.category); const keys = scopedPermissionLeaves(group || [], model.draft.companyKeys).map(item => item.key); const baseline = new Set(permissionKeysForCompanyScope(roleDefault(model.draft.presetRoleKey)?.permissionKeys || [], model.draft.companyKeys, data.permissionCatalog)); const selected = new Set(model.draft.permissionKeys);
       keys.forEach(key => { if (button.dataset.categoryAction === 'enable' || (button.dataset.categoryAction === 'reset' && baseline.has(key))) selected.add(key); else selected.delete(key); });
       applyDependencies(selected); model.draft.permissionKeys = [...selected].sort(); renderEditor();
     });
     host.querySelectorAll('[data-reset-row]').forEach(button => button.onclick = () => {
-      const group = data.permissionCatalog.find(item => item.id === ui.category); const row = matrixRows(group).find(item => item.id === button.dataset.resetRow); const baseline = new Set(roleDefault(model.draft.presetRoleKey)?.permissionKeys || []); const selected = new Set(model.draft.permissionKeys);
+      const group = data.permissionCatalog.find(item => item.id === ui.category); const row = scopedMatrixRows(group, model.draft.companyKeys).find(item => item.id === button.dataset.resetRow); const baseline = new Set(permissionKeysForCompanyScope(roleDefault(model.draft.presetRoleKey)?.permissionKeys || [], model.draft.companyKeys, data.permissionCatalog)); const selected = new Set(model.draft.permissionKeys);
       row?.leaves.forEach(item => baseline.has(item.key) ? selected.add(item.key) : selected.delete(item.key)); applyDependencies(selected); model.draft.permissionKeys = [...selected].sort(); renderEditor();
     });
   };
@@ -194,10 +211,13 @@ export async function renderPermissionCenter(options) {
       ...state.bootstrap.companies.map(company => `<label><input type="checkbox" class="permission-company" value="${escapeHtml(company.key)}" ${draft.companyKeys.includes(company.key) ? 'checked' : ''}>${escapeHtml(company.name)}</label>`)
     ].join('');
     const targets = data.employees.filter(item => item.employeeKey !== draft.employeeKey).map(item => `<option value="${escapeHtml(item.employeeKey)}">${escapeHtml(item.name)} · ${escapeHtml(item.department)}</option>`).join('');
-    return `<section class="permission-config-section"><div class="permission-section-title"><div><h3>角色分组预设</h3><p>先应用常用岗位基线，再做个人微调</p></div></div><div class="permission-role-row"><select id="permission-role-select">${roleOptions}</select><button type="button" class="button" id="permission-apply-role">应用预设</button><span>${escapeHtml(preset?.description || '')}</span></div></section><section class="permission-config-section"><div class="permission-section-title"><div><h3>数据范围</h3><p>未配置员工默认全部不可见；公司和期间范围对报表、分析、上传及下钻接口统一生效</p></div></div><div class="permission-company-grid">${companyChecks}</div><div class="permission-period-row"><label>起始期间<input type="month" id="permission-from-period" value="${escapeHtml(draft.fromPeriod)}"></label><span>至</span><label>结束期间<input type="month" id="permission-to-period" value="${escapeHtml(draft.toPeriod)}"></label></div></section><section class="permission-config-section"><div class="permission-section-title"><div><h3>常用权限组合</h3><p>仅调整财务报表与经营分析，不改变上传和系统管理权限</p></div></div><div class="permission-bundle-grid">${[['view', '仅浏览', '报表浏览 + 分析浏览'], ['export', '浏览并导出', '增加报表导出'], ['detail', '浏览并查看明细', '增加报表明细'], ['full', '完整财务权限', '报表与分析全部开启'], ['clear', '清空业务权限', '关闭报表与分析']].map(([key, name, description]) => `<button type="button" data-permission-bundle="${key}"><strong>${name}</strong><small>${description}</small></button>`).join('')}</div></section><section class="permission-config-section"><div class="permission-section-title"><div><h3>复制已保存设定</h3><p>完整复制当前员工的角色、个人微调、数据范围和高级设置</p></div></div><div class="permission-copy-inline"><select id="permission-copy-target">${targets}</select><button type="button" class="button" id="permission-copy-button" ${targets ? '' : 'disabled'}>复制给该员工</button></div><small class="permission-inline-note">若当前有未保存修改，请先保存后再复制。</small></section>`;
+    return `<section class="permission-config-section"><div class="permission-section-title"><div><h3>角色分组预设</h3><p>应用预设会同步角色权限、公司期间范围和明细偏好，再做个人微调</p></div></div><div class="permission-role-row"><select id="permission-role-select">${roleOptions}</select><button type="button" class="button" id="permission-apply-role">应用预设</button><span>${escapeHtml(preset?.description || '')}</span></div></section><section class="permission-config-section"><div class="permission-section-title"><div><h3>数据范围</h3><p>未配置员工默认全部不可见；公司和期间范围对报表、分析、上传及下钻接口统一生效</p></div></div><div class="permission-company-grid">${companyChecks}</div><div class="permission-period-row"><label>起始期间<input type="month" id="permission-from-period" value="${escapeHtml(draft.fromPeriod)}"></label><span>至</span><label>结束期间<input type="month" id="permission-to-period" value="${escapeHtml(draft.toPeriod)}"></label></div></section><section class="permission-config-section"><div class="permission-section-title"><div><h3>常用权限组合</h3><p>仅调整财务报表与经营分析，不改变上传和系统管理权限</p></div></div><div class="permission-bundle-grid">${[['view', '仅浏览', '报表浏览 + 分析浏览'], ['export', '浏览并导出', '增加报表导出'], ['detail', '浏览并查看明细', '增加报表明细'], ['full', '完整财务权限', '报表与分析全部开启'], ['clear', '清空业务权限', '关闭报表与分析']].map(([key, name, description]) => `<button type="button" data-permission-bundle="${key}"><strong>${name}</strong><small>${description}</small></button>`).join('')}</div></section><section class="permission-config-section"><div class="permission-section-title"><div><h3>复制已保存设定</h3><p>完整复制当前员工的角色、个人微调、数据范围和高级设置</p></div></div><div class="permission-copy-inline"><select id="permission-copy-target">${targets}</select><button type="button" class="button" id="permission-copy-button" ${targets ? '' : 'disabled'}>复制给该员工</button></div><small class="permission-inline-note">若当前有未保存修改，请先保存后再复制。</small></section>`;
   };
 
-  const matrixPanelHtml = () => `<section class="permission-config-section permission-matrix-section"><div class="permission-section-title"><div><h3>模块权限</h3><p>按分类查看；不支持的动作显示为“—”</p></div><span>${model.draft.permissionKeys.length} 项已开启</span></div><div class="permission-category-tabs">${data.permissionCatalog.map(group => `<button type="button" data-permission-category="${escapeHtml(group.id)}" class="${ui.category === group.id ? 'active' : ''}">${escapeHtml(group.name)}<small>${permissionLeaves(group).filter(item => model.draft.permissionKeys.includes(item.key)).length}/${permissionLeaves(group).length}</small></button>`).join('')}</div><div class="permission-matrix-filters"><input id="permission-matrix-search" value="${escapeHtml(ui.matrixSearch)}" placeholder="搜索模块或权限"><div>${[['all', '全部'], ['enabled', '已开启'], ['adjusted', '个人调整'], ['risk', '高风险']].map(([key, name]) => `<button type="button" data-matrix-filter="${key}" class="${ui.matrixFilter === key ? 'active' : ''}">${name}</button>`).join('')}</div></div><div id="permission-matrix-content">${matrixHtml()}</div></section>`;
+  const matrixPanelHtml = () => {
+    const hasGroupScope = companyScopeIncludes(model.draft.companyKeys, 'group');
+    return `<section class="permission-config-section permission-matrix-section"><div class="permission-section-title"><div><h3>模块权限</h3><p>按分类查看；不支持的动作显示为“—”${hasGroupScope ? '' : '；集团专属模块需先选择“全部公司”或“桉侨集团”范围'}</p></div><span>${model.draft.permissionKeys.length} 项已开启</span></div><div class="permission-category-tabs">${data.permissionCatalog.map(group => { const leaves = scopedPermissionLeaves(group, model.draft.companyKeys); return `<button type="button" data-permission-category="${escapeHtml(group.id)}" class="${ui.category === group.id ? 'active' : ''}">${escapeHtml(group.name)}<small>${leaves.filter(item => model.draft.permissionKeys.includes(item.key)).length}/${leaves.length}</small></button>`; }).join('')}</div><div class="permission-matrix-filters"><input id="permission-matrix-search" value="${escapeHtml(ui.matrixSearch)}" placeholder="搜索模块或权限"><div>${[['all', '全部'], ['enabled', '已开启'], ['adjusted', '个人调整'], ['risk', '高风险']].map(([key, name]) => `<button type="button" data-matrix-filter="${key}" class="${ui.matrixFilter === key ? 'active' : ''}">${name}</button>`).join('')}</div></div><div id="permission-matrix-content">${matrixHtml()}</div></section>`;
+  };
 
   const advancedHtml = () => {
     const draft = model.draft; const current = employee(); const canRemove = draft.hasAssignment && draft.employeeKey !== state.employeeKey;
@@ -205,17 +225,17 @@ export async function renderPermissionCenter(options) {
   };
 
   const applyBundle = key => {
-    const selected = new Set(model.draft.permissionKeys); const businessLeaves = data.permissionCatalog.filter(group => ['reports', 'analysis'].includes(group.id)).flatMap(permissionLeaves);
+    const selected = new Set(model.draft.permissionKeys); const businessLeaves = data.permissionCatalog.filter(group => ['reports', 'analysis'].includes(group.id)).flatMap(group => scopedPermissionLeaves(group, model.draft.companyKeys));
     businessLeaves.forEach(item => selected.delete(item.key));
     if (key !== 'clear') businessLeaves.forEach(item => {
       const isReport = item.key.startsWith('report.'); const view = item.key.endsWith('.summary.view') || item.key.startsWith('module.') && item.key.endsWith('.view');
       if (key === 'full' || view || key === 'export' && isReport && item.key.endsWith('.summary.export') || key === 'detail' && isReport && item.key.endsWith('.detail.view')) selected.add(item.key);
     });
-    applyDependencies(selected); model.draft.permissionKeys = [...selected].sort(); renderEditor(); showNotice('常用权限组合已应用，保存前仍可继续微调');
+    applyDependencies(selected); model.draft.permissionKeys = permissionKeysForCompanyScope([...selected], model.draft.companyKeys, data.permissionCatalog); renderEditor(); showNotice('常用权限组合已应用，保存前仍可继续微调');
   };
 
   const summaryHtml = () => {
-    const draft = model.draft; const current = employee(); const baseline = new Set(roleDefault(draft.presetRoleKey)?.permissionKeys || []); const selected = new Set(draft.permissionKeys);
+    const draft = model.draft; const current = employee(); const baseline = new Set(permissionKeysForCompanyScope(roleDefault(draft.presetRoleKey)?.permissionKeys || [], draft.companyKeys, data.permissionCatalog)); const selected = new Set(draft.permissionKeys);
     const added = [...selected].filter(key => !baseline.has(key)).length; const removed = [...baseline].filter(key => !selected.has(key)).length; const risky = [...selected].filter(riskPermission);
     const companies = draft.companyKeys.length === 0 ? '全部不可见' : draft.companyKeys.includes('*') ? '全部公司' : draft.companyKeys.map(companyNameByKey).join('、');
     return `<div class="permission-drawer-backdrop" data-close-summary></div><aside class="permission-summary-drawer" role="dialog" aria-modal="true" aria-label="生效摘要"><div class="permission-drawer-head"><div><span>保存后生效</span><h2>授权摘要</h2></div><button type="button" data-close-summary aria-label="关闭">×</button></div><div class="permission-summary-card"><span>当前员工</span><strong>${escapeHtml(current?.name)}</strong><small>${escapeHtml(current?.department)}</small></div><dl><div><dt>授权状态</dt><dd>${draft.hasAssignment ? '已添加' : '待添加'}</dd></div><div><dt>角色预设</dt><dd>${escapeHtml(roleDefault(draft.presetRoleKey)?.name || '')}</dd></div><div><dt>有效权限</dt><dd>${selected.size} 项</dd></div><div><dt>相对预设</dt><dd>+${added} / -${removed}</dd></div><div><dt>数据范围</dt><dd>${escapeHtml(companies || '未选择')}</dd></div><div><dt>有效期间</dt><dd>${escapeHtml(draft.fromPeriod)} 至 ${escapeHtml(draft.toPeriod)}</dd></div></dl>${risky.length ? `<div class="permission-risk">包含 ${risky.length} 项高风险权限：${escapeHtml(risky.map(key => permissionLeaves(data.permissionCatalog).find(item => item.key === key)?.name || key).join('、'))}</div>` : '<div class="permission-safe">未开启高风险管理权限</div>'}</aside>`;
@@ -256,11 +276,13 @@ export async function renderPermissionCenter(options) {
       host.querySelectorAll('.permission-company').forEach(input => input.onchange = () => {
         const values = [...host.querySelectorAll('.permission-company:checked')].map(item => item.value);
         model.draft.companyKeys = companyScopeForSelection(values, input.value, input.checked);
+        model.draft.permissionKeys = permissionKeysForCompanyScope(model.draft.permissionKeys, model.draft.companyKeys, data.permissionCatalog);
         renderEditor();
       });
       host.querySelector('#permission-apply-role').onclick = () => {
         const next = roleDefault(host.querySelector('#permission-role-select').value); if (!next) return;
-        Object.assign(model.draft, { presetRoleKey: next.roleKey, permissionKeys: [...next.permissionKeys], accountVisibility: next.accountVisibility, showDirection: next.showDirection, showFullEntry: next.showFullEntry });
+        const companyKeys = [...(next.companyKeys || [])];
+        Object.assign(model.draft, { presetRoleKey: next.roleKey, companyKeys, fromPeriod: next.fromPeriod, toPeriod: next.toPeriod, permissionKeys: permissionKeysForCompanyScope(next.permissionKeys, companyKeys, data.permissionCatalog), accountVisibility: next.accountVisibility, showDirection: next.showDirection, showFullEntry: next.showFullEntry });
         renderEditor(); showNotice(`已应用“${next.name}”预设，可继续微调`);
       };
       host.querySelector('#permission-from-period').onchange = event => { model.draft.fromPeriod = event.target.value; renderEditor(); };
@@ -335,4 +357,4 @@ export async function renderPermissionCenter(options) {
   shell(); renderView();
 }
 
-export const permissionCenterTestHelpers = { actionFor, applyDependencies, companyScopeForSelection, matrixRows, profileSignature, riskPermission };
+export const permissionCenterTestHelpers = { actionFor, applyDependencies, companyScopeForSelection, matrixRows, permissionKeysForCompanyScope, profileSignature, riskPermission, scopedMatrixRows };

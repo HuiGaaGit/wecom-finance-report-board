@@ -57,3 +57,20 @@ test('数据范围支持全部不可见并与全部公司、单家公司互斥',
   assert.match(source, /value="\$\{hiddenCompanyScopeValue\}"[\s\S]*全部不可见/);
   assert.match(source, /未配置员工默认全部不可见/);
 });
+
+test('未选择全部公司或桉侨集团时隐藏并清除集团专属模块权限', () => {
+  const { permissionKeysForCompanyScope, scopedMatrixRows } = permissionCenterTestHelpers;
+  const catalog = [{ id: 'reports', children: [
+    { id: 'income_statement', name: '利润表', children: [{ key: 'report.income_statement.summary.view', name: '浏览报表' }] },
+    { id: 'consolidated_income_statement', name: '桉侨集团合并利润表', requiredCompanyKey: 'group', children: [{ key: 'report.consolidated_income_statement.summary.view', name: '浏览报表' }] }
+  ] }];
+  const groupKey = 'report.consolidated_income_statement.summary.view';
+  const companyKey = 'report.income_statement.summary.view';
+
+  assert.deepEqual(scopedMatrixRows(catalog[0], ['gz']).map(row => row.id), ['income_statement']);
+  assert.deepEqual(scopedMatrixRows(catalog[0], ['group']).map(row => row.id), ['income_statement', 'consolidated_income_statement']);
+  assert.deepEqual(scopedMatrixRows(catalog[0], ['*']).map(row => row.id), ['income_statement', 'consolidated_income_statement']);
+  assert.deepEqual(permissionKeysForCompanyScope([companyKey, groupKey], ['gz'], catalog), [companyKey]);
+  assert.deepEqual(permissionKeysForCompanyScope([companyKey, groupKey], [], catalog), [companyKey]);
+  assert.deepEqual(permissionKeysForCompanyScope([companyKey, groupKey], ['group'], catalog), [groupKey, companyKey].sort());
+});

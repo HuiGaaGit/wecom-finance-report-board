@@ -7,8 +7,8 @@
 - 环境变量：`/data/secrets/wecom-finance-report-board/report-board.env`
 - 持久数据：`/data/data/wecom-finance-report-board`
 - 容器：`wecom-finance-report-board`
-- 当前生产镜像：`aqllm/finance-report-board:1.1.53`（生产验收与回滚信息见 `docs/PRODUCTION_OPERATIONS.md`）
-- 当前源码版本：`1.1.54`（顾问报销费用二级科目筛选候选）
+- 当前生产镜像：`aqllm/finance-report-board:1.1.54`（生产验收与回滚信息见 `docs/PRODUCTION_OPERATIONS.md`）
+- 当前源码版本：`1.1.59`（顾问公司口径、人事日期、管理员统一投入配置与权限预设候选）
 - 本机端口：`127.0.0.1:3180`
 - 正式地址：`https://anqiaoyiminxq.com/platform/finance/`
 
@@ -16,15 +16,15 @@
 
 财务模块只以无正文 GET 请求调用小Q的 `/api/auth/me`、`/api/data-dist/my-roles` 和管理员目录同步所需的 `/api/data-dist/user-groups`。生产环境不保存企微应用 Secret，也不把报表、工资、上传文件或解析结果发送给小Q。
 
-顾问英文名和离职状态不经小Q接口传递。工资表或营收统计表发布后，财务容器先从已发布工资表写入只含顾问姓名的 `consultant-directory-input.json`，再写入不含人员、文件名和金额的刷新请求。宿主机 `deploy/systemd/wecom-finance-consultant-directory.service/.path/.timer` 仅使用财务专用 `/opt/wecom-finance/wecom-cli/node_modules/.bin/wecom-cli` 和独立凭证目录 `/var/lib/wecom-finance-cli`；同步器不加载 `better-sqlite3`、不打开财务数据库、不引用其他项目目录。`.path` 立即启动同步器，`.timer` 每小时兜底并检查授权。同步器只把姓名、英文名、在职/离职状态和同步时间写入 `consultant-directory.json`，另把不含人员信息的执行结果写入 `consultant-directory-status.json`；三个 JSON 文件最终固定为 `20117:20117`、`0600`。
+顾问英文名、所属公司和离职状态不经小Q接口传递。工资表或营收统计表发布后，财务容器先从已发布工资表写入只含顾问姓名的 `consultant-directory-input.json`，再写入不含人员、文件名和金额的刷新请求。宿主机 `deploy/systemd/wecom-finance-consultant-directory.service/.path/.timer` 仅使用财务专用 `/opt/wecom-finance/wecom-cli/node_modules/.bin/wecom-cli` 和独立凭证目录 `/var/lib/wecom-finance-cli`；同步器不加载 `better-sqlite3`、不打开财务数据库、不引用其他项目目录。`.path` 立即启动同步器，`.timer` 每小时兜底并检查授权。同步器只把姓名、英文名、所属公司、在职/离职状态和离职日期写入 `consultant-directory.json`，另把不含人员信息的执行结果写入 `consultant-directory-status.json`；三个 JSON 文件最终固定为 `20117:20117`、`0600`。
 
-同步器使用 CLI 1.2.0 的 `sheet get --json` 和 `sheet ranges get --json` 结构化接口，只读取花名册“在职”“离职”工作表 `E:F`；全空行可跳过。单次响应起始列不是 E 或非空行有效列宽超过 2 时会丢弃整次响应并以完全相同的 E:F 请求有限重试，连续 3 次异常才报错，且始终不覆盖安全快照。结构诊断只记录起始列、最大宽度和尝试次数，不含单元格值。不得增加扩大读取范围的开关。授权约 7 天失效后，小时级目录同步会写入 `consultant-directory-auth-request.json`，由新增 `wecom-finance-consultant-auth.path/.service` 生成 15 分钟临时授权链接；链接只通过管理员接口展示。管理员确认后授权服务自动复检并提交刷新请求。首次启用前依次手工验证目录同步和授权模拟，再执行 `systemctl enable --now wecom-finance-consultant-directory.path wecom-finance-consultant-directory.timer wecom-finance-consultant-auth.path`。
+同步器使用 CLI 1.2.0 的 `sheet get --json` 和 `sheet ranges get --json` 结构化接口，在“在职”“离职”工作表精确读取 `D:F`（所属公司、姓名、英文名），并对“离职”表另行精确读取 `B:B`（离职日期）；两段数据只按相同行号合并，禁止读取 `C` 列离职原因。全空行可跳过。单次响应起始列、有效宽度、表头或行对齐异常时会丢弃整次响应并以完全相同的窄范围请求有限重试，连续 3 次异常才报错，且始终不覆盖安全快照。结构诊断只记录起始列、最大宽度和尝试次数，不含单元格值。不得增加扩大读取范围的开关。授权约 7 天失效后，小时级目录同步会写入 `consultant-directory-auth-request.json`，由新增 `wecom-finance-consultant-auth.path/.service` 生成 15 分钟临时授权链接；链接只通过管理员接口展示。管理员确认后授权服务自动复检并提交刷新请求。
 
 首次启用或更换源码目录后，先在候选运行镜像中挂载财务数据卷并执行 `node /app/deploy/prepare-consultant-directory-input.mjs`；该容器内工具以只读方式打开 SQLite，只在数据卷写入最小顾问匹配清单。随后宿主机可直接执行目录同步脚本的纯启动/import 预检，整个宿主机服务没有 npm 原生依赖。
 
 顾问名单显示范围由 `app_settings.consultant_roi_hidden_consultants` 保存，只有拥有权限管理能力的管理员可以通过顾问模块修改。过滤在服务端完成，普通用户响应不含被隐藏人员或配置候选；当前顾问模块不显示导出按钮。
 
-顾问模块把原“人员费用”统一展示为“报销费用”。后端只为当前期间、当前授权公司、唯一匹配到可见顾问的销售/管理费用明细返回二级科目，并继续排除工资、薪酬、提成和结转分录；前端二级科目多选仅影响当前视图，不写入财务数据库。基本工资、报销费用和投流消耗费用默认计入投入，提成默认不计入。
+顾问模块把原“人员费用”统一展示为“报销费用”。后端只为权限管理员返回当前期间、唯一匹配到可见顾问的销售/管理费用二级科目候选，并继续排除工资、薪酬、提成和结转分录；普通员工不接收候选名称、金额或笔数。投入项目与报销科目按期间保存在 `app_settings`，管理员明确保存后全员使用同一口径；新期间未配置时默认计入基本工资、报销费用和投流消耗费用，提成默认不计入，报销科目默认全选。保存项在重传后不存在时忽略并提示，不自动纳入新出现科目。
 
 `1.1.25` 使用专用运行身份 `20117:20117`。首次切换前先创建 SQLite 一致性备份，再执行 `deploy/harden-finance-data.sh`；该脚本只接受精确目录 `/data/data/wecom-finance-report-board`。SQLite 备份和异机备份状态文件均按 `0600` 创建。启动后必须执行 `node deploy/check-runtime-isolation.mjs`，验证 owner/mode、其他容器挂载、Docker Socket、网络成员和回环端口。
 

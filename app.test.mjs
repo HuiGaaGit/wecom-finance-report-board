@@ -28,7 +28,7 @@ const testConsultantDirectoryAuthRequestFile = path.join(projectDir, 'data', `te
 const testConsultantDirectoryInputFile = path.join(projectDir, 'data', `test-consultant-directory-input-${process.pid}-${Date.now()}.json`);
 let child;
 
-const { exactTwoColumnRows, exactRosterRows, consultantNamesFromInput, preservedAuthLink } = await import('./deploy/sync-consultant-directory.mjs');
+const { exactColumnRows, exactTwoColumnRows, exactRosterRows, consultantNamesFromInput, preservedAuthLink, safeRosterDate } = await import('./deploy/sync-consultant-directory.mjs');
 const { safeAuthUrl } = await import('./deploy/init-consultant-directory-auth.mjs');
 
 test('企微花名册只接受结构化精确两列，异常响应仅有限重试，授权链接严格限定官方临时入口', () => {
@@ -38,8 +38,12 @@ test('企微花名册只接受结构化精确两列，异常响应仅有限重�
     { values: [{ cell_value: { text: '测试顾问' }, data_type: 'TEXT' }, { cell_value: { text: 'Tester' }, data_type: 'TEXT' }, { cell_value: { text: '' }, data_type: 'TEXT' }] }
   ] } });
   assert.deepEqual(rows, [['', ''], ['姓名', '英文名'], ['测试顾问', 'Tester']]);
+  assert.deepEqual(exactColumnRows({ grid_data: { start_column: 3, rows: [{ values: [{ cell_value: { text: '所属公司' } }, { cell_value: { text: '姓名' } }, { cell_value: { text: '英文名' } }] }] } }, { startColumn: 3, width: 3, label: '所属公司/姓名/英文名' }), [['所属公司', '姓名', '英文名']]);
+  assert.deepEqual(exactColumnRows({ grid_data: { start_column: 1, rows: [{ values: [{ cell_value: { text: '离职日期 (last day)' } }] }, { values: [{ cell_value: { text: '2026/7/28' } }] }] } }, { startColumn: 1, width: 1, label: '离职日期' }), [['离职日期 (last day)'], ['2026/7/28']]);
+  assert.throws(() => exactColumnRows({ grid_data: { start_column: 1, rows: [{ values: [{ cell_value: { text: '2026/7/28' } }, { cell_value: { text: '辞退' } }] }] } }, { startColumn: 1, width: 1, label: '离职日期' }), /超出离职日期允许列/);
+  assert.equal(safeRosterDate('2026/7/28'), '2026-07-28'); assert.equal(safeRosterDate('2026年8月4日'), '2026-08-04'); assert.equal(safeRosterDate('非日期'), '');
   assert.throws(() => exactTwoColumnRows({ grid_data: { start_column: 4, rows: [{ values: [{ cell_value: { text: '甲' } }, { cell_value: { text: 'A' } }, { cell_value: { text: '手机号' } }] }] } }), /超出姓名\/英文名允许列/);
-  assert.throws(() => exactTwoColumnRows({ grid_data: { start_column: 3, rows: [] } }), /起始列不是预期的 E 列/);
+  assert.throws(() => exactTwoColumnRows({ grid_data: { start_column: 3, rows: [] } }), /起始列不是预期列/);
   let attempts = 0; const waits = [];
   const retried = exactRosterRows(['sheet', 'ranges', 'get'], () => {
     attempts += 1;
@@ -186,7 +190,7 @@ function revenueProfitWorkbookBuffer() {
   return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
 }
 
-function revenueStatisticsWorkbookBuffer(period = '2026-07', legacyTitles = false) {
+function revenueStatisticsWorkbookBuffer(period = '2026-07', legacyTitles = false, consultantRows = null) {
   const [year, monthText] = period.split('-');
   const month = Number(monthText);
   const anchors = [
@@ -227,11 +231,13 @@ function revenueStatisticsWorkbookBuffer(period = '2026-07', legacyTitles = fals
   XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([
     ['总营收明细表'],
     ['业绩归属', '签约顾问/渠道', '预计营收', '月份'],
-    ['广州', 'James詹志坚', 100000, `${year}${monthText}`],
-    ['深圳', 'sasa张莎莎', 80000, `${year}${monthText}`],
-    ['广州', 'James詹志坚', 20000, `${year}${monthText}`],
-    ['上海', 'Cici徐梓茵', 50000, `${year}${monthText}`],
-    ['北京', '历史顾问', 999999, `${Number(year) - 1}12`]
+    ...(consultantRows || [
+      ['广州', 'James詹志坚', 100000, `${year}${monthText}`],
+      ['深圳', 'sasa张莎莎', 80000, `${year}${monthText}`],
+      ['广州', 'James詹志坚', 20000, `${year}${monthText}`],
+      ['上海', 'Cici徐梓茵', 50000, `${year}${monthText}`],
+      ['北京', '历史顾问', 999999, `${Number(year) - 1}12`]
+    ])
   ]), '总营收明细表');
   return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
 }
@@ -780,19 +786,26 @@ test('权限设置接受全部公司范围并归一化为通配范围', async ()
     companyKeys: ['*', 'gz'], fromPeriod: '2020-01', toPeriod: '2099-12',
     accountVisibility: 'level1', showDirection: false, showFullEntry: false
   });
-  assert.equal(saved.response.status, 200);
+  assert.equal(saved.response.status, 200, JSON.stringify(saved.payload));
   assert.deepEqual(saved.payload.profile.companyKeys, ['*']);
 });
 
 test('全部不可见范围不返回公司期间或数据模块且服务端拒绝越权上传', async () => {
   const matrix = await request('/api/admin/roles');
   const preset = matrix.payload.roleDefaults.find(item => item.roleKey === 'viewer');
+  const groupOnlyPermissionKeys = new Set();
+  const collectGroupPermissions = (nodes, inheritedCompanyKey = '') => nodes.forEach(node => {
+    const requiredCompanyKey = node.requiredCompanyKey || inheritedCompanyKey;
+    if (node.key && requiredCompanyKey === 'group') groupOnlyPermissionKeys.add(node.key);
+    else if (node.children) collectGroupPermissions(node.children, requiredCompanyKey);
+  });
+  collectGroupPermissions(matrix.payload.permissionCatalog);
   const saved = await post('/api/admin/employee-permission-profile', {
-    employeeKey: 'new_employee', presetRoleKey: 'viewer', permissionKeys: [...preset.permissionKeys, 'module.uploads.upload'],
+    employeeKey: 'new_employee', presetRoleKey: 'viewer', permissionKeys: [...preset.permissionKeys.filter(key => !groupOnlyPermissionKeys.has(key)), 'module.uploads.upload'],
     companyKeys: [], fromPeriod: '2020-01', toPeriod: '2099-12',
     accountVisibility: 'level1', showDirection: false, showFullEntry: false
   });
-  assert.equal(saved.response.status, 200);
+  assert.equal(saved.response.status, 200, JSON.stringify(saved.payload));
   assert.deepEqual(saved.payload.profile.companyKeys, []);
 
   const bootstrap = await request('/api/bootstrap?company=gz&period=2026-06', 'new_employee');
@@ -811,6 +824,37 @@ test('全部不可见范围不返回公司期间或数据模块且服务端拒�
   }, 'new_employee');
   assert.equal(upload.response.status, 403);
   assert.match(upload.payload.error, /数据范围权限/);
+});
+
+test('集团专属权限仅允许全部公司或桉侨集团数据范围', async () => {
+  const matrix = await request('/api/admin/roles');
+  const groupPermission = 'report.consolidated_income_statement.summary.view';
+  assert.match(JSON.stringify(matrix.payload.permissionCatalog), /"requiredCompanyKey":"group"/);
+
+  const regionalOnly = await post('/api/admin/employee-permission-profile', {
+    employeeKey: 'new_employee', presetRoleKey: 'viewer', permissionKeys: [groupPermission],
+    companyKeys: ['gz'], fromPeriod: '2020-01', toPeriod: '2099-12',
+    accountVisibility: 'level1', showDirection: false, showFullEntry: false
+  });
+  assert.equal(regionalOnly.response.status, 400);
+  assert.match(regionalOnly.payload.error, /全部公司.*桉侨集团/);
+
+  for (const companyKeys of [['group'], ['*']]) {
+    const saved = await post('/api/admin/employee-permission-profile', {
+      employeeKey: 'new_employee', presetRoleKey: 'viewer', permissionKeys: [groupPermission],
+      companyKeys, fromPeriod: '2020-01', toPeriod: '2099-12',
+      accountVisibility: 'level1', showDirection: false, showFullEntry: false
+    });
+    assert.equal(saved.response.status, 200);
+    assert.ok(saved.payload.profile.permissionKeys.includes(groupPermission));
+  }
+
+  const restored = await post('/api/admin/employee-permission-profile', {
+    employeeKey: 'new_employee', presetRoleKey: 'viewer', permissionKeys: ['report.income_statement.summary.view'],
+    companyKeys: ['gz'], fromPeriod: '2020-01', toPeriod: '2099-12',
+    accountVisibility: 'level1', showDirection: false, showFullEntry: false
+  });
+  assert.equal(restored.response.status, 200);
 });
 
 test('管理员保存的全局看板模块顺序应用于所有公司，普通员工不可修改', async () => {
@@ -887,6 +931,18 @@ test('首页使用卡片与月份按钮选择公司和期间，不再加载财�
   assert.match(frontend, /state\.periodExplicit && companyPeriods\.includes\(state\.period\)/);
   assert.match(frontend, /state\.periodExplicit = false/);
   assert.doesNotMatch(frontend, /renderDashboard|dashboard-page|财务总览/);
+});
+
+test('主营业务项目数量对比按所选期间显示实际月份', () => {
+  const frontend = fs.readFileSync(path.join(projectDir, 'public', 'app.js'), 'utf8');
+  const businessSource = frontend.slice(frontend.indexOf('async function renderMainBusinessAnalysis'), frontend.indexOf('const expenseMoney'));
+  assert.match(frontend, /const periodMonthText = period =>/);
+  assert.match(businessSource, /periodMonthText\(analysis\.period \|\| scope\.period\)/);
+  assert.match(businessSource, /periodMonthText\(analysis\.previousPeriod\)/);
+  assert.match(businessSource, /projectHeaders\[1\]\.textContent = `\$\{currentMonthText\}项目数量`/);
+  assert.match(businessSource, /projectHeaders\[2\]\.textContent = `\$\{previousMonthText\}项目数量`/);
+  assert.match(businessSource, /legend-dot current[^`]+\$\{escapeHtml\(currentMonthText\)\}/);
+  assert.match(businessSource, /legend-dot previous[^`]+\$\{escapeHtml\(previousMonthText\)\}/);
 });
 
 test('管理员长按整张公司卡片拖动排序且不显示独立手柄', () => {
@@ -987,10 +1043,10 @@ test('上传页使用独立公司期间选择器且移除全局范围锁定', ()
 test('页面与后台运行版本一致且旧响应不能覆盖上传操作后的列表', async () => {
   const bootstrap = await request('/api/bootstrap?company=gz&period=2026-06');
   assert.equal(bootstrap.response.status, 200);
-  assert.equal(bootstrap.payload.appVersion, '1.1.54');
+  assert.equal(bootstrap.payload.appVersion, '1.1.59');
   const index = fs.readFileSync(path.join(projectDir, 'public', 'index.html'), 'utf8');
   const frontend = fs.readFileSync(path.join(projectDir, 'public', 'app.js'), 'utf8');
-  assert.match(index, /<meta name="app-version" content="1\.1\.54">/);
+  assert.match(index, /<meta name="app-version" content="1\.1\.59">/);
   assert.match(frontend, /const expectedAppVersion = document\.querySelector\('meta\[name="app-version"\]'\)/);
   assert.match(frontend, /bootstrap\?\.appVersion === expectedAppVersion/);
   assert.match(frontend, /APP_VERSION_MISMATCH/);
@@ -1087,11 +1143,10 @@ test('三类分析页的标注子模块均可独立授权且接口同步裁剪�
     const node = analysisNodes.find(item => item.id === `${pageKey}_permissions`);
     assert.deepEqual(node.children.map(item => item.key), [`module.${pageKey}.view`, ...blocks.map(block => `module.${pageKey}.${block}.view`)]);
   }
-  const preset = matrix.payload.roleDefaults.find(item => item.roleKey === 'regional_manager');
-  Object.entries(expectedBlocks).forEach(([pageKey, blocks]) => blocks.forEach(block => assert.ok(preset.permissionKeys.includes(`module.${pageKey}.${block}.view`))));
+  const fullAnalysisPermissions = Object.entries(expectedBlocks).flatMap(([pageKey, blocks]) => [`module.${pageKey}.view`, ...blocks.map(block => `module.${pageKey}.${block}.view`)]);
 
   const removedKeys = new Set(['module.cash_analysis.cash_accounts.view', 'module.main_business_analysis.business_detail.view', 'module.expense_analysis.selling_table.view', 'module.expense_analysis.finance_table.view']);
-  const permissionKeys = preset.permissionKeys.filter(key => !removedKeys.has(key));
+  const permissionKeys = fullAnalysisPermissions.filter(key => !removedKeys.has(key));
   const saved = await post('/api/admin/employee-permission-profile', {
     employeeKey: 'regional_gm', presetRoleKey: 'regional_manager', permissionKeys,
     companyKeys: ['gz'], fromPeriod: '2026-01', toPeriod: '2026-12', accountVisibility: 'level1', showDirection: false, showFullEntry: false
@@ -1120,7 +1175,7 @@ test('三类分析页的标注子模块均可独立授权且接口同步裁剪�
   assert.equal(orphan.response.status, 400);
   assert.match(orphan.payload.error, /先开启资产净额分析浏览权限/);
   assert.equal((await post('/api/admin/employee-permission-profile', {
-    employeeKey: 'regional_gm', presetRoleKey: 'regional_manager', permissionKeys: preset.permissionKeys,
+    employeeKey: 'regional_gm', presetRoleKey: 'regional_manager', permissionKeys: fullAnalysisPermissions,
     companyKeys: ['gz'], fromPeriod: '2026-01', toPeriod: '2026-12', accountVisibility: 'level1', showDirection: false, showFullEntry: false
   })).response.status, 200);
 
@@ -1525,12 +1580,24 @@ test('主营业务分析按序时账聚合收入成本并受模块权限控制',
   assert.equal(analysis.payload.detailRows[0].contractNo, '20260717-1862');
   assert.equal(analysis.payload.detailRows[0].revenue, 76260.3);
   assert.equal(analysis.payload.detailRows[0].cost, 27035.38);
+  assert.equal(analysis.payload.canViewJournalDetails, true);
+  assert.ok(analysis.payload.detailRows[0].revenueDetails.length > 0);
+  assert.ok(analysis.payload.detailRows[0].costDetails.length > 0);
+  assert.ok([...analysis.payload.detailRows[0].revenueDetails, ...analysis.payload.detailRows[0].costDetails].every(row => !/结转/.test(row.summary)));
   assert.equal(analysis.payload.detailRows.find(row => row.contractNo === '20260727-1935').customerName, '王辉');
   assert.equal(analysis.payload.detailRows.find(row => row.contractNo === '20260728-1954').customerName, '刘佳');
   assert.equal(analysis.payload.monthlyTrend.length, 12);
   assert.equal(analysis.payload.monthlyTrend[6].grossProfit, 121412.22);
   const viewer = await request('/api/analysis/main-business?company=gz&period=2026-07', 'viewer');
   assert.equal(viewer.response.status, 403);
+  const regionalManager = await request('/api/analysis/main-business?company=gz&period=2026-07', 'regional_gm');
+  assert.equal(regionalManager.response.status, 200);
+  assert.equal(regionalManager.payload.canViewJournalDetails, false);
+  assert.equal(Object.hasOwn(regionalManager.payload.detailRows[0], 'revenueDetails'), false);
+  const frontend = fs.readFileSync(path.join(projectDir, 'public', 'app.js'), 'utf8');
+  assert.match(frontend, /data-business-journal-detail/);
+  assert.match(frontend, /canViewJournalDetails/);
+  assert.match(frontend, /仅展示参与该金额计算的序时账行，不含结转分录/);
 });
 
 test('主营业务项目按序时账表头取值且不会把会计人员编号识别为项目', async () => {
@@ -1720,15 +1787,19 @@ test('管理员可复制员工权限范围，普通员工不能复制', async ()
   assert.equal(forbidden.response.status, 403);
 });
 
-test('地区总经理预设包含业务页面及其全部分析子模块并支持个人范围微调', async () => {
+test('地区总经理预设按现有保存配置固化且默认全部不可见', async () => {
   const matrix = await request('/api/admin/roles');
   const preset = matrix.payload.roleDefaults.find(item => item.roleKey === 'regional_manager');
   assert.ok(preset);
   const expectedBase = ['module.cash_analysis.view', 'module.expense_analysis.view', 'module.financial_brief.view', 'module.main_business_analysis.view', 'report.balance_sheet.summary.view', 'report.cash_flow.summary.view', 'report.income_statement.summary.view'];
   expectedBase.forEach(key => assert.ok(preset.permissionKeys.includes(key)));
-  ['net_positions', 'cash_accounts', 'other_liquidity', 'core_liquidity_trend'].forEach(block => assert.ok(preset.permissionKeys.includes(`module.cash_analysis.${block}.view`)));
-  ['business_detail', 'project_change', 'gross_trend'].forEach(block => assert.ok(preset.permissionKeys.includes(`module.main_business_analysis.${block}.view`)));
-  ['selling_table', 'selling_share', 'selling_trend', 'admin_table', 'admin_share', 'admin_trend', 'finance_table', 'finance_share', 'finance_methods'].forEach(block => assert.ok(preset.permissionKeys.includes(`module.expense_analysis.${block}.view`)));
+  ['cash_accounts', 'other_liquidity', 'core_liquidity_trend'].forEach(block => assert.ok(preset.permissionKeys.includes(`module.cash_analysis.${block}.view`)));
+  ['project_change', 'gross_trend'].forEach(block => assert.ok(preset.permissionKeys.includes(`module.main_business_analysis.${block}.view`)));
+  ['selling_table', 'selling_share', 'selling_trend', 'admin_table', 'admin_share', 'admin_trend'].forEach(block => assert.ok(preset.permissionKeys.includes(`module.expense_analysis.${block}.view`)));
+  assert.equal(preset.permissionKeys.includes('report.revenue_statistics.summary.view'), false);
+  assert.deepEqual(preset.companyKeys, []);
+  assert.equal(preset.showDirection, true);
+  assert.equal(preset.showFullEntry, true);
   assert.ok(matrix.payload.permissionCatalog.some(group => group.id === 'reports'));
 
   const saved = await post('/api/admin/employee-permission-profile', {
@@ -1744,6 +1815,26 @@ test('地区总经理预设包含业务页面及其全部分析子模块并支�
   assert.equal(allowedAnalysis.response.status, 200);
   const deniedCompany = await request('/api/reports/income_statement/summary?company=sz&period=2026-06', 'regional_gm');
   assert.equal(deniedCompany.response.status, 403);
+});
+
+test('老板与广州总经理预设按现有保存配置分别固化', async () => {
+  const matrix = await request('/api/admin/roles');
+  const boss = matrix.payload.roleDefaults.find(item => item.roleKey === 'boss');
+  const guangzhou = matrix.payload.roleDefaults.find(item => item.roleKey === 'guangzhou_general_manager');
+  assert.equal(boss?.name, '老板');
+  assert.equal(guangzhou?.name, '广州总经理');
+  assert.deepEqual(boss.permissionKeys, guangzhou.permissionKeys);
+  assert.deepEqual(boss.companyKeys, ['*']);
+  assert.deepEqual(guangzhou.companyKeys, ['*']);
+  assert.equal(boss.showDirection, false);
+  assert.equal(boss.showFullEntry, false);
+  for (const key of ['module.consultant_roi_analysis.view', 'module.group_profit_analysis.view', 'report.consolidated_income_statement.summary.view', 'report.revenue_profit_consolidated_income_statement.summary.view', 'report.revenue_statistics.summary.view']) {
+    assert.ok(boss.permissionKeys.includes(key));
+  }
+  const backend = fs.readFileSync(path.join(projectDir, 'app.mjs'), 'utf8');
+  assert.match(backend, /Alisa（何婷婷）.*regional_manager.*James（詹志坚）.*boss.*mia（李琳）.*guangzhou_general_manager/s);
+  const permissionCenter = fs.readFileSync(path.join(projectDir, 'public', 'permission-center.js'), 'utf8');
+  assert.match(permissionCenter, /companyKeys: next\.companyKeys|const companyKeys = \[\.\.\.\(next\.companyKeys/);
 });
 
 test('企微通讯录搜索和员工完整权限复制均受管理员保护', async () => {
@@ -2099,6 +2190,10 @@ test('集团顾问投入产出比联合工资表、营收明细和各公司序�
   assert.equal(payroll[0].reportType, 'payroll_statement');
   const payrollPreview = await request(`/api/reports/payroll_statement/raw?company=group&period=${period}&uploadKey=${payroll[0].uploadKey}`);
   assert.equal(payrollPreview.response.status, 403);
+  const beforeRevenue = await request(`/api/analysis/consultant-roi?company=group&period=${period}`);
+  assert.equal(beforeRevenue.response.status, 200); assert.equal(beforeRevenue.payload.sources.revenueSourceAvailable, false);
+  assert.ok(beforeRevenue.payload.rows.every(item => item.matchStatus === 'missing_revenue'));
+  assert.ok(beforeRevenue.payload.missing.includes('营收统计表·总营收明细表'));
 
   await uploadAndPublish({
     companyKey: 'group', reportType: 'revenue_statistics', fileName: '2027.3桉侨集团营收统计表.xlsx',
@@ -2138,10 +2233,10 @@ test('集团顾问投入产出比联合工资表、营收明细和各公司序�
     ]))).toString('base64')
   });
 
-  fs.writeFileSync(testConsultantDirectoryFile, JSON.stringify({ schemaVersion: 1, generatedAt: '2027-03-31T08:00:00.000Z', people: [
-    { name: '詹志坚', englishName: 'James', employmentStatus: 'active' },
-    { name: '张莎莎', englishName: 'Sasa', employmentStatus: 'resigned' },
-    { name: '非顾问人员', englishName: 'Finance', employmentStatus: 'active' }
+  fs.writeFileSync(testConsultantDirectoryFile, JSON.stringify({ schemaVersion: 2, generatedAt: '2027-03-31T08:00:00.000Z', people: [
+    { name: '詹志坚', englishName: 'James', companyName: '广州桉侨', employmentStatus: 'active', departureDate: '' },
+    { name: '张莎莎', englishName: 'Sasa', companyName: '深圳桉侨', employmentStatus: 'resigned', departureDate: '2027-03-20' },
+    { name: '非顾问人员', englishName: 'Finance', companyName: '集团财务', employmentStatus: 'active', departureDate: '' }
   ] }));
   fs.writeFileSync(testConsultantDirectoryStatusFile, JSON.stringify({ schemaVersion: 1, state: 'success', message: '企业微信花名册与通讯录已完成匹配', updatedAt: '2027-03-31T08:00:00.000Z', lastSuccessAt: '2027-03-31T08:00:00.000Z' }));
   fs.rmSync(testConsultantDirectoryRefreshRequestFile, { force: true });
@@ -2150,17 +2245,17 @@ test('集团顾问投入产出比联合工资表、营收明细和各公司序�
   assert.equal(result.response.status, 200, JSON.stringify(result.payload));
   const byName = Object.fromEntries(result.payload.rows.map(item => [item.canonicalName, item]));
   assert.equal(result.payload.rows.some(item => ['当月计薪日', '147'].includes(item.name)), false);
-  assert.deepEqual({ baseSalary: byName['詹志坚'].baseSalary, commission: byName['詹志坚'].commission, journalExpense: byName['詹志坚'].journalExpense, trafficSpend: byName['詹志坚'].trafficSpend, input: byName['詹志坚'].input, output: byName['詹志坚'].output, region: byName['詹志坚'].region, matchStatus: byName['詹志坚'].matchStatus }, { baseSalary: 10000, commission: 2000, journalExpense: 3000, trafficSpend: 26890.2, input: 41890.2, output: 120000, region: '广州', matchStatus: 'matched' });
-  assert.ok(Math.abs(byName['詹志坚'].roi - 120000 / 41890.2) < 0.0000001);
+  assert.deepEqual({ baseSalary: byName['詹志坚'].baseSalary, commission: byName['詹志坚'].commission, journalExpense: byName['詹志坚'].journalExpense, trafficSpend: byName['詹志坚'].trafficSpend, input: byName['詹志坚'].input, output: byName['詹志坚'].output, companyName: byName['詹志坚'].companyName, matchStatus: byName['詹志坚'].matchStatus }, { baseSalary: 10000, commission: 2000, journalExpense: 3000, trafficSpend: 26890.2, input: 39890.2, output: 120000, companyName: '广州桉侨', matchStatus: 'matched' });
+  assert.ok(Math.abs(byName['詹志坚'].roi - 120000 / 39890.2) < 0.0000001);
   assert.deepEqual({ hireDate: byName['詹志坚'].hireDate, isNewEmployee: byName['詹志坚'].isNewEmployee }, { hireDate: '2027-03-05', isNewEmployee: true });
   assert.deepEqual({ englishName: byName['詹志坚'].englishName, isResigned: byName['詹志坚'].isResigned }, { englishName: 'James', isResigned: false });
-  assert.deepEqual({ baseSalary: byName['张莎莎'].baseSalary, commission: byName['张莎莎'].commission, journalExpense: byName['张莎莎'].journalExpense, trafficSpend: byName['张莎莎'].trafficSpend, input: byName['张莎莎'].input, output: byName['张莎莎'].output, region: byName['张莎莎'].region }, { baseSalary: 9000, commission: 1500, journalExpense: 1200, trafficSpend: 21617.63, input: 33317.63, output: 80000, region: '深圳' });
+  assert.deepEqual({ baseSalary: byName['张莎莎'].baseSalary, commission: byName['张莎莎'].commission, journalExpense: byName['张莎莎'].journalExpense, trafficSpend: byName['张莎莎'].trafficSpend, input: byName['张莎莎'].input, output: byName['张莎莎'].output, companyName: byName['张莎莎'].companyName }, { baseSalary: 9000, commission: 1500, journalExpense: 1200, trafficSpend: 21617.63, input: 31817.63, output: 80000, companyName: '深圳桉侨' });
   assert.equal(byName['徐梓茵'], undefined);
   assert.equal(byName['非顾问人员'], undefined);
   assert.equal(byName['张莎莎'].isNewEmployee, false);
-  assert.deepEqual({ englishName: byName['张莎莎'].englishName, isResigned: byName['张莎莎'].isResigned }, { englishName: 'Sasa', isResigned: true });
+  assert.deepEqual({ englishName: byName['张莎莎'].englishName, isResigned: byName['张莎莎'].isResigned, departureDate: byName['张莎莎'].departureDate }, { englishName: 'Sasa', isResigned: true, departureDate: '2027-03-20' });
   assert.equal(result.payload.rows.length, 2);
-  assert.equal(result.payload.totals.input, 75207.83);
+  assert.equal(result.payload.totals.input, 71707.83);
   assert.equal(result.payload.totals.trafficSpend, 48507.83);
   assert.equal(result.payload.totals.output, 200000);
   assert.equal(byName['詹志坚'].expenseDetails.length, 1);
@@ -2190,15 +2285,28 @@ test('集团顾问投入产出比联合工资表、营收明细和各公司序�
   assert.deepEqual({ available: result.payload.sources.directory.available, matchedRows: result.payload.sources.directory.matchedRows, generatedAt: result.payload.sources.directory.generatedAt }, { available: true, matchedRows: 2, generatedAt: '2027-03-31T08:00:00.000Z' });
   assert.equal(result.payload.sources.directory.sync.state, 'success');
   assert.match(result.payload.sourceRevision, /^[a-f0-9]{20}$/);
-  assert.equal(result.payload.canManageVisibility, true);
+  assert.equal(result.payload.canManageVisibility, true); assert.equal(result.payload.canManageRoiSettings, true); assert.equal(result.payload.canViewMatchDiagnostics, true);
+  assert.deepEqual(result.payload.roiSettings.inputs, { baseSalary: true, commission: false, journalExpense: true, trafficSpend: true });
+  assert.equal(result.payload.roiSettings.configured, false); assert.deepEqual(result.payload.roiSettings.selectedAccounts, ['差旅费', '业务招待费']);
   assert.deepEqual(result.payload.visibility.options.map(item => ({ name: item.name, hidden: item.hidden })), [{ name: '詹志坚', hidden: false }, { name: '张莎莎', hidden: false }]);
   const managerBeforeVisibility = await request(`/api/analysis/consultant-roi?company=group&period=${period}`, 'manager');
-  assert.equal(managerBeforeVisibility.payload.canManageVisibility, false); assert.equal(managerBeforeVisibility.payload.visibility, undefined);
+  assert.equal(managerBeforeVisibility.payload.canManageVisibility, false); assert.equal(managerBeforeVisibility.payload.canManageRoiSettings, false); assert.equal(managerBeforeVisibility.payload.canViewMatchDiagnostics, false); assert.equal(managerBeforeVisibility.payload.visibility, undefined);
+  assert.equal(managerBeforeVisibility.payload.reimbursementAccounts, undefined); assert.equal(managerBeforeVisibility.payload.roiSettings.selectedAccounts, undefined);
+  assert.equal(Object.hasOwn(managerBeforeVisibility.payload.rows[0], 'matchStatus'), false); assert.equal(Object.hasOwn(managerBeforeVisibility.payload.rows[0], 'canonicalName'), false); assert.equal(Object.hasOwn(managerBeforeVisibility.payload.rows[0], 'expenseDetails'), false);
+  assert.equal((await put('/api/analysis/consultant-roi/settings', { period, inputs: result.payload.roiSettings.inputs, reimbursementAccounts: ['差旅费'] }, 'manager')).response.status, 403);
+  const changedSettings = await put('/api/analysis/consultant-roi/settings', { period, inputs: { baseSalary: true, commission: true, journalExpense: true, trafficSpend: false }, reimbursementAccounts: ['差旅费'] });
+  assert.equal(changedSettings.response.status, 200); assert.equal(changedSettings.payload.settings.reimbursementAccounts.join(','), '差旅费');
+  const changedAdminView = await request(`/api/analysis/consultant-roi?company=group&period=${period}`); const changedManagerView = await request(`/api/analysis/consultant-roi?company=group&period=${period}`, 'manager');
+  assert.equal(changedAdminView.payload.totals.input, 25500); assert.equal(changedManagerView.payload.totals.input, 25500); assert.equal(changedManagerView.payload.rows.find(item => item.name === '张莎莎').journalExpense, 0);
+  assert.equal((await put('/api/analysis/consultant-roi/settings', { period, inputs: result.payload.roiSettings.inputs, reimbursementAccounts: ['不存在科目'] })).response.status, 400);
+  assert.equal((await put('/api/analysis/consultant-roi/settings', { period: '2027-04', inputs: result.payload.roiSettings.inputs, reimbursementAccounts: [] })).response.status, 200);
+  assert.equal((await request(`/api/analysis/consultant-roi?company=group&period=${period}`)).payload.roiSettings.selectedAccounts.length, 1);
+  assert.equal((await put('/api/analysis/consultant-roi/settings', { period, inputs: { baseSalary: true, commission: false, journalExpense: true, trafficSpend: true }, reimbursementAccounts: ['业务招待费', '差旅费'] })).response.status, 200);
   assert.equal((await put('/api/analysis/consultant-roi/visibility', { hiddenConsultants: ['张莎莎'] }, 'manager')).response.status, 403);
   const hiddenSaved = await put('/api/analysis/consultant-roi/visibility', { hiddenConsultants: ['张莎莎'] });
   assert.equal(hiddenSaved.response.status, 200); assert.equal(hiddenSaved.payload.hiddenCount, 1);
   const hiddenAdminView = await request(`/api/analysis/consultant-roi?company=group&period=${period}`);
-  assert.deepEqual(hiddenAdminView.payload.rows.map(item => item.name), ['詹志坚']); assert.equal(hiddenAdminView.payload.totals.input, 41890.2); assert.equal(hiddenAdminView.payload.totals.output, 120000);
+  assert.deepEqual(hiddenAdminView.payload.rows.map(item => item.name), ['詹志坚']); assert.equal(hiddenAdminView.payload.totals.input, 39890.2); assert.equal(hiddenAdminView.payload.totals.output, 120000);
   assert.deepEqual(hiddenAdminView.payload.reimbursementAccounts.map(item => item.name), ['差旅费']);
   assert.equal(hiddenAdminView.payload.visibility.options.find(item => item.name === '张莎莎').hidden, true);
   const hiddenManagerView = await request(`/api/analysis/consultant-roi?company=group&period=${period}`, 'manager');
@@ -2207,12 +2315,20 @@ test('集团顾问投入产出比联合工资表、营收明细和各公司序�
   assert.equal((await put('/api/analysis/consultant-roi/visibility', { hiddenConsultants: [] })).response.status, 200);
   assert.equal((await request(`/api/analysis/consultant-roi?company=group&period=${period}`)).payload.rows.length, 2);
 
-  fs.writeFileSync(testConsultantDirectoryFile, JSON.stringify({ schemaVersion: 1, generatedAt: '2027-03-31T09:00:00.000Z', people: [
-    { name: '詹志坚', englishName: 'James', employmentStatus: 'active' }, { name: '张莎莎', englishName: 'Sasa', employmentStatus: 'active' }
+  fs.writeFileSync(testConsultantDirectoryFile, JSON.stringify({ schemaVersion: 2, generatedAt: '2027-03-31T09:00:00.000Z', people: [
+    { name: '詹志坚', englishName: 'James', companyName: '广州桉侨', employmentStatus: 'active', departureDate: '' }, { name: '张莎莎', englishName: 'Sasa', companyName: '深圳桉侨', employmentStatus: 'active', departureDate: '' }
   ] }));
   const directoryRefreshed = await request(`/api/analysis/consultant-roi?company=group&period=${period}`);
   assert.notEqual(directoryRefreshed.payload.sourceRevision, result.payload.sourceRevision);
   assert.equal(directoryRefreshed.payload.rows.find(item => item.canonicalName === '张莎莎').isResigned, false);
+
+  await uploadAndPublish({
+    companyKey: 'group', reportType: 'revenue_statistics', fileName: '2027.3桉侨集团营收统计表-零营收.xlsx',
+    contentBase64: revenueStatisticsWorkbookBuffer(period, false, [['广州', 'James詹志坚', 100000, '202703'], ['深圳', 'sasa张莎莎', 0, '202703']]).toString('base64')
+  });
+  const zeroRevenue = await request(`/api/analysis/consultant-roi?company=group&period=${period}`);
+  assert.equal(zeroRevenue.payload.sources.revenueSourceAvailable, true); assert.equal(zeroRevenue.payload.rows.find(item => item.canonicalName === '张莎莎').matchStatus, 'no_revenue');
+  assert.equal(zeroRevenue.payload.missing.includes('营收统计表·总营收明细表'), false);
 
   await uploadAndPublish({
     companyKey: 'group', reportType: 'revenue_statistics', fileName: '2027.3桉侨集团营收统计表-修订版.xlsx',
@@ -2275,21 +2391,21 @@ test('集团顾问投入产出比联合工资表、营收明细和各公司序�
   const directoryAuthUnit = fs.readFileSync(path.join(projectDir, 'deploy', 'systemd', 'wecom-finance-consultant-auth.service'), 'utf8');
   assert.match(frontend, /data-roi-input/); assert.match(frontend, /data-roi-filter-toggle/); assert.match(frontend, /data-roi-filter-draft/); assert.match(frontend, /data-roi-sort/);
   assert.match(frontend, /consultant-roi-filter-menu/); assert.match(frontend, /positionColumnFilter/); assert.doesNotMatch(frontend, /roi-filter-row/);
-  assert.doesNotMatch(frontend, /id="consultant-roi-export"/); assert.match(frontend, /顾问投入产出比\.csv/);
+  assert.doesNotMatch(frontend, /id="consultant-roi-export"|顾问投入产出比\.csv/);
   assert.match(frontend, /key: 'trafficSpend', label: '投流消耗费用'/); assert.match(frontend, /consultantSpendRevenueReportType, '集团顾问消耗-营收表'/);
   assert.match(frontend, /投流取数字段/); assert.match(frontend, /unmatchedSpendRows/);
   assert.match(frontend, /工资取数字段/); assert.match(frontend, /payrollFields/);
   assert.match(serverSource, /refreshedConsultantPayrollRawFor/); assert.match(serverSource, /hireDate\.slice\(0, 7\) === period/);
-  assert.match(frontend, /consultantRoiAverageSummary/); assert.match(frontend, /consultant-roi-average-modal/); assert.match(frontend, /consultant-new-hire-badge/); assert.match(frontend, /入职时间/);
+  assert.match(frontend, /consultantRoiAverageSummary/); assert.match(frontend, /consultant-roi-average-modal/); assert.match(frontend, /consultant-status-badge/); assert.match(frontend, /入职日期/); assert.match(frontend, /离职日期/);
   assert.match(frontend, /consultant-roi-visibility-open/); assert.match(frontend, /consultant-roi-visibility-save/); assert.match(frontend, /\/api\/analysis\/consultant-roi\/visibility/);
   assert.match(frontend, /inputs: \{ baseSalary: true, commission: false, journalExpense: true, trafficSpend: true \}/);
-  assert.match(frontend, /key: 'journalExpense', label: '报销费用'/); assert.match(frontend, /consultant-roi-reimbursement-open/); assert.match(frontend, /仅列本月已匹配科目/);
+  assert.match(frontend, /key: 'journalExpense', label: '报销费用'/); assert.match(frontend, /consultant-roi-reimbursement-open/); assert.match(frontend, /保存后应用于全员/); assert.match(frontend, /\/api\/analysis\/consultant-roi\/settings/);
   assert.match(serverSource, /consultant_roi_hidden_consultants/); assert.match(serverSource, /set_consultant_roi_visibility/); assert.match(serverSource, /canManageVisibility/);
   assert.match(serverSource, /consultantExpenseSecondaryAccount/); assert.match(serverSource, /reimbursementAccounts/);
-  assert.match(frontend, /key: 'hireDate', label: '入职日期'/); assert.match(frontend, /key: 'englishName', label: '英文名'/); assert.match(frontend, /consultant-resigned-badge/);
-  assert.match(serverSource, /consultantDirectorySnapshot/); assert.match(serverSource, /directory: directory\.revision/); assert.match(serverSource, /employmentStatus === 'resigned'/);
-  assert.match(directorySyncSource, /contact', 'users', 'search/); assert.match(directorySyncSource, /sheet', 'get', '--json/); assert.match(directorySyncSource, /sheet', 'ranges', 'get', '--json/); assert.match(directorySyncSource, /mode: 'default'/); assert.match(directorySyncSource, /exactTwoColumnRows/); assert.doesNotMatch(directorySyncSource, /WECOM_ALLOW_WIDE_ROSTER_READ/);
-  assert.match(directorySyncSource, /schemaVersion: 1/); assert.match(directorySyncSource, /englishName: contactNames\.get\(key\) \|\| roster\?\.englishName/);
+  assert.match(frontend, /key: 'hireDate', label: '入职日期'/); assert.match(frontend, /key: 'englishName', label: '英文名'/); assert.match(frontend, /key: 'companyName', label: '所属公司'/);
+  assert.match(serverSource, /consultantDirectorySnapshot/); assert.match(serverSource, /directory: directory\.revision/); assert.match(serverSource, /employmentStatus === 'resigned'/); assert.match(serverSource, /departureDate/);
+  assert.match(directorySyncSource, /contact', 'users', 'search/); assert.match(directorySyncSource, /sheet', 'get', '--json/); assert.match(directorySyncSource, /sheet', 'ranges', 'get', '--json/); assert.match(directorySyncSource, /mode: 'default'/); assert.match(directorySyncSource, /exactColumnRows/); assert.doesNotMatch(directorySyncSource, /WECOM_ALLOW_WIDE_ROSTER_READ/);
+  assert.match(directorySyncSource, /schemaVersion: 2/); assert.match(directorySyncSource, /englishName: contactNames\.get\(key\) \|\| roster\?\.englishName/); assert.match(directorySyncSource, /D1:F\$\{rowCount\}/); assert.match(directorySyncSource, /B1:B\$\{rowCount\}/);
   assert.match(directorySyncSource, /CONSULTANT_DIRECTORY_INPUT_FILE/); assert.doesNotMatch(directorySyncSource, /better-sqlite3|14云端企微账簿/);
   assert.match(directoryInputSource, /payroll_statement/); assert.match(directoryInputSource, /people = publishedConsultantNames/); assert.doesNotMatch(directoryInputSource, /baseSalary|commission|salary|身份证|手机号/);
   assert.match(directoryInputRunner, /better-sqlite3/); assert.match(directoryInputRunner, /readonly: true/);
@@ -2300,23 +2416,23 @@ test('集团顾问投入产出比联合工资表、营收明细和各公司序�
   assert.match(frontend, /consultantRoiAutoRefreshMs = 60_000/); assert.match(frontend, /consultant-roi-refresh/); assert.match(frontend, /data\.sourceRevision === consultantRoiSourceRevision/);
   assert.match(frontend, /consultantDirectoryPollingMs = 3_000/); assert.match(frontend, /consultant-directory-guide-modal/); assert.match(frontend, /consultant-directory-auth-link/); assert.match(frontend, /consultant-directory-auth-request/);
   assert.match(frontend, /state\.page === consultantRoiModuleKey[\s\S]{0,180}renderConsultantRoiInteractive\(\{ trigger: 'resume' \}\)/);
-  assert.match(frontend, /visibleColumns = consultantRoiColumns\.filter/); assert.match(frontend, /selectedInputs\.map\(item => item\.label\)/);
+  assert.match(frontend, /visibleColumns = consultantRoiColumns\.filter/); assert.match(frontend, /!column\.adminOnly \|\| data\.canViewMatchDiagnostics/);
   assert.match(stylesheet, /\.consultant-roi-layout>\[data-analysis-block\]\{grid-column:span 12\}/);
   assert.match(stylesheet, /analysis-layout-editable>\.consultant-roi-table-panel \.consultant-roi-table-toolbar\{padding-right:78px\}/);
   assert.match(stylesheet, /\.consultant-roi-page-actions\{[^}]*flex-wrap:nowrap/); assert.match(stylesheet, /#consultant-roi-refresh-status\{[^}]*position:absolute/);
-  assert.match(stylesheet, /\.consultant-roi-average-card/); assert.match(stylesheet, /\.consultant-roi-average-modal/); assert.match(stylesheet, /\.consultant-new-hire-badge/);
-  assert.match(stylesheet, /\.consultant-resigned-badge/); assert.match(stylesheet, /roi-col-hireDate/); assert.match(stylesheet, /roi-col-englishName/); assert.match(stylesheet, /roi-col-trafficSpend/);
+  assert.match(stylesheet, /\.consultant-roi-average-card/); assert.match(stylesheet, /\.consultant-roi-average-modal/); assert.match(stylesheet, /\.consultant-status-badge/); assert.match(stylesheet, /\.consultant-personnel-popover/);
+  assert.match(stylesheet, /roi-col-hireDate/); assert.match(stylesheet, /roi-col-englishName/); assert.match(stylesheet, /roi-col-companyName/); assert.match(stylesheet, /roi-col-trafficSpend/);
   assert.match(stylesheet, /\.consultant-roi-input-group/); assert.match(stylesheet, /\.consultant-roi-utility-actions/); assert.match(stylesheet, /\.consultant-roi-visibility-modal/);
   assert.match(stylesheet, /\.consultant-roi-reimbursement-picker/); assert.match(stylesheet, /\.consultant-roi-reimbursement-menu/);
   assert.match(stylesheet, /\.consultant-directory-guide/); assert.match(stylesheet, /\.consultant-directory-guide-modal/); assert.match(stylesheet, /\.consultant-directory-auth-actions/);
   assert.match(stylesheet, /\.consultant-roi-table\{width:100%;min-width:0!important;table-layout:fixed\}/);
   assert.match(stylesheet, /\.roi-filter-menu\{position:fixed/); assert.match(stylesheet, /\.roi-filter-trigger\.active/);
-  const helperSource = frontend.slice(frontend.indexOf('const consultantRoiInputDefinitions'), frontend.indexOf('async function renderConsultantRoiAnalysis'));
+  const helperSource = frontend.slice(frontend.indexOf('const consultantRoiInputDefinitions'), frontend.indexOf('async function renderConsultantRoiInteractive'));
   assert.doesNotMatch(helperSource, /label: '来源'/); assert.doesNotMatch(helperSource, /'匹配状态', '来源'/);
   const context = { result: null, summary: null, escapeHtml: value => String(value ?? ''), showNotice: () => {}, URL: {}, Blob: function Blob() {}, document: {}, window: {} };
-  vm.runInNewContext(`const consultantRoiView = { inputs: { baseSalary: false, commission: true, journalExpense: true, trafficSpend: false }, reimbursementAccounts: new Set(['差旅费']), filters: { region: '广州', input: '>=3000' }, sortKey: 'input', sortDirection: 'desc' }; ${helperSource}; const sampleRows = [{ name: '甲', region: '广州', baseSalary: 10000, commission: 2000, journalExpense: 3000, trafficSpend: 25000, output: 100000, matchStatus: 'matched', payrollDetails: [], revenueDetails: [], expenseDetails: [{ secondaryAccount: '差旅费', amount: 1000 }, { secondaryAccount: '业务招待费', amount: 2000 }], spendDetails: [] }, { name: '乙', region: '深圳', baseSalary: 9000, commission: 1000, journalExpense: 500, trafficSpend: 12000, output: 80000, matchStatus: 'matched', payrollDetails: [], revenueDetails: [], expenseDetails: [], spendDetails: [] }]; result = consultantRoiRowsForView(sampleRows); summary = consultantRoiAverageSummary(sampleRows);`, context);
+  vm.runInNewContext(`const consultantRoiView = { inputs: { baseSalary: false, commission: true, journalExpense: true, trafficSpend: false }, savedInputs: {}, reimbursementAccounts: new Set(['差旅费']), savedReimbursementAccounts: new Set(), filters: { companyName: '广州', input: '>=3000' }, sortKey: 'input', sortDirection: 'desc' }; ${helperSource}; const sampleRows = [{ name: '甲', companyName: '广州', baseSalary: 10000, commission: 2000, journalExpense: 3000, trafficSpend: 25000, output: 100000, matchStatus: 'matched', payrollDetails: [], revenueDetails: [], expenseDetails: [{ secondaryAccount: '差旅费', amount: 1000 }, { secondaryAccount: '业务招待费', amount: 2000 }], spendDetails: [] }, { name: '乙', companyName: '深圳', baseSalary: 9000, commission: 1000, journalExpense: 500, trafficSpend: 12000, output: 80000, matchStatus: 'matched', payrollDetails: [], revenueDetails: [], expenseDetails: [], spendDetails: [] }]; result = consultantRoiRowsForView(sampleRows); summary = consultantRoiAverageSummary(sampleRows);`, context);
   assert.equal(context.result.length, 1); assert.equal(context.result[0].name, '甲'); assert.equal(context.result[0].journalExpense, 1000); assert.equal(context.result[0].input, 3000); assert.ok(Math.abs(context.result[0].roi - 33.3333333333) < 0.000001);
-  assert.equal(context.summary.consultantCount, 2); assert.ok(Math.abs(context.summary.averageRoi - 43.3333333333) < 0.000001); assert.deepEqual(Array.from(context.summary.regions, item => item.region), ['广州', '深圳']);
+  assert.equal(context.summary.consultantCount, 2); assert.ok(Math.abs(context.summary.averageRoi - 43.3333333333) < 0.000001); assert.deepEqual(Array.from(context.summary.companies, item => item.companyName), ['广州', '深圳']);
 });
 
 test('财务数据简报按集团与公司范围联合已发布报表自动取数', async () => {

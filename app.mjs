@@ -30,12 +30,14 @@ try {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const dataDir = path.join(__dirname, 'data');
-const appVersion = '1.1.54';
+const appVersion = '1.1.59';
 const financialBriefModuleKey = 'financial_brief';
 const financialBriefNotesPermissionKey = 'module.financial_brief.notes.manage';
 const financialBriefMetricKeys = new Set(['expectedRevenue', 'accountBalance', 'operatingRevenue', 'operatingCost', 'sellingExpense', 'managementExpense', 'financeExpense', 'netProfit']);
 const consultantRoiModuleKey = 'consultant_roi_analysis';
 const consultantRoiHiddenSettingKey = 'consultant_roi_hidden_consultants';
+const consultantRoiSettingsPrefix = 'consultant_roi_settings:';
+const consultantRoiDefaultInputs = Object.freeze({ baseSalary: true, commission: false, journalExpense: true, trafficSpend: true });
 const intercompanyModuleKey = 'intercompany_reconciliation';
 const activityLogModuleKey = 'activity_logs';
 const intercompanyViewPermissionKey = `module.${intercompanyModuleKey}.view`;
@@ -158,6 +160,18 @@ CREATE TABLE IF NOT EXISTS roles (
   role_key TEXT PRIMARY KEY,
   role_name TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS role_permission_presets (
+  role_key TEXT PRIMARY KEY,
+  permission_keys_json TEXT NOT NULL,
+  company_keys_json TEXT NOT NULL,
+  from_period TEXT NOT NULL,
+  to_period TEXT NOT NULL,
+  account_visibility TEXT NOT NULL CHECK (account_visibility IN ('level1', 'full')),
+  show_direction INTEGER NOT NULL DEFAULT 1,
+  show_full_entry INTEGER NOT NULL DEFAULT 1,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (role_key) REFERENCES roles(role_key)
 );
 CREATE TABLE IF NOT EXISTS employee_roles (
   employee_key TEXT NOT NULL,
@@ -361,6 +375,25 @@ const saveHiddenConsultantKeys = (values, employeeKey) => {
   if (!Array.isArray(values) || values.length > 5000) throw new Error('隐藏顾问名单格式无效');
   const normalized = [...new Set(values.map(value => consultantCanonicalName(String(value || '').slice(0, 80))).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'zh-CN'));
   saveAppSetting(consultantRoiHiddenSettingKey, JSON.stringify(normalized), employeeKey); return new Set(normalized);
+};
+const consultantRoiSettingsFor = (period, availableAccounts = []) => {
+  const available = new Set(availableAccounts); let source = null;
+  try { source = JSON.parse(appSetting(`${consultantRoiSettingsPrefix}${period}`, 'null')); } catch {}
+  const configured = source?.schemaVersion === 1 && source?.inputs && Array.isArray(source.reimbursementAccounts);
+  const inputs = Object.fromEntries(Object.keys(consultantRoiDefaultInputs).map(key => [key, configured && typeof source.inputs[key] === 'boolean' ? source.inputs[key] : consultantRoiDefaultInputs[key]]));
+  const requested = configured ? [...new Set(source.reimbursementAccounts.map(value => String(value || '').trim()).filter(Boolean))] : [...available];
+  const selectedAccounts = requested.filter(name => available.has(name)); const staleAccounts = requested.filter(name => !available.has(name));
+  return { configured, inputs, selectedAccounts, staleAccounts, updatedAt: configured ? String(source.updatedAt || '') : '' };
+};
+const saveConsultantRoiSettings = (period, body, employeeKey, availableAccounts) => {
+  if (!/^20\d{2}-(?:0[1-9]|1[0-2])$/.test(period)) throw new Error('顾问投入产出比期间无效');
+  const inputKeys = Object.keys(consultantRoiDefaultInputs); const inputs = body?.inputs;
+  if (!inputs || Object.keys(inputs).some(key => !inputKeys.includes(key)) || inputKeys.some(key => typeof inputs[key] !== 'boolean')) throw new Error('投入项目配置格式无效');
+  if (!Array.isArray(body?.reimbursementAccounts) || body.reimbursementAccounts.length > 500) throw new Error('报销费用科目配置格式无效');
+  const available = new Set(availableAccounts); const selectedAccounts = [...new Set(body.reimbursementAccounts.map(value => String(value || '').trim()).filter(Boolean))];
+  if (selectedAccounts.some(name => !available.has(name))) throw new Error('报销费用科目包含当前期间不存在的项目');
+  const value = { schemaVersion: 1, inputs: Object.fromEntries(inputKeys.map(key => [key, inputs[key]])), reimbursementAccounts: selectedAccounts.sort((a, b) => a.localeCompare(b, 'zh-CN')), updatedAt: now() };
+  saveAppSetting(`${consultantRoiSettingsPrefix}${period}`, JSON.stringify(value), employeeKey); return value;
 };
 const seed = db.transaction(() => {
   if (db.prepare('SELECT COUNT(*) AS count FROM roles').get().count > 0) return;
@@ -705,7 +738,7 @@ const reportPermissionNode = (id, name) => ({ id, name, children: [
   { key: `report.${id}.detail.view`, name: '查看明细' },
   { key: `report.${id}.detail.export`, name: '导出明细' }
 ] });
-const summaryReportPermissionNode = (id, name) => ({ id, name, children: [
+const summaryReportPermissionNode = (id, name, options = {}) => ({ id, name, ...options, children: [
   { key: `report.${id}.summary.view`, name: '浏览报表' },
   { key: `report.${id}.summary.export`, name: '导出报表' }
 ] });
@@ -718,7 +751,7 @@ const analysisPermissionNode = pageKey => {
 };
 const permissionCatalog = [
   { id: 'reports', name: '财务报表', description: '每张报表的浏览、明细和导出独立控制', children: [
-    reportPermissionNode('balance_sheet', '资产负债表'), reportPermissionNode('income_statement', '利润表'), summaryReportPermissionNode('consolidated_income_statement', '桉侨集团合并利润表'), summaryReportPermissionNode(revenueProfitReportType, '（营收利润口径）合并利润表'), summaryReportPermissionNode(revenueStatisticsReportType, '营收统计表'), reportPermissionNode('cash_flow', '现金流量表'), reportPermissionNode('trial_balance', '科目余额表'), reportPermissionNode('journal', '序时账')
+    reportPermissionNode('balance_sheet', '资产负债表'), reportPermissionNode('income_statement', '利润表'), summaryReportPermissionNode('consolidated_income_statement', '桉侨集团合并利润表', { requiredCompanyKey: 'group' }), summaryReportPermissionNode(revenueProfitReportType, '（营收利润口径）合并利润表', { requiredCompanyKey: 'group' }), summaryReportPermissionNode(revenueStatisticsReportType, '营收统计表', { requiredCompanyKey: 'group' }), reportPermissionNode('cash_flow', '现金流量表'), reportPermissionNode('trial_balance', '科目余额表'), reportPermissionNode('journal', '序时账')
   ] },
   { id: 'analysis', name: '经营分析', description: '分析页只开放聚合结果，不自动开放底层序时账', children: [
     { id: 'financial_brief_permissions', name: '财务数据简报', description: '简报浏览与二级说明编辑分别授权', children: [
@@ -728,9 +761,9 @@ const permissionCatalog = [
     analysisPermissionNode('cash_analysis'),
     analysisPermissionNode('main_business_analysis'),
     analysisPermissionNode('expense_analysis'),
-    { key: 'module.group_profit_analysis.view', name: '集团合并利润趋势图 · 浏览' },
-    { key: 'module.consultant_roi_analysis.view', name: '顾问投入产出比 · 浏览' },
-    { id: 'intercompany_reconciliation_permissions', name: '各公司往来校验', description: '集团汇总与序时账下钻分别授权', children: [
+    { key: 'module.group_profit_analysis.view', name: '集团合并利润趋势图 · 浏览', requiredCompanyKey: 'group' },
+    { key: 'module.consultant_roi_analysis.view', name: '顾问投入产出比 · 浏览', requiredCompanyKey: 'group' },
+    { id: 'intercompany_reconciliation_permissions', name: '各公司往来校验', description: '集团汇总与序时账下钻分别授权', requiredCompanyKey: 'group', children: [
       { key: intercompanyViewPermissionKey, name: '浏览各公司往来校验' },
       { key: intercompanyDetailPermissionKey, name: '查看双方序时账明细' }
     ] }
@@ -742,8 +775,48 @@ const permissionCatalog = [
     { key: 'module.permissions.manage', name: '权限管理' }, { key: 'module.database.view', name: '数据库浏览' }, { key: 'module.database.manage', name: '数据库管理' }
   ] }
 ];
-const permissionLeaves = nodes => nodes.flatMap(node => node.key ? [node] : permissionLeaves(node.children || []));
+const permissionLeaves = (nodes, inheritedCompanyKey = '') => nodes.flatMap(node => {
+  const requiredCompanyKey = node.requiredCompanyKey || inheritedCompanyKey;
+  return node.key ? [{ ...node, requiredCompanyKey }] : permissionLeaves(node.children || [], requiredCompanyKey);
+});
 const validPermissionKeys = new Set(permissionLeaves(permissionCatalog).map(item => item.key));
+const groupOnlyPermissionKeys = new Set(permissionLeaves(permissionCatalog).filter(item => item.requiredCompanyKey === 'group').map(item => item.key));
+const companyScopeIncludesGroup = companyKeys => companyKeys.includes('*') || companyKeys.includes('group');
+const permissionKeysForCompanyScope = (permissionKeys, companyKeys) => companyScopeIncludesGroup(companyKeys) ? permissionKeys : permissionKeys.filter(key => !groupOnlyPermissionKeys.has(key));
+const regionalManagerSnapshotPermissions = [
+  'module.cash_analysis.cash_accounts.view', 'module.cash_analysis.core_liquidity_trend.view', 'module.cash_analysis.other_liquidity.view', 'module.cash_analysis.view',
+  'module.expense_analysis.admin_share.view', 'module.expense_analysis.admin_table.view', 'module.expense_analysis.admin_trend.view', 'module.expense_analysis.selling_share.view', 'module.expense_analysis.selling_table.view', 'module.expense_analysis.selling_trend.view', 'module.expense_analysis.view',
+  'module.financial_brief.view', 'module.main_business_analysis.gross_trend.view', 'module.main_business_analysis.project_change.view', 'module.main_business_analysis.view',
+  'report.balance_sheet.summary.view', 'report.cash_flow.summary.view', 'report.income_statement.summary.view'
+];
+const executiveSnapshotPermissions = [...regionalManagerSnapshotPermissions,
+  'module.consultant_roi_analysis.view', 'module.group_profit_analysis.view',
+  'report.consolidated_income_statement.summary.view', `report.${revenueProfitReportType}.summary.view`, `report.${revenueStatisticsReportType}.summary.view`
+].sort();
+const curatedRolePresets = [
+  { roleKey: 'regional_manager', name: '地区总经理', description: '地区总经理查看口径；公司范围默认全部不可见，需手动选择', permissionKeys: regionalManagerSnapshotPermissions, companyKeys: [], showDirection: true, showFullEntry: true },
+  { roleKey: 'boss', name: '老板', description: '老板查看口径；默认全部公司', permissionKeys: executiveSnapshotPermissions, companyKeys: ['*'], showDirection: false, showFullEntry: false },
+  { roleKey: 'guangzhou_general_manager', name: '广州总经理', description: '广州总经理查看口径', permissionKeys: executiveSnapshotPermissions, companyKeys: ['*'], showDirection: false, showFullEntry: false }
+];
+for (const preset of curatedRolePresets) {
+  db.prepare('INSERT INTO roles(role_key, role_name, description) VALUES (?, ?, ?) ON CONFLICT(role_key) DO UPDATE SET role_name = excluded.role_name, description = excluded.description').run(preset.roleKey, preset.name, preset.description);
+  db.prepare(`INSERT INTO role_permission_presets(role_key, permission_keys_json, company_keys_json, from_period, to_period, account_visibility, show_direction, show_full_entry, updated_at) VALUES (?, ?, ?, '2020-01', '2099-12', 'level1', ?, ?, ?)
+    ON CONFLICT(role_key) DO UPDATE SET permission_keys_json = excluded.permission_keys_json, company_keys_json = excluded.company_keys_json, from_period = excluded.from_period, to_period = excluded.to_period, account_visibility = excluded.account_visibility, show_direction = excluded.show_direction, show_full_entry = excluded.show_full_entry`).run(preset.roleKey, JSON.stringify([...new Set(preset.permissionKeys)].sort()), JSON.stringify(preset.companyKeys), preset.showDirection ? 1 : 0, preset.showFullEntry ? 1 : 0, now());
+}
+const namedRolePresetAssignmentMigrationKey = 'named_role_presets_from_saved_profiles_v1';
+if (appSetting(namedRolePresetAssignmentMigrationKey, '0') !== '1') {
+  const assignPreset = db.transaction(() => {
+    for (const [displayName, roleKey] of [['Alisa（何婷婷）', 'regional_manager'], ['James（詹志坚）', 'boss'], ['mia（李琳）', 'guangzhou_general_manager']]) {
+      const employee = db.prepare('SELECT employee_key AS employeeKey FROM employees WHERE display_name = ? COLLATE NOCASE AND active = 1').get(displayName);
+      if (!employee || !db.prepare('SELECT 1 FROM employee_permission_profiles WHERE employee_key = ?').get(employee.employeeKey)) continue;
+      db.prepare('UPDATE employee_permission_profiles SET preset_role_key = ? WHERE employee_key = ?').run(roleKey, employee.employeeKey);
+      db.prepare('DELETE FROM employee_roles WHERE employee_key = ?').run(employee.employeeKey);
+      db.prepare('INSERT INTO employee_roles(employee_key, role_key) VALUES (?, ?)').run(employee.employeeKey, roleKey);
+    }
+    saveAppSetting(namedRolePresetAssignmentMigrationKey, '1', 'system');
+  });
+  assignPreset();
+}
 const intercompanyPermissionMigrationKey = 'intercompany_reconciliation_permission_v1';
 if (appSetting(intercompanyPermissionMigrationKey, '0') !== '1') {
   for (const row of db.prepare('SELECT employee_key AS employeeKey, permission_keys_json AS permissionKeysJson, company_keys_json AS companyKeysJson FROM employee_permission_profiles').all()) {
@@ -884,6 +957,7 @@ const modulePermissionKey = (moduleKey, action) => ({
   [consultantRoiModuleKey]: `module.consultant_roi_analysis.${action}`,
   [intercompanyModuleKey]: `module.${intercompanyModuleKey}.${action}`
 }[moduleKey]);
+const parseArray = value => { try { const parsed = JSON.parse(value); return Array.isArray(parsed) ? parsed : []; } catch { return []; } };
 const permissionKeysForRole = roleKey => {
   const keys = new Set();
   for (const row of db.prepare('SELECT module_key AS moduleKey, action FROM role_permissions WHERE role_key = ?').all(roleKey)) {
@@ -899,16 +973,30 @@ const permissionKeysForRole = roleKey => {
   return [...keys].sort();
 };
 const roleDefaultFor = roleKey => {
+  const preset = db.prepare('SELECT permission_keys_json AS permissionKeysJson, company_keys_json AS companyKeysJson, from_period AS fromPeriod, to_period AS toPeriod, account_visibility AS accountVisibility, show_direction AS showDirection, show_full_entry AS showFullEntry FROM role_permission_presets WHERE role_key = ?').get(roleKey);
+  if (preset) return {
+    roleKey,
+    permissionKeys: [...new Set(parseArray(preset.permissionKeysJson).filter(key => validPermissionKeys.has(key)))].sort(),
+    companyKeys: [...new Set(parseArray(preset.companyKeysJson))],
+    fromPeriod: preset.fromPeriod,
+    toPeriod: preset.toPeriod,
+    accountVisibility: preset.accountVisibility,
+    showDirection: Number(preset.showDirection) === 1,
+    showFullEntry: Number(preset.showFullEntry) === 1
+  };
   const scopes = db.prepare('SELECT company_key AS companyKey, from_period AS fromPeriod, to_period AS toPeriod FROM role_report_scopes WHERE role_key = ?').all(roleKey);
   const companies = [...new Set(scopes.map(item => item.companyKey))];
   const accountVisibility = db.prepare('SELECT visibility FROM role_account_visibility WHERE role_key = ?').get(roleKey)?.visibility || 'level1';
   const preference = db.prepare('SELECT show_direction AS showDirection, show_full_entry AS showFullEntry FROM role_detail_preferences WHERE role_key = ?').get(roleKey);
   return { roleKey, permissionKeys: permissionKeysForRole(roleKey), companyKeys: companies.includes('*') || !companies.length ? ['*'] : companies, fromPeriod: scopes.map(item => item.fromPeriod).sort()[0] || '2020-01', toPeriod: scopes.map(item => item.toPeriod).sort().at(-1) || '2099-12', accountVisibility, showDirection: preference ? Number(preference.showDirection) === 1 : true, showFullEntry: preference ? Number(preference.showFullEntry) === 1 : true };
 };
-const parseArray = value => { try { const parsed = JSON.parse(value); return Array.isArray(parsed) ? parsed : []; } catch { return []; } };
 const permissionProfileFor = employeeKey => {
   const saved = db.prepare('SELECT preset_role_key AS presetRoleKey, permission_keys_json AS permissionKeysJson, company_keys_json AS companyKeysJson, from_period AS fromPeriod, to_period AS toPeriod, account_visibility AS accountVisibility, show_direction AS showDirection, show_full_entry AS showFullEntry, updated_at AS updatedAt FROM employee_permission_profiles WHERE employee_key = ?').get(employeeKey);
-  if (saved) return { employeeKey, presetRoleKey: saved.presetRoleKey, permissionKeys: parseArray(saved.permissionKeysJson), companyKeys: parseArray(saved.companyKeysJson), fromPeriod: saved.fromPeriod, toPeriod: saved.toPeriod, accountVisibility: saved.accountVisibility, showDirection: Number(saved.showDirection) === 1, showFullEntry: Number(saved.showFullEntry) === 1, hasAssignment: true, isCustomized: true, updatedAt: saved.updatedAt };
+  if (saved) {
+    const companyKeys = parseArray(saved.companyKeysJson);
+    const permissionKeys = permissionKeysForCompanyScope(parseArray(saved.permissionKeysJson), companyKeys);
+    return { employeeKey, presetRoleKey: saved.presetRoleKey, permissionKeys, companyKeys, fromPeriod: saved.fromPeriod, toPeriod: saved.toPeriod, accountVisibility: saved.accountVisibility, showDirection: Number(saved.showDirection) === 1, showFullEntry: Number(saved.showFullEntry) === 1, hasAssignment: true, isCustomized: true, updatedAt: saved.updatedAt };
+  }
   const roleKeys = db.prepare('SELECT role_key AS roleKey FROM employee_roles WHERE employee_key = ? ORDER BY rowid').all(employeeKey).map(row => row.roleKey);
   const defaults = roleKeys.map(roleDefaultFor); const permissionKeys = [...new Set(defaults.flatMap(item => item.permissionKeys))].sort(); const companies = [...new Set(defaults.flatMap(item => item.companyKeys))];
   const companyKeys = roleKeys.length ? (companies.includes('*') || !companies.length ? ['*'] : companies) : [];
@@ -1307,7 +1395,9 @@ const mainBusinessRowsFromRaw = (raw, period, quotationRecords = new Map()) => {
     const journalProjectName = projectNameForJournalRow(row, revenueProjects, columns, contractNo);
     const projectName = quotation?.projectName || journalProjectName;
     const customerName = quotation?.customerName || explicitCustomerNameForJournalRow(row, columns) || contractCustomers.get(contractNo) || customerNameFromSummary(row, contractNo, journalProjectName, columns) || '未识别客户';
-    return { row, period: periodValue, kind, amount, contractNo, customerName, projectName, quotationMatched: Boolean(quotation), voucher: String(row.cells?.[columns.voucher] ?? '').trim() };
+    const voucher = String(row.cells?.[columns.voucher] ?? '').trim();
+    const detail = { sourceRow: Number(row.row || 0), period: periodValue, date: journalDateFor(row, columns.date), voucher, summary: String(row.cells?.[columns.summary] ?? '').trim(), accountCode: String(row.cells?.[columns.accountCode] ?? '').trim(), account, debit: amountFor(row.cells?.[columns.debit]), credit: amountFor(row.cells?.[columns.credit]), amount: roundedAmount(amount) };
+    return { row, period: periodValue, kind, amount, contractNo, customerName, projectName, quotationMatched: Boolean(quotation), voucher, detail };
   }).filter(item => item.amount || item.contractNo || item.projectName);
   return { rows: normalized, sourceRows: rows, revenueProjects };
 };
@@ -1340,14 +1430,16 @@ const mainBusinessAnalysisFor = (companyKey, period, year = String(period || '')
     rows.forEach(item => {
       const contractNo = item.contractNo || `未识别合同-${item.voucher || item.row.row}`;
       const key = `${contractNo}|${item.projectName}`;
-      const value = map.get(key) || { contractNo: item.contractNo || '未识别合同', customerName: item.customerName || '未识别客户', projectName: item.projectName, revenue: 0, cost: 0, identity: contractNo };
+      const value = map.get(key) || { contractNo: item.contractNo || '未识别合同', customerName: item.customerName || '未识别客户', projectName: item.projectName, revenue: 0, cost: 0, revenueDetails: [], costDetails: [], identity: contractNo };
       if (value.customerName === '未识别客户' && item.customerName && item.customerName !== '未识别客户') value.customerName = item.customerName;
-      value[item.kind] += item.amount; map.set(key, value);
+      value[item.kind] += item.amount;
+      if (item.amount > 0) value[item.kind === 'revenue' ? 'revenueDetails' : 'costDetails'].push(item.detail);
+      map.set(key, value);
     });
     return [...map.values()];
   };
   const detailRows = aggregate(currentRows).filter(row => row.revenue || row.cost).sort((a, b) => b.revenue - a.revenue || b.cost - a.cost || a.projectName.localeCompare(b.projectName, 'zh-CN')).map((row, index) => ({
-    index: index + 1, contractNo: row.contractNo, customerName: row.customerName, projectName: row.projectName, revenue: roundedAmount(row.revenue), cost: roundedAmount(row.cost), grossProfit: roundedAmount(row.revenue - row.cost), grossMargin: row.revenue ? roundedAmount((row.revenue - row.cost) / row.revenue * 100) : null
+    index: index + 1, contractNo: row.contractNo, customerName: row.customerName, projectName: row.projectName, revenue: roundedAmount(row.revenue), cost: roundedAmount(row.cost), grossProfit: roundedAmount(row.revenue - row.cost), grossMargin: row.revenue ? roundedAmount((row.revenue - row.cost) / row.revenue * 100) : null, revenueDetails: row.revenueDetails, costDetails: row.costDetails
   }));
   const countByProject = rows => {
     const map = new Map(); rows.forEach(item => { const name = item.projectName; const id = item.contractNo || `未识别合同-${item.voucher || item.row.row}`; if (!map.has(name)) map.set(name, new Set()); map.get(name).add(id); }); return map;
@@ -1727,16 +1819,20 @@ const consultantDirectorySnapshot = () => {
     const stat = fs.statSync(consultantDirectoryFile);
     if (!stat.isFile() || stat.size <= 0 || stat.size > consultantDirectoryMaxBytes) return empty('顾问人事快照大小异常，已拒绝读取');
     const content = fs.readFileSync(consultantDirectoryFile, 'utf8'); const payload = JSON.parse(content);
-    if (payload?.schemaVersion !== 1 || !Array.isArray(payload.people) || payload.people.length > 5000) return empty('顾问人事快照格式异常，已拒绝读取');
+    if (![1, 2].includes(payload?.schemaVersion) || !Array.isArray(payload.people) || payload.people.length > 5000) return empty('顾问人事快照格式异常，已拒绝读取');
     const records = new Map();
     for (const source of payload.people) {
+      const allowedFields = new Set(['name', 'englishName', 'companyName', 'employmentStatus', 'departureDate']);
+      if (!source || Object.keys(source).some(key => !allowedFields.has(key))) return empty('顾问人事快照包含未授权字段，已拒绝读取');
       const name = String(source?.name || '').trim().slice(0, 40); const canonicalName = consultantCanonicalName(name);
       if (!canonicalName) continue;
       const englishName = String(source?.englishName || '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 80);
+      const companyName = String(source?.companyName || '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 80);
       const employmentStatus = source?.employmentStatus === 'resigned' ? 'resigned' : 'active';
+      const departureDate = /^20\d{2}-\d{2}-\d{2}$/.test(String(source?.departureDate || '')) ? String(source.departureDate) : '';
       const existing = records.get(canonicalName);
-      if (!existing) records.set(canonicalName, { name, englishName, employmentStatus });
-      else if (existing.name === name) records.set(canonicalName, { name, englishName: existing.englishName || englishName, employmentStatus: existing.employmentStatus === 'resigned' || employmentStatus === 'resigned' ? 'resigned' : 'active' });
+      if (!existing) records.set(canonicalName, { name, englishName, companyName, employmentStatus, departureDate });
+      else if (existing.name === name) records.set(canonicalName, { name, englishName: existing.englishName || englishName, companyName: existing.companyName || companyName, employmentStatus: existing.employmentStatus === 'resigned' || employmentStatus === 'resigned' ? 'resigned' : 'active', departureDate: existing.departureDate || departureDate });
     }
     return { available: true, revision: crypto.createHash('sha256').update(content).digest('hex').slice(0, 20), generatedAt: String(payload.generatedAt || ''), records, reason: '' };
   } catch { return empty('顾问人事快照无法解析，已拒绝读取'); }
@@ -1978,7 +2074,7 @@ const parseConsultantRevenueDetail = (workbook, selectedPeriod = '') => {
   for (const sheetName of workbook.SheetNames) {
     const compactName = String(sheetName).replace(/\s+/g, ''); if (!/总营收明细|营收总明细/.test(compactName)) continue;
     const sheetRows = uploadSheetRows(workbook.Sheets[sheetName], sheetName); const rows = sheetRows.rows;
-    const headerRowIndex = rows.slice(0, 60).findIndex(row => findHeaderIndex(row || [], [/签约顾问(?:\/渠道)?/, /签约顾问渠道/]) >= 0 && findHeaderIndex(row || [], [/预计营收/]) >= 0 && findHeaderIndex(row || [], [/业绩归属/, /归属地区/]) >= 0);
+    const headerRowIndex = rows.slice(0, 60).findIndex(row => findHeaderIndex(row || [], [/签约顾问(?:\/渠道)?/, /签约顾问渠道/]) >= 0 && findHeaderIndex(row || [], [/预计营收/]) >= 0);
     if (headerRowIndex < 0) continue;
     const headers = rows[headerRowIndex] || []; const consultantIndex = findHeaderIndex(headers, [/签约顾问(?:\/渠道)?/, /签约顾问渠道/]); const revenueIndex = findHeaderIndex(headers, [/预计营收/]); const regionIndex = findHeaderIndex(headers, [/业绩归属/, /归属地区/]); const periodIndex = findHeaderIndex(headers, [/^(?:月份|统计月份|营收月份|归属月份)$/]);
     let excludedPeriodRows = 0;
@@ -1987,9 +2083,9 @@ const parseConsultantRevenueDetail = (workbook, selectedPeriod = '') => {
       if (!consultant || !expectedRevenue) return null;
       const sourcePeriod = periodIndex >= 0 ? revenuePeriodForValue(cells?.[periodIndex], selectedPeriod) : selectedPeriod;
       if (selectedPeriod && periodIndex >= 0 && sourcePeriod !== selectedPeriod) { excludedPeriodRows += 1; return null; }
-      return { row: headerRowIndex + offset + 2, consultant, canonicalName: consultantCanonicalName(consultant), region: String(cells?.[regionIndex] || '').trim(), sourcePeriod, expectedRevenue };
+      return { row: headerRowIndex + offset + 2, consultant, canonicalName: consultantCanonicalName(consultant), region: regionIndex >= 0 ? String(cells?.[regionIndex] || '').trim() : '', sourcePeriod, expectedRevenue };
     }).filter(Boolean);
-    return { sourceSheet: sheetName, headerRow: headerRowIndex + 1, selectedPeriod, excludedPeriodRows, fieldMapping: { consultant: String(headers[consultantIndex] || '').trim(), region: String(headers[regionIndex] || '').trim(), expectedRevenue: String(headers[revenueIndex] || '').trim(), period: periodIndex >= 0 ? String(headers[periodIndex] || '').trim() : '' }, rows: detailRows };
+    return { sourceSheet: sheetName, headerRow: headerRowIndex + 1, selectedPeriod, excludedPeriodRows, fieldMapping: { consultant: String(headers[consultantIndex] || '').trim(), region: regionIndex >= 0 ? String(headers[regionIndex] || '').trim() : '', expectedRevenue: String(headers[revenueIndex] || '').trim(), period: periodIndex >= 0 ? String(headers[periodIndex] || '').trim() : '' }, rows: detailRows };
   }
   return { sourceSheet: '', headerRow: 0, selectedPeriod, excludedPeriodRows: 0, fieldMapping: {}, rows: [] };
 };
@@ -2018,6 +2114,16 @@ const revenueCumulativeTableDefinitions = [
   { key: 'L6', titlePattern: /渠道营收统计累计表/i, headers: [/(?:渠道顾问|渠道)/, /月份/, /(?:预计|实际|实收)?营收(?:金额|总额)?/, /(?:营收)?占比/, /项目(?:数量|数)/] }
 ];
 const revenueCumulativeTitleKey = value => String(value || '').replace(/\s+/g, '').match(/(L(?:2-1|[1-6]))$/i)?.[1]?.toUpperCase() || '';
+const revenueCumulativeParserVersion = 2;
+const revenueCumulativeHeaderWidth = (values, patterns) => {
+  const normalized = values.map(normalizedHeader); const matchedColumns = []; let searchFrom = 0;
+  for (const pattern of patterns) {
+    const relativeIndex = normalized.slice(searchFrom).findIndex(value => pattern.test(value));
+    if (relativeIndex < 0) return 0;
+    const column = searchFrom + relativeIndex; matchedColumns.push(column); searchFrom = column + 1;
+  }
+  return matchedColumns[0] === 0 ? matchedColumns.at(-1) + 1 : 0;
+};
 const parseRevenueCumulativeSections = rows => {
   const issues = [];
   const sections = rows.map((row, rowIndex) => {
@@ -2043,10 +2149,9 @@ const parseRevenueCumulativeSections = rows => {
       let headerRowIndex = -1; let headers = [];
       for (let rowIndex = anchor.rowIndex + 1; rowIndex < Math.min(sectionEnd, anchor.rowIndex + 13); rowIndex += 1) {
         const candidateHeaders = (rows[rowIndex] || []).slice(anchor.column, nextColumn);
-        const normalizedHeaders = candidateHeaders.map(normalizedHeader);
-        if (!anchor.definition.headers.every(pattern => normalizedHeaders.some(header => pattern.test(header)))) continue;
-        headerRowIndex = rowIndex; headers = candidateHeaders;
-        while (headers.length && !revenueCellHasValue(headers.at(-1))) headers.pop();
+        const headerWidth = revenueCumulativeHeaderWidth(candidateHeaders, anchor.definition.headers);
+        if (!headerWidth) continue;
+        headerRowIndex = rowIndex; headers = candidateHeaders.slice(0, headerWidth);
         break;
       }
       if (headerRowIndex < 0 || !headers.length) {
@@ -2069,7 +2174,7 @@ const parseRevenueCumulativeSections = rows => {
     if (missing.length) issues.push(`${section.year}年累计数据缺少可识别子表：${missing.join('、')}`);
     return { year: section.year, sourceTitle: section.title, tables };
   });
-  return { cumulativeYears, cumulativeIssues: [...new Set(issues)] };
+  return { cumulativeParserVersion: revenueCumulativeParserVersion, cumulativeYears, cumulativeIssues: [...new Set(issues)] };
 };
 const parseRevenueStatisticsSheet = (workbook, sheetName, selectedPeriod = '') => {
   const sheet = workbook.Sheets[sheetName];
@@ -2362,7 +2467,7 @@ const groupProfitAnalysisFor = (period, year) => {
 const revenueStatisticsRefreshCache = new Map();
 const refreshedRevenueStatisticsRawFor = (revenue, period) => {
   const consultantReady = revenue.raw?.consultantRevenue?.selectedPeriod === period;
-  const cumulativeReady = Array.isArray(revenue.raw?.cumulativeYears);
+  const cumulativeReady = Array.isArray(revenue.raw?.cumulativeYears) && revenue.raw?.cumulativeParserVersion === revenueCumulativeParserVersion;
   if ((consultantReady && cumulativeReady) || !revenue.meta?.uploadKey) return revenue.raw;
   if (revenueStatisticsRefreshCache.has(revenue.meta.uploadKey)) return revenueStatisticsRefreshCache.get(revenue.meta.uploadKey);
   const upload = db.prepare('SELECT file_name, file_type, storage_path FROM upload_batches WHERE upload_key = ?').get(revenue.meta.uploadKey);
@@ -2392,9 +2497,9 @@ const refreshedConsultantPayrollRawFor = (payroll, period) => {
 const consultantRoiAnalysisFor = (employeeKey, period) => {
   const payroll = rawReportFor(payrollStatementReportType, 'group', period); const revenue = rawReportFor(revenueStatisticsReportType, 'group', period); const spend = rawReportFor(consultantSpendRevenueReportType, 'group', period);
   const directory = consultantDirectorySnapshot(); const canManageAuthorization = hasModule(employeeKey, 'permission_admin', 'manage'); const directorySync = consultantDirectorySyncStatus(canManageAuthorization);
-  const payrollRaw = refreshedConsultantPayrollRawFor(payroll, period); const payrollRows = payrollRaw?.payrollRows || []; const consultantPayrollRows = payrollRows.filter(item => consultantDepartmentMatches(item.department)); const revenueRaw = refreshedRevenueStatisticsRawFor(revenue, period); const revenueRows = revenueRaw?.consultantRevenue?.rows || []; const spendRows = spend.raw?.spendRows || [];
+  const payrollRaw = refreshedConsultantPayrollRawFor(payroll, period); const payrollRows = payrollRaw?.payrollRows || []; const consultantPayrollRows = payrollRows.filter(item => consultantDepartmentMatches(item.department)); const revenueRaw = refreshedRevenueStatisticsRawFor(revenue, period); const revenueDetail = revenueRaw?.consultantRevenue; const revenueRows = revenueDetail?.rows || []; const revenueSourceAvailable = !revenue.meta.noData && Boolean(revenueDetail?.sourceSheet); const spendRows = spend.raw?.spendRows || [];
   const consultants = new Map();
-  const ensure = (canonicalName, displayName) => { if (!consultants.has(canonicalName)) consultants.set(canonicalName, { canonicalName, name: displayName || canonicalName, regions: new Set(), hireDates: new Set(), baseSalary: 0, commission: 0, journalExpense: 0, trafficSpend: 0, expectedRevenue: 0, payrollDetails: [], revenueDetails: [], expenseDetails: [], spendDetails: [] }); return consultants.get(canonicalName); };
+  const ensure = (canonicalName, displayName) => { if (!consultants.has(canonicalName)) consultants.set(canonicalName, { canonicalName, name: displayName || canonicalName, hireDates: new Set(), baseSalary: 0, commission: 0, journalExpense: 0, trafficSpend: 0, expectedRevenue: 0, payrollDetails: [], revenueDetails: [], expenseDetails: [], spendDetails: [] }); return consultants.get(canonicalName); };
   for (const item of consultantPayrollRows) {
     const row = ensure(item.canonicalName || consultantCanonicalName(item.name), item.name);
     row.baseSalary += Number(item.baseSalary || 0); row.commission += Number(item.commission || 0); if (item.hireDate) row.hireDates.add(item.hireDate);
@@ -2404,7 +2509,7 @@ const consultantRoiAnalysisFor = (employeeKey, period) => {
   for (const item of revenueRows) {
     const row = consultants.get(item.canonicalName || consultantCanonicalName(item.consultant));
     if (!row) { unmatchedRevenueRows += 1; unmatchedRevenueAmount += Number(item.expectedRevenue || 0); continue; }
-    row.expectedRevenue += Number(item.expectedRevenue || 0); if (item.region) row.regions.add(item.region); row.revenueDetails.push({ sourceSheet: revenueRaw.consultantRevenue?.sourceSheet, row: item.row, expectedRevenue: item.expectedRevenue, region: item.region, sourcePeriod: item.sourcePeriod || period });
+    row.expectedRevenue += Number(item.expectedRevenue || 0); row.revenueDetails.push({ sourceSheet: revenueDetail?.sourceSheet, row: item.row, expectedRevenue: item.expectedRevenue, sourcePeriod: item.sourcePeriod || period });
   }
   const consultantsByEnglish = new Map();
   for (const item of consultants.values()) {
@@ -2438,23 +2543,32 @@ const consultantRoiAnalysisFor = (employeeKey, period) => {
   const allRows = [...consultants.values()].map(item => {
     const input = roundedAmount(item.baseSalary + item.commission + item.journalExpense + item.trafficSpend); const output = roundedAmount(item.expectedRevenue); const hireDate = [...item.hireDates].sort()[0] || '';
     const directoryPerson = directory.records.get(item.canonicalName);
-    return { name: item.name, canonicalName: item.canonicalName, hireDate, englishName: directoryPerson?.englishName || '', isResigned: directoryPerson?.employmentStatus === 'resigned', region: [...item.regions].join('、') || '待补充', isNewEmployee: Boolean(hireDate && hireDate.slice(0, 7) === period), baseSalary: roundedAmount(item.baseSalary), commission: roundedAmount(item.commission), journalExpense: roundedAmount(item.journalExpense), trafficSpend: roundedAmount(item.trafficSpend), input, output, roi: input ? output / input : null, matchStatus: item.payrollDetails.length && item.revenueDetails.length ? 'matched' : item.payrollDetails.length ? 'missing_revenue' : 'missing_payroll', payrollDetails: item.payrollDetails, revenueDetails: item.revenueDetails, expenseDetails: item.expenseDetails, spendDetails: item.spendDetails };
+    const matchStatus = !item.payrollDetails.length ? 'missing_payroll' : !revenueSourceAvailable ? 'missing_revenue' : Math.abs(output) < 0.000001 ? 'no_revenue' : 'matched';
+    return { name: item.name, canonicalName: item.canonicalName, hireDate, englishName: directoryPerson?.englishName || '', companyName: directoryPerson?.companyName || '待补充', isResigned: directoryPerson?.employmentStatus === 'resigned', departureDate: directoryPerson?.departureDate || '', isNewEmployee: Boolean(hireDate && hireDate.slice(0, 7) === period), baseSalary: roundedAmount(item.baseSalary), commission: roundedAmount(item.commission), journalExpense: roundedAmount(item.journalExpense), trafficSpend: roundedAmount(item.trafficSpend), input, output, roi: input ? output / input : null, matchStatus, payrollDetails: item.payrollDetails, revenueDetails: item.revenueDetails, expenseDetails: item.expenseDetails, spendDetails: item.spendDetails };
   }).sort((a, b) => b.output - a.output || b.input - a.input);
-  const hiddenKeys = hiddenConsultantKeys(); const rows = allRows.filter(item => !hiddenKeys.has(item.canonicalName));
+  const hiddenKeys = hiddenConsultantKeys(); const visibleRawRows = allRows.filter(item => !hiddenKeys.has(item.canonicalName));
   const reimbursementAccountMap = new Map();
-  for (const row of rows) for (const detail of row.expenseDetails || []) {
+  for (const row of visibleRawRows) for (const detail of row.expenseDetails || []) {
     const name = detail.secondaryAccount || consultantExpenseSecondaryAccount(detail.account); const current = reimbursementAccountMap.get(name) || { name, amount: 0, detailCount: 0 };
     current.amount += Number(detail.amount || 0); current.detailCount += 1; reimbursementAccountMap.set(name, current);
   }
   const reimbursementAccounts = [...reimbursementAccountMap.values()].map(item => ({ ...item, amount: roundedAmount(item.amount) })).sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
+  const roiSettings = consultantRoiSettingsFor(period, reimbursementAccounts.map(item => item.name)); const selectedReimbursementAccounts = new Set(roiSettings.selectedAccounts);
+  const rows = visibleRawRows.map(item => {
+    const journalExpense = roundedAmount((item.expenseDetails || []).reduce((sum, detail) => sum + (selectedReimbursementAccounts.has(detail.secondaryAccount || consultantExpenseSecondaryAccount(detail.account)) ? Number(detail.amount || 0) : 0), 0));
+    const values = { ...item, journalExpense }; const input = roundedAmount(Object.entries(roiSettings.inputs).reduce((sum, [key, enabled]) => sum + (enabled ? Number(values[key] || 0) : 0), 0));
+    return { ...values, input, roi: input ? values.output / input : null };
+  });
   const totals = rows.reduce((sum, row) => ({ input: sum.input + row.input, output: sum.output + row.output, baseSalary: sum.baseSalary + row.baseSalary, commission: sum.commission + row.commission, journalExpense: sum.journalExpense + row.journalExpense, trafficSpend: sum.trafficSpend + row.trafficSpend }), { input: 0, output: 0, baseSalary: 0, commission: 0, journalExpense: 0, trafficSpend: 0 });
   Object.keys(totals).forEach(key => { totals[key] = roundedAmount(totals[key]); }); totals.roi = totals.input ? totals.output / totals.input : null;
-  const sourceRevision = crypto.createHash('sha256').update(JSON.stringify({ schema: 8, payroll: [payroll.meta.uploadKey, payroll.meta.publishedAt], revenue: [revenue.meta.uploadKey, revenue.meta.publishedAt], spend: [spend.meta.uploadKey, spend.meta.publishedAt], directory: directory.revision, directorySync: [directorySync.state, directorySync.updatedAt, directorySync.requestedAt], hiddenConsultants: [...hiddenKeys].sort(), journals: journalSources.map(item => [item.companyKey, item.uploadKey, item.publishedAt]) })).digest('hex').slice(0, 20);
+  const sourceRevision = crypto.createHash('sha256').update(JSON.stringify({ schema: 10, payroll: [payroll.meta.uploadKey, payroll.meta.publishedAt], revenue: [revenue.meta.uploadKey, revenue.meta.publishedAt], spend: [spend.meta.uploadKey, spend.meta.publishedAt], directory: directory.revision, directorySync: [directorySync.state, directorySync.updatedAt, directorySync.requestedAt], roiSettings, hiddenConsultants: [...hiddenKeys].sort(), journals: journalSources.map(item => [item.companyKey, item.uploadKey, item.publishedAt]) })).digest('hex').slice(0, 20);
   const consultantDepartments = [...new Set(consultantPayrollRows.map(item => String(item.department || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'zh-CN'));
   const directoryMatchedRows = rows.filter(item => directory.records.has(item.canonicalName)).length;
-  const canManageVisibility = hasModule(employeeKey, 'permission_admin', 'manage');
+  const canManageVisibility = hasModule(employeeKey, 'permission_admin', 'manage'); const canViewMatchDiagnostics = canManageVisibility; const canManageRoiSettings = canManageVisibility;
   const visibilityOptions = canManageVisibility ? [...new Map([...allRows.map(item => [item.canonicalName, { canonicalName: item.canonicalName, name: item.name, hidden: hiddenKeys.has(item.canonicalName) }]), ...[...hiddenKeys].filter(key => !allRows.some(item => item.canonicalName === key)).map(key => [key, { canonicalName: key, name: key, hidden: true }])]).values()].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN')) : undefined;
-  return { company: '桉侨集团', period, sourceRevision, rows, totals, reimbursementAccounts, canManageAuthorization, canManageVisibility, visibility: canManageVisibility ? { hiddenCount: hiddenKeys.size, options: visibilityOptions } : undefined, sources: { payroll: payroll.meta, payrollSheet: payrollRaw?.sourceSheet || '', payrollFields: payrollRaw?.fieldMapping || {}, payrollConsultantDepartments: consultantDepartments, payrollConsultantRows: consultantPayrollRows.length, payrollExcludedRows: Math.max(0, payrollRows.length - consultantPayrollRows.length), directory: { available: directory.available, generatedAt: directory.generatedAt, matchedRows: directoryMatchedRows, reason: directory.reason, sync: directorySync }, revenue: revenue.meta, revenueSheet: revenueRaw?.consultantRevenue?.sourceSheet || '', revenueFields: revenueRaw?.consultantRevenue?.fieldMapping || {}, revenueExcludedPeriodRows: Number(revenueRaw?.consultantRevenue?.excludedPeriodRows || 0), unmatchedRevenueRows, unmatchedRevenueAmount: roundedAmount(unmatchedRevenueAmount), spend: spend.meta, spendSheet: spend.raw?.sourceSheet || '', spendFields: spend.raw?.fieldMapping || {}, matchedSpendRows, unmatchedSpendRows, ambiguousSpendRows, unmatchedSpendAmount: roundedAmount(unmatchedSpendAmount), journals: journalSources }, missing: [payroll.meta.noData ? '每月工资表' : '', !payroll.meta.noData && !consultantPayrollRows.length ? '工资表·顾问部门人员' : '', revenue.meta.noData || !revenueRows.length ? '营收统计表·总营收明细表' : '', spend.meta.noData ? '顾问消耗-营收表·汇总' : '', ...journalSources.filter(item => item.noData).map(item => `${item.companyName}序时账`)].filter(Boolean) };
+  const publicRows = canViewMatchDiagnostics ? rows : rows.map(item => ({ name: item.name, hireDate: item.hireDate, englishName: item.englishName, companyName: item.companyName, isResigned: item.isResigned, departureDate: item.departureDate, isNewEmployee: item.isNewEmployee, baseSalary: item.baseSalary, commission: item.commission, journalExpense: item.journalExpense, trafficSpend: item.trafficSpend, input: item.input, output: item.output, roi: item.roi }));
+  const matchDiagnostics = canViewMatchDiagnostics ? { revenueExcludedPeriodRows: Number(revenueDetail?.excludedPeriodRows || 0), unmatchedRevenueRows, unmatchedRevenueAmount: roundedAmount(unmatchedRevenueAmount), matchedSpendRows, unmatchedSpendRows, ambiguousSpendRows, unmatchedSpendAmount: roundedAmount(unmatchedSpendAmount) } : {};
+  return { company: '桉侨集团', period, sourceRevision, rows: publicRows, totals, canManageAuthorization, canManageVisibility, canViewMatchDiagnostics, canManageRoiSettings, roiSettings: { configured: roiSettings.configured, inputs: roiSettings.inputs, selectedAccountCount: roiSettings.selectedAccounts.length, availableAccountCount: reimbursementAccounts.length, ...(canManageRoiSettings ? { selectedAccounts: roiSettings.selectedAccounts, staleAccounts: roiSettings.staleAccounts, updatedAt: roiSettings.updatedAt } : {}) }, reimbursementAccounts: canManageRoiSettings ? reimbursementAccounts : undefined, visibility: canManageVisibility ? { hiddenCount: hiddenKeys.size, options: visibilityOptions } : undefined, sources: { payroll: payroll.meta, payrollSheet: payrollRaw?.sourceSheet || '', payrollFields: payrollRaw?.fieldMapping || {}, payrollConsultantDepartments: consultantDepartments, payrollConsultantRows: consultantPayrollRows.length, payrollExcludedRows: Math.max(0, payrollRows.length - consultantPayrollRows.length), directory: { available: directory.available, generatedAt: directory.generatedAt, matchedRows: directoryMatchedRows, reason: directory.reason, sync: directorySync }, revenue: revenue.meta, revenueSheet: revenueDetail?.sourceSheet || '', revenueFields: revenueDetail?.fieldMapping || {}, revenueSourceAvailable, spend: spend.meta, spendSheet: spend.raw?.sourceSheet || '', spendFields: spend.raw?.fieldMapping || {}, ...matchDiagnostics, journals: journalSources }, missing: [payroll.meta.noData ? '每月工资表' : '', !payroll.meta.noData && !consultantPayrollRows.length ? '工资表·顾问部门人员' : '', !revenueSourceAvailable ? '营收统计表·总营收明细表' : '', spend.meta.noData ? '顾问消耗-营收表·汇总' : '', ...journalSources.filter(item => item.noData).map(item => `${item.companyName}序时账`)].filter(Boolean) };
 };
 const briefLineName = value => String(value || '')
   .replace(/\s+/g, '')
@@ -3033,6 +3147,19 @@ const server = http.createServer(async (req, res) => {
         return json(res, 200, { ok: true, hiddenCount: hidden.size });
       } catch (error) { return bad(res, 400, error.message); }
     }
+    if (url.pathname === '/api/analysis/consultant-roi/settings' && req.method === 'PUT') {
+      const employee = requireEmployee(req, res); if (!employee) return;
+      if (!hasModule(employee.employee_key, 'permission_admin', 'manage')) return bad(res, 403, '只有财务管理员可以配置投入产出比计算口径');
+      const body = await parseBody(req); const period = String(body.period || '');
+      if (!/^20\d{2}-(?:0[1-9]|1[0-2])$/.test(period)) return bad(res, 400, '会计期间格式无效');
+      try {
+        const analysis = consultantRoiAnalysisFor(employee.employee_key, period); const availableAccounts = (analysis.reimbursementAccounts || []).map(item => item.name);
+        const settings = saveConsultantRoiSettings(period, body, employee.employee_key, availableAccounts);
+        const enabledInputs = Object.entries(settings.inputs).filter(([, enabled]) => enabled).map(([key]) => key);
+        log(employee.employee_key, 'set_consultant_roi_settings', consultantRoiModuleKey, `${period}; reimbursement=${settings.reimbursementAccounts.join('、') || '未选择'}; inputs=${enabledInputs.join(',') || '未选择'}`, { moduleKey: consultantRoiModuleKey, companyKey: 'group', period });
+        return json(res, 200, { ok: true, period, settings });
+      } catch (error) { return bad(res, 400, error.message); }
+    }
     if (url.pathname === '/api/analysis/consultant-roi' && req.method === 'GET') {
       const companyKey = url.searchParams.get('company') || 'group'; const period = url.searchParams.get('period') || '2026-07';
       if (companyKey !== 'group') return bad(res, 400, '顾问投入产出比仅适用于桉侨集团');
@@ -3092,7 +3219,15 @@ const server = http.createServer(async (req, res) => {
       if (!hasAnalysis(employee.employee_key, 'main_business_analysis', companyKey, period)) { bad(res, 403, '当前员工没有主营业务分析权限'); return; }
       const analysis = mainBusinessAnalysisFor(companyKey, period, year); log(employee.employee_key, 'view_main_business_analysis', 'main_business_analysis', `${companyKey}/${period}`, { moduleKey: 'main_business_analysis', companyKey, period });
       const access = analysisBlockAccessFor(employee.employee_key, companyKey, period).main_business_analysis;
-      return json(res, 200, { ...analysis, detailRows: access.business_detail ? analysis.detailRows : [], projectRows: access.project_change ? analysis.projectRows : [], monthlyTrend: access.gross_trend ? analysis.monthlyTrend : [] });
+      const canViewJournalDetails = access.business_detail && hasModule(employee.employee_key, 'report_detail', 'view') && hasReport(employee.employee_key, 'journal', 'detail', 'view', companyKey, period);
+      const detailPreference = detailPreferenceFor(employee.employee_key); const visibility = accountVisibilityFor(employee.employee_key);
+      const detailRows = access.business_detail ? analysis.detailRows.map(row => {
+        const visibleRow = { ...row }; const detailKeys = ['revenueDetails', 'costDetails'];
+        if (!canViewJournalDetails) detailKeys.forEach(key => { delete visibleRow[key]; });
+        else detailKeys.forEach(key => { visibleRow[key] = (visibleRow[key] || []).map(item => ({ ...item, account: accountNameForVisibility(item.account, visibility) })); });
+        return visibleRow;
+      }) : [];
+      return json(res, 200, { ...analysis, detailRows, canViewJournalDetails, showJournalDirection: canViewJournalDetails && detailPreference.showDirection, projectRows: access.project_change ? analysis.projectRows : [], monthlyTrend: access.gross_trend ? analysis.monthlyTrend : [] });
     }
     if (url.pathname === '/api/analysis/expenses' && req.method === 'GET') {
       const companyKey = url.searchParams.get('company') || 'gz'; const period = url.searchParams.get('period') || '2026-06'; const year = url.searchParams.get('year') || period.slice(0, 4);
@@ -3257,6 +3392,7 @@ const server = http.createServer(async (req, res) => {
       if (permissionKeys.includes(financialBriefNotesPermissionKey) && !permissionKeys.includes('module.financial_brief.view')) return bad(res, 400, '编辑简报二级说明前，需先开启财务数据简报浏览权限');
       if (permissionKeys.includes(intercompanyDetailPermissionKey) && !permissionKeys.includes(intercompanyViewPermissionKey)) return bad(res, 400, '查看双方序时账明细前，需先开启各公司往来校验浏览权限');
       if (!Array.isArray(body.companyKeys) || companyKeys.some(key => key !== '*' && !db.prepare('SELECT 1 FROM companies WHERE company_key = ?').get(key))) return bad(res, 400, '请选择有效的公司范围');
+      if (!companyScopeIncludesGroup(companyKeys) && permissionKeys.some(key => groupOnlyPermissionKeys.has(key))) return bad(res, 400, '集团专属模块需先选择“全部公司”或“桉侨集团”数据范围');
       if (!/^\d{4}-\d{2}$/.test(fromPeriod) || !/^\d{4}-\d{2}$/.test(toPeriod) || fromPeriod > toPeriod) return bad(res, 400, '期间范围无效');
       if (!['level1', 'full'].includes(body.accountVisibility)) return bad(res, 400, '科目名称显示级别无效');
       if (employeeKey === actor.employee_key && !permissionKeys.includes('module.permissions.manage')) return bad(res, 400, '不能移除自己当前使用的权限管理能力');
