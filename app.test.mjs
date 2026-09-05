@@ -259,13 +259,13 @@ function revenueStatisticsWorkbookBuffer(period = '2026-07', legacyTitles = fals
   XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(rows), '2026年数据统计汇总表（mia）');
   XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([
     ['总营收明细表'],
-    ['业绩归属', '签约顾问/渠道', '预计营收', '月份'],
+    ['业绩归属', '签约顾问/渠道', '预计营收', '月份', '合同编号', '项目名称', '客户名称'],
     ...(consultantRows || [
-      ['广州', 'James詹志坚', 100000, `${year}${monthText}`],
-      ['深圳', 'sasa张莎莎', 80000, `${year}${monthText}`],
-      ['广州', 'James詹志坚', 20000, `${year}${monthText}`],
-      ['上海', 'Cici徐梓茵', 50000, `${year}${monthText}`],
-      ['北京', '历史顾问', 999999, `${Number(year) - 1}12`]
+      ['广州', 'James詹志坚', 100000, `${year}${monthText}`, `${year}${monthText}-001`, '加拿大项目', '测试客户甲'],
+      ['深圳', 'sasa张莎莎', 80000, `${year}${monthText}`, `${year}${monthText}-002`, '澳洲项目', '测试客户乙'],
+      ['广州', 'James詹志坚', 20000, `${year}${monthText}`, `${year}${monthText}-003`, '美国项目', '测试客户丙'],
+      ['上海', 'Cici徐梓茵', 50000, `${year}${monthText}`, `${year}${monthText}-004`, '英国项目', '测试客户丁'],
+      ['北京', '历史顾问', 999999, `${Number(year) - 1}12`, 'HISTORY-001', '历史项目', '历史客户']
     ])
   ]), '总营收明细表');
   return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
@@ -1147,10 +1147,10 @@ test('上传页使用独立公司期间选择器且移除全局范围锁定', ()
 test('页面与后台运行版本一致且旧响应不能覆盖上传操作后的列表', async () => {
   const bootstrap = await request('/api/bootstrap?company=gz&period=2026-06');
   assert.equal(bootstrap.response.status, 200);
-  assert.equal(bootstrap.payload.appVersion, '1.1.69');
+  assert.equal(bootstrap.payload.appVersion, '1.1.70');
   const index = fs.readFileSync(path.join(projectDir, 'public', 'index.html'), 'utf8');
   const frontend = fs.readFileSync(path.join(projectDir, 'public', 'app.js'), 'utf8');
-  assert.match(index, /<meta name="app-version" content="1\.1\.69">/);
+  assert.match(index, /<meta name="app-version" content="1\.1\.70">/);
   assert.match(frontend, /const expectedAppVersion = document\.querySelector\('meta\[name="app-version"\]'\)/);
   assert.match(frontend, /bootstrap\?\.appVersion === expectedAppVersion/);
   assert.match(frontend, /APP_VERSION_MISMATCH/);
@@ -2251,7 +2251,7 @@ test('集团营收统计表按标题、表头与区域动态识别子表并按�
   assert.deepEqual(cumulativeTables.find(item => item.key === 'L1').headers, ['月份', '预计营收', '营收占比', '项目数量']);
   assert.equal(cumulativeTables.find(item => item.key === 'L1').titleRow, 13);
   assert.equal(cumulativeTables.find(item => item.key === 'L2').rows[1].cells[1], '202601');
-  assert.equal(preview.payload.raw.parserVersion, 4);
+  assert.equal(preview.payload.raw.parserVersion, 5);
   assert.equal(preview.payload.raw.cumulativeParserVersion, 3);
   assert.deepEqual(preview.payload.raw.cumulativeIssues, []);
   assert.match(preview.payload.raw.note, /实际营收以集团口径为准/);
@@ -2261,7 +2261,7 @@ test('集团营收统计表按标题、表头与区域动态识别子表并按�
   ]);
   assert.equal(preview.payload.raw.consultantRevenue.selectedPeriod, '2026-07');
   assert.equal(preview.payload.raw.consultantRevenue.excludedPeriodRows, 1);
-  assert.deepEqual(preview.payload.raw.consultantRevenue.fieldMapping, { consultant: '签约顾问/渠道', region: '业绩归属', expectedRevenue: '预计营收', period: '月份' });
+  assert.deepEqual(preview.payload.raw.consultantRevenue.fieldMapping, { consultant: '签约顾问/渠道', region: '业绩归属', expectedRevenue: '预计营收', period: '月份', contractNo: '合同编号', projectName: '项目名称', customerName: '客户名称' });
 
   const renamedDetailUpload = await post('/api/uploads', { companyKey: 'group', period: '2026-07', reportType, fileName: '2026年营收统计表26.7-明细改名.xlsx', contentBase64: renamedRevenueDetailWorkbookBuffer().toString('base64') });
   assert.equal(renamedDetailUpload.response.status, 201, JSON.stringify(renamedDetailUpload.payload));
@@ -2280,7 +2280,7 @@ test('集团营收统计表按标题、表头与区域动态识别子表并按�
   fs.writeFileSync(rawPath, JSON.stringify(legacyRaw), 'utf8');
   const refreshedLegacy = await request(`/api/reports/${reportType}/raw?company=group&period=2026-07&uploadKey=${uploaded.payload.uploadKey}`);
   assert.deepEqual(refreshedLegacy.payload.raw.cumulativeYears[0].tables.map(item => item.key), ['L1', 'L2', 'L2-1', 'L3', 'L4', 'L5', 'L6']);
-  assert.equal(refreshedLegacy.payload.raw.parserVersion, 4);
+  assert.equal(refreshedLegacy.payload.raw.parserVersion, 5);
   assert.equal(refreshedLegacy.payload.raw.cumulativeParserVersion, 3);
   assert.equal(refreshedLegacy.payload.raw.cumulativeYears[0].tables.find(item => item.key === 'L4').headers.includes('旧版误映射字段'), false);
 
@@ -2489,6 +2489,9 @@ test('集团顾问投入产出比联合工资表、营收明细和各公司序�
   assert.equal(byName['詹志坚'].payrollDetails[0].sourceSheet, '202703工资表');
   assert.deepEqual({ company: byName['詹志坚'].payrollDetails[0].company, department: byName['詹志坚'].payrollDetails[0].department, hireDate: byName['詹志坚'].payrollDetails[0].hireDate }, { company: '广州桉侨', department: '广州顾问部', hireDate: '2027-03-05' });
   assert.equal(byName['詹志坚'].revenueDetails.length, 2);
+  assert.deepEqual(byName['詹志坚'].revenueDetails.map(item => [item.contractNo, item.projectName, item.customerName, item.expectedRevenue]), [
+    ['202703-001', '加拿大项目', '测试客户甲', 100000], ['202703-003', '美国项目', '测试客户丙', 20000]
+  ]);
   assert.equal(byName['詹志坚'].spendDetails.length, 1);
   assert.deepEqual({ sourceSheet: byName['詹志坚'].spendDetails[0].sourceSheet, englishName: byName['詹志坚'].spendDetails[0].englishName, trafficSpend: byName['詹志坚'].spendDetails[0].trafficSpend }, { sourceSheet: '汇总', englishName: 'JAMES', trafficSpend: 26890.2 });
   assert.equal(result.payload.sources.payroll.fileName, '2027年3月桉侨集团工资表.xlsx');
@@ -2511,6 +2514,22 @@ test('集团顾问投入产出比联合工资表、营收明细和各公司序�
   assert.deepEqual(result.payload.roiSettings.inputs, { baseSalary: true, commission: false, journalExpense: true, trafficSpend: true });
   assert.equal(result.payload.roiSettings.configured, false); assert.deepEqual(result.payload.roiSettings.selectedAccounts, ['差旅费', '业务招待费']);
   assert.deepEqual(result.payload.visibility.options.map(item => ({ name: item.name, hidden: item.hidden })), [{ name: '詹志坚', hidden: false }, { name: '张莎莎', hidden: false }]);
+  await uploadAndPublish({
+    companyKey: 'group', period: '2027-02', reportType: 'payroll_statement', fileName: '2027年2月桉侨集团工资表.json', fileType: 'application/json',
+    contentBase64: Buffer.from(JSON.stringify({ payroll_statement: { sourceSheet: '202702工资表', fieldMapping: { hireDate: '入职日期' }, payrollRows: [{ row: 3, company: '广州桉侨', department: '广州顾问部', name: '詹志坚', canonicalName: '詹志坚', hireDate: '2027-03-05', baseSalary: 8000, commission: 0 }] } })).toString('base64')
+  });
+  await uploadAndPublish({
+    companyKey: 'group', period: '2027-02', reportType: 'revenue_statistics', fileName: '2027.2桉侨集团营收统计表.xlsx',
+    contentBase64: revenueStatisticsWorkbookBuffer('2027-02', false, [['广州', 'James詹志坚', 60000, '202702', '202702-001', '加拿大项目', '历史客户']]).toString('base64')
+  });
+  const trendView = await request('/api/analysis/consultant-roi/trend?company=group&period=2027-03&year=2027&consultant=%E8%A9%B9%E5%BF%97%E5%9D%9A');
+  assert.equal(trendView.response.status, 200); assert.equal(trendView.payload.consultant, '詹志坚');
+  assert.deepEqual(trendView.payload.points.map(item => [item.period, item.expectedRevenue, item.input, item.roi]), [['2027-02', 60000, 8000, 7.5], ['2027-03', 120000, 39890.2, 3.01]]);
+  const revenueDrilldown = await request('/api/analysis/consultant-roi/revenue-details?company=group&period=2027-03&consultant=%E8%A9%B9%E5%BF%97%E5%9D%9A', 'manager');
+  assert.equal(revenueDrilldown.response.status, 200); assert.equal(revenueDrilldown.payload.total, 120000); assert.equal(revenueDrilldown.payload.count, 2); assert.equal(revenueDrilldown.payload.details.reduce((sum, item) => sum + item.expectedRevenue, 0), 120000);
+  assert.deepEqual(Object.keys(revenueDrilldown.payload.details[0]).sort(), ['contractNo', 'customerName', 'expectedRevenue', 'projectName']);
+  assert.equal((await request('/api/analysis/consultant-roi/trend?company=gz&period=2027-03&year=2027&consultant=%E8%A9%B9%E5%BF%97%E5%9D%9A')).response.status, 400);
+  assert.equal((await request('/api/analysis/consultant-roi/revenue-details?company=group&period=2027-03&consultant=%E8%A9%B9%E5%BF%97%E5%9D%9A', 'accountant')).response.status, 403);
   const managerBeforeVisibility = await request(`/api/analysis/consultant-roi?company=group&period=${period}`, 'manager');
   assert.equal(managerBeforeVisibility.payload.canManageVisibility, false); assert.equal(managerBeforeVisibility.payload.canManageRoiSettings, false); assert.equal(managerBeforeVisibility.payload.canViewMatchDiagnostics, false); assert.equal(managerBeforeVisibility.payload.visibility, undefined);
   assert.equal(managerBeforeVisibility.payload.reimbursementAccounts, undefined); assert.equal(managerBeforeVisibility.payload.roiSettings.selectedAccounts, undefined);
@@ -2533,6 +2552,7 @@ test('集团顾问投入产出比联合工资表、营收明细和各公司序�
   assert.equal(hiddenAdminView.payload.visibility.options.find(item => item.name === '张莎莎').hidden, true);
   const hiddenManagerView = await request(`/api/analysis/consultant-roi?company=group&period=${period}`, 'manager');
   assert.deepEqual(hiddenManagerView.payload.rows.map(item => item.name), ['詹志坚']); assert.equal(hiddenManagerView.payload.visibility, undefined);
+  assert.equal((await request('/api/analysis/consultant-roi/trend?company=group&period=2027-03&year=2027&consultant=%E5%BC%A0%E8%8E%8E%E8%8E%8E')).response.status, 404);
   assert.equal((await put('/api/analysis/consultant-roi/visibility', { hiddenConsultants: '张莎莎' })).response.status, 400);
   assert.equal((await put('/api/analysis/consultant-roi/visibility', { hiddenConsultants: [] })).response.status, 200);
   assert.equal((await request(`/api/analysis/consultant-roi?company=group&period=${period}`)).payload.rows.length, 2);
@@ -2630,6 +2650,8 @@ test('集团顾问投入产出比联合工资表、营收明细和各公司序�
   assert.match(serverSource, /refreshedConsultantPayrollRawFor/); assert.match(serverSource, /hireDate\.slice\(0, 7\) === period/);
   assert.match(frontend, /consultantRoiAverageSummary/); assert.match(frontend, /consultant-roi-average-modal/); assert.match(frontend, /consultant-status-badge/); assert.match(frontend, /入职日期/); assert.match(frontend, /离职日期/); assert.match(frontend, /row\.exitDate/);
   assert.match(frontend, /consultant-roi-visibility-open/); assert.match(frontend, /consultant-roi-visibility-save/); assert.match(frontend, /\/api\/analysis\/consultant-roi\/visibility/);
+  assert.match(frontend, /consultantRoiTrendChartHtml/); assert.match(frontend, /consultant-roi-drilldown-modal/); assert.match(frontend, /data-consultant-trend/); assert.match(frontend, /data-consultant-revenue/);
+  assert.match(frontend, /\/api\/analysis\/consultant-roi\/trend/); assert.match(frontend, /\/api\/analysis\/consultant-roi\/revenue-details/); assert.match(frontend, /合同编号/); assert.match(frontend, /客户名字/);
   assert.match(frontend, /inputs: \{ baseSalary: true, commission: false, journalExpense: true, trafficSpend: true \}/);
   assert.match(frontend, /key: 'journalExpense', label: '报销费用'/); assert.match(frontend, /consultant-roi-reimbursement-open/); assert.match(frontend, /保存后应用于全员/); assert.match(frontend, /\/api\/analysis\/consultant-roi\/settings/);
   assert.match(serverSource, /consultant_roi_hidden_consultants/); assert.match(serverSource, /set_consultant_roi_visibility/); assert.match(serverSource, /canManageVisibility/);
@@ -2655,6 +2677,7 @@ test('集团顾问投入产出比联合工资表、营收明细和各公司序�
   assert.match(stylesheet, /analysis-layout-editable>\.consultant-roi-table-panel \.consultant-roi-table-toolbar\{padding-right:78px\}/);
   assert.match(stylesheet, /\.consultant-roi-page-actions\{[^}]*flex-wrap:nowrap/); assert.match(stylesheet, /#consultant-roi-refresh-status\{[^}]*position:absolute/);
   assert.match(stylesheet, /\.consultant-roi-average-card/); assert.match(stylesheet, /\.consultant-roi-average-modal/); assert.match(stylesheet, /\.consultant-status-badge/); assert.match(stylesheet, /\.consultant-personnel-popover/);
+  assert.match(stylesheet, /\.consultant-roi-drilldown-modal/); assert.match(stylesheet, /\.consultant-trend-line/); assert.match(stylesheet, /\.consultant-revenue-detail-table/);
   assert.match(stylesheet, /roi-col-hireDate/); assert.match(stylesheet, /roi-col-englishName/); assert.match(stylesheet, /roi-col-companyName/); assert.match(stylesheet, /roi-col-trafficSpend/);
   assert.match(stylesheet, /\.roi-cell-name,\.consultant-roi-table \.roi-cell-english,\.consultant-roi-table \.roi-cell-company\{text-align:left\}/); assert.match(stylesheet, /\.roi-cell-date\{text-align:center\}/);
   assert.match(stylesheet, /\.consultant-roi-input-group/); assert.match(stylesheet, /\.consultant-roi-utility-actions/); assert.match(stylesheet, /\.consultant-roi-visibility-modal/);

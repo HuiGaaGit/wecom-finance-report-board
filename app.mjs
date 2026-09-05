@@ -31,7 +31,7 @@ try {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const dataDir = path.join(__dirname, 'data');
-const appVersion = '1.1.69';
+const appVersion = '1.1.70';
 const financialBriefModuleKey = 'financial_brief';
 const financialBriefNotesPermissionKey = 'module.financial_brief.notes.manage';
 const financialBriefMetricKeys = new Set(['expectedRevenue', 'accountBalance', 'operatingRevenue', 'operatingCost', 'sellingExpense', 'managementExpense', 'financeExpense', 'netProfit']);
@@ -2148,6 +2148,9 @@ const parseConsultantRevenueDetail = (workbook, selectedPeriod = '') => {
   if (selected) {
     const { sheetName, rows, headerRowIndex, consultantIndex, revenueIndex, regionIndex } = selected;
     const sourceHeaders = rows[headerRowIndex] || [];
+    const contractIndex = findHeaderIndex(sourceHeaders, [/^合同编号$/, /^合同号$/, /^合同编码$/]);
+    const projectIndex = findHeaderIndex(sourceHeaders, [/^项目名称$/, /^项目$/]);
+    const customerIndex = findHeaderIndex(sourceHeaders, [/^客户姓名$/, /^客户名称$/, /^客户名字$/]);
     const preferredPeriodIndexes = sourceHeaders.map((value, index) => /^(?:月份|统计月份|营收月份|归属月份|业务月份)$/.test(normalizedHeader(value)) ? index : -1).filter(index => index >= 0);
     const fallbackPeriodIndexes = sourceHeaders.map((value, index) => /(?:报价|签约|合同|业务)?日期/.test(normalizedHeader(value)) ? index : -1).filter(index => index >= 0);
     const periodIndexes = [...preferredPeriodIndexes, ...fallbackPeriodIndexes.filter(index => !preferredPeriodIndexes.includes(index))];
@@ -2168,14 +2171,19 @@ const parseConsultantRevenueDetail = (workbook, selectedPeriod = '') => {
       const expectedRevenue = amountCell(cells?.[revenueIndex]);
       records.push({ row: headerRowIndex + offset + 2, sourcePeriod, region, expectedRevenue, values });
       const consultant = String(cells?.[consultantIndex] || '').trim();
-      if (consultant && expectedRevenue) detailRows.push({ row: headerRowIndex + offset + 2, consultant, canonicalName: consultantCanonicalName(consultant), region, sourcePeriod, expectedRevenue });
+      if (consultant && expectedRevenue) detailRows.push({
+        row: headerRowIndex + offset + 2, consultant, canonicalName: consultantCanonicalName(consultant), region, sourcePeriod, expectedRevenue,
+        contractNo: contractIndex >= 0 ? String(cells?.[contractIndex] || '').trim() : '',
+        projectName: projectIndex >= 0 ? String(cells?.[projectIndex] || '').trim() : '',
+        customerName: customerIndex >= 0 ? String(cells?.[customerIndex] || '').trim() : ''
+      });
     }
     for (const field of fields) {
       const values = records.map(record => record.values[field.key]).filter(revenueCellHasValue);
       field.kind = /(?:月份|日期)$/.test(normalizedHeader(field.label)) ? 'date' : values.length && values.filter(value => typeof value === 'number' || /^[-+]?\d[\d,，]*(?:\.\d+)?$/.test(String(value).trim())).length >= Math.max(1, Math.ceil(values.length * .8)) ? 'number' : 'text';
       delete field.column;
     }
-    return { sourceSheet: sheetName, headerRow: headerRowIndex + 1, selectedPeriod, excludedPeriodRows, fieldMapping: { consultant: String(sourceHeaders[consultantIndex] || '').trim(), region: String(sourceHeaders[regionIndex] || '').trim(), expectedRevenue: String(sourceHeaders[revenueIndex] || '').trim(), period: periodIndexes.length ? String(sourceHeaders[periodIndexes[0]] || '').trim() : '' }, fields, records, rows: detailRows };
+    return { sourceSheet: sheetName, headerRow: headerRowIndex + 1, selectedPeriod, excludedPeriodRows, fieldMapping: { consultant: String(sourceHeaders[consultantIndex] || '').trim(), region: String(sourceHeaders[regionIndex] || '').trim(), expectedRevenue: String(sourceHeaders[revenueIndex] || '').trim(), period: periodIndexes.length ? String(sourceHeaders[periodIndexes[0]] || '').trim() : '', contractNo: contractIndex >= 0 ? String(sourceHeaders[contractIndex] || '').trim() : '', projectName: projectIndex >= 0 ? String(sourceHeaders[projectIndex] || '').trim() : '', customerName: customerIndex >= 0 ? String(sourceHeaders[customerIndex] || '').trim() : '' }, fields, records, rows: detailRows };
   }
   return { sourceSheet: '', headerRow: 0, selectedPeriod, excludedPeriodRows: 0, fieldMapping: {}, fields: [], records: [], rows: [] };
 };
@@ -2196,7 +2204,7 @@ const revenueTableTitleDefinitions = [
 ];
 const revenueExplicitTableKey = value => String(value || '').match(/(?:^|[^A-Za-z0-9])([BL]\d+(?:-\d+)?)(?=\s|[（(]|$)/i)?.[1]?.toUpperCase() || '';
 const revenueCumulativeTitleKey = value => revenueExplicitTableKey(value).startsWith('L') ? revenueExplicitTableKey(value) : '';
-const revenueParserVersion = 4;
+const revenueParserVersion = 5;
 const revenueCumulativeParserVersion = 3;
 const revenueTitlePeriod = value => {
   const match = String(value || '').replace(/\s+/g, '').match(/(20\d{2})年(1[0-2]|0?[1-9])月/);
@@ -2792,7 +2800,7 @@ const refreshedConsultantPayrollRawFor = (payroll, period) => {
   }
   consultantPayrollRefreshCache.set(payroll.meta.uploadKey, refreshed); return refreshed;
 };
-const consultantRoiAnalysisFor = (employeeKey, period) => {
+const consultantRoiAnalysisFor = (employeeKey, period, options = {}) => {
   const payroll = rawReportFor(payrollStatementReportType, 'group', period); const revenue = rawReportFor(revenueStatisticsReportType, 'group', period); const spend = rawReportFor(consultantSpendRevenueReportType, 'group', period);
   const directory = consultantDirectorySnapshot(); const canManageAuthorization = hasModule(employeeKey, 'permission_admin', 'manage');
   if (directory.needsRefresh && !fs.existsSync(consultantDirectoryRefreshRequestFile)) { try { requestConsultantDirectoryRefresh('directory_schema_upgrade'); } catch {} }
@@ -2809,7 +2817,10 @@ const consultantRoiAnalysisFor = (employeeKey, period) => {
   for (const item of revenueRows) {
     const row = consultants.get(item.canonicalName || consultantCanonicalName(item.consultant));
     if (!row) { unmatchedRevenueRows += 1; unmatchedRevenueAmount += Number(item.expectedRevenue || 0); continue; }
-    row.expectedRevenue += Number(item.expectedRevenue || 0); row.revenueDetails.push({ sourceSheet: revenueDetail?.sourceSheet, row: item.row, expectedRevenue: item.expectedRevenue, sourcePeriod: item.sourcePeriod || period });
+    row.expectedRevenue += Number(item.expectedRevenue || 0); row.revenueDetails.push({
+      sourceSheet: revenueDetail?.sourceSheet, row: item.row, expectedRevenue: item.expectedRevenue, sourcePeriod: item.sourcePeriod || period,
+      contractNo: item.contractNo || '', projectName: item.projectName || '', customerName: item.customerName || ''
+    });
   }
   const consultantsByEnglish = new Map();
   for (const item of consultants.values()) {
@@ -2868,7 +2879,29 @@ const consultantRoiAnalysisFor = (employeeKey, period) => {
   const visibilityOptions = canManageVisibility ? [...new Map([...allRows.map(item => [item.canonicalName, { canonicalName: item.canonicalName, name: item.name, hidden: hiddenKeys.has(item.canonicalName) }]), ...[...hiddenKeys].filter(key => !allRows.some(item => item.canonicalName === key)).map(key => [key, { canonicalName: key, name: key, hidden: true }])]).values()].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN')) : undefined;
   const publicRows = canViewMatchDiagnostics ? rows : rows.map(item => ({ name: item.name, hireDate: item.hireDate, englishName: item.englishName, companyName: item.companyName, isResigned: item.isResigned, exitDate: item.exitDate, isNewEmployee: item.isNewEmployee, baseSalary: item.baseSalary, commission: item.commission, journalExpense: item.journalExpense, trafficSpend: item.trafficSpend, input: item.input, output: item.output, roi: item.roi }));
   const matchDiagnostics = canViewMatchDiagnostics ? { revenueExcludedPeriodRows: Number(revenueDetail?.excludedPeriodRows || 0), unmatchedRevenueRows, unmatchedRevenueAmount: roundedAmount(unmatchedRevenueAmount), matchedSpendRows, unmatchedSpendRows, ambiguousSpendRows, unmatchedSpendAmount: roundedAmount(unmatchedSpendAmount) } : {};
-  return { company: '桉侨集团', period, sourceRevision, rows: publicRows, totals, canManageAuthorization, canManageVisibility, canViewMatchDiagnostics, canManageRoiSettings, roiSettings: { configured: roiSettings.configured, inputs: roiSettings.inputs, selectedAccountCount: roiSettings.selectedAccounts.length, availableAccountCount: reimbursementAccounts.length, ...(canManageRoiSettings ? { selectedAccounts: roiSettings.selectedAccounts, staleAccounts: roiSettings.staleAccounts, updatedAt: roiSettings.updatedAt } : {}) }, reimbursementAccounts: canManageRoiSettings ? reimbursementAccounts : undefined, visibility: canManageVisibility ? { hiddenCount: hiddenKeys.size, options: visibilityOptions } : undefined, sources: { payroll: payroll.meta, payrollSheet: payrollRaw?.sourceSheet || '', payrollFields: payrollRaw?.fieldMapping || {}, payrollConsultantDepartments: consultantDepartments, payrollConsultantRows: consultantPayrollRows.length, payrollExcludedRows: Math.max(0, payrollRows.length - consultantPayrollRows.length), directory: { available: directory.available, generatedAt: directory.generatedAt, matchedRows: directoryMatchedRows, reason: directory.reason, sync: directorySync }, revenue: revenue.meta, revenueSheet: revenueDetail?.sourceSheet || '', revenueFields: revenueDetail?.fieldMapping || {}, revenueSourceAvailable, spend: spend.meta, spendSheet: spend.raw?.sourceSheet || '', spendFields: spend.raw?.fieldMapping || {}, ...matchDiagnostics, journals: journalSources }, missing: [payroll.meta.noData ? '每月工资表' : '', !payroll.meta.noData && !consultantPayrollRows.length ? '工资表·顾问部门人员' : '', !revenueSourceAvailable ? '营收统计表·总营收明细表' : '', spend.meta.noData ? '顾问消耗-营收表·汇总' : '', ...journalSources.filter(item => item.noData).map(item => `${item.companyName}序时账`)].filter(Boolean) };
+  return { company: '桉侨集团', period, sourceRevision, rows: options.internal ? rows : publicRows, totals, canManageAuthorization, canManageVisibility, canViewMatchDiagnostics, canManageRoiSettings, roiSettings: { configured: roiSettings.configured, inputs: roiSettings.inputs, selectedAccountCount: roiSettings.selectedAccounts.length, availableAccountCount: reimbursementAccounts.length, ...(canManageRoiSettings ? { selectedAccounts: roiSettings.selectedAccounts, staleAccounts: roiSettings.staleAccounts, updatedAt: roiSettings.updatedAt } : {}) }, reimbursementAccounts: canManageRoiSettings ? reimbursementAccounts : undefined, visibility: canManageVisibility ? { hiddenCount: hiddenKeys.size, options: visibilityOptions } : undefined, sources: { payroll: payroll.meta, payrollSheet: payrollRaw?.sourceSheet || '', payrollFields: payrollRaw?.fieldMapping || {}, payrollConsultantDepartments: consultantDepartments, payrollConsultantRows: consultantPayrollRows.length, payrollExcludedRows: Math.max(0, payrollRows.length - consultantPayrollRows.length), directory: { available: directory.available, generatedAt: directory.generatedAt, matchedRows: directoryMatchedRows, reason: directory.reason, sync: directorySync }, revenue: revenue.meta, revenueSheet: revenueDetail?.sourceSheet || '', revenueFields: revenueDetail?.fieldMapping || {}, revenueSourceAvailable, spend: spend.meta, spendSheet: spend.raw?.sourceSheet || '', spendFields: spend.raw?.fieldMapping || {}, ...matchDiagnostics, journals: journalSources }, missing: [payroll.meta.noData ? '每月工资表' : '', !payroll.meta.noData && !consultantPayrollRows.length ? '工资表·顾问部门人员' : '', !revenueSourceAvailable ? '营收统计表·总营收明细表' : '', spend.meta.noData ? '顾问消耗-营收表·汇总' : '', ...journalSources.filter(item => item.noData).map(item => `${item.companyName}序时账`)].filter(Boolean) };
+};
+const consultantRoiRowFor = (employeeKey, period, consultantName) => {
+  const canonicalName = consultantCanonicalName(consultantName); if (!canonicalName) return null;
+  const analysis = consultantRoiAnalysisFor(employeeKey, period, { internal: true });
+  return { analysis, row: analysis.rows.find(item => item.canonicalName === canonicalName) || null };
+};
+const consultantRoiTrendFor = (employeeKey, period, year, consultantName) => {
+  const effectiveYear = /^20\d{2}$/.test(String(year || '')) ? String(year) : String(period).slice(0, 4);
+  const current = consultantRoiRowFor(employeeKey, period, consultantName); if (!current?.row) return null;
+  const periods = db.prepare("SELECT DISTINCT period FROM upload_batches WHERE company_key = 'group' AND report_type = ? AND status = 'published' AND period LIKE ? AND period <= ? ORDER BY period").all(revenueStatisticsReportType, `${effectiveYear}-%`, period).map(item => item.period);
+  const points = [];
+  for (const itemPeriod of periods) {
+    if (!hasAnalysis(employeeKey, consultantRoiModuleKey, 'group', itemPeriod)) continue;
+    const item = consultantRoiRowFor(employeeKey, itemPeriod, consultantName); if (!item?.row || !item.analysis.sources.revenueSourceAvailable) continue;
+    points.push({ period: itemPeriod, expectedRevenue: roundedAmount(item.row.output), input: roundedAmount(item.row.input), roi: item.row.input ? roundedAmount(item.row.output / item.row.input) : null });
+  }
+  return { consultant: current.row.name, englishName: current.row.englishName || '', year: effectiveYear, throughPeriod: period, points };
+};
+const consultantRevenueDetailsFor = (employeeKey, period, consultantName) => {
+  const current = consultantRoiRowFor(employeeKey, period, consultantName); if (!current?.row) return null;
+  const details = (current.row.revenueDetails || []).map(item => ({ contractNo: item.contractNo || '', projectName: item.projectName || '', customerName: item.customerName || '', expectedRevenue: roundedAmount(item.expectedRevenue) })).sort((a, b) => b.expectedRevenue - a.expectedRevenue || a.contractNo.localeCompare(b.contractNo, 'zh-CN'));
+  return { consultant: current.row.name, englishName: current.row.englishName || '', period, total: roundedAmount(current.row.output), count: details.length, details };
 };
 const briefLineName = value => String(value || '')
   .replace(/\s+/g, '')
@@ -3485,6 +3518,26 @@ const server = http.createServer(async (req, res) => {
         log(employee.employee_key, 'set_consultant_roi_settings', consultantRoiModuleKey, `${period}; reimbursement=${settings.reimbursementAccounts.join('、') || '未选择'}; inputs=${enabledInputs.join(',') || '未选择'}`, { moduleKey: consultantRoiModuleKey, companyKey: 'group', period });
         return json(res, 200, { ok: true, period, settings });
       } catch (error) { return bad(res, 400, error.message); }
+    }
+    if (url.pathname === '/api/analysis/consultant-roi/trend' && req.method === 'GET') {
+      const companyKey = url.searchParams.get('company') || 'group'; const period = url.searchParams.get('period') || ''; const year = url.searchParams.get('year') || period.slice(0, 4); const consultant = String(url.searchParams.get('consultant') || '').trim();
+      if (companyKey !== 'group') return bad(res, 400, '顾问趋势仅适用于桉侨集团');
+      if (!/^\d{4}-(?:0[1-9]|1[0-2])$/.test(period) || !/^20\d{2}$/.test(year) || !consultant || consultant.length > 64) return bad(res, 400, '顾问趋势查询参数无效');
+      const employee = requireEmployee(req, res); if (!employee) return;
+      if (!hasAnalysis(employee.employee_key, consultantRoiModuleKey, companyKey, period)) return bad(res, 403, '当前员工没有顾问投入产出比权限');
+      const trend = consultantRoiTrendFor(employee.employee_key, period, year, consultant); if (!trend) return bad(res, 404, '顾问不存在或当前不可见');
+      log(employee.employee_key, 'view_consultant_roi_trend', consultantRoiModuleKey, `${companyKey}/${period}`, { moduleKey: consultantRoiModuleKey, companyKey, period, year });
+      return json(res, 200, trend);
+    }
+    if (url.pathname === '/api/analysis/consultant-roi/revenue-details' && req.method === 'GET') {
+      const companyKey = url.searchParams.get('company') || 'group'; const period = url.searchParams.get('period') || ''; const consultant = String(url.searchParams.get('consultant') || '').trim();
+      if (companyKey !== 'group') return bad(res, 400, '顾问营收明细仅适用于桉侨集团');
+      if (!/^\d{4}-(?:0[1-9]|1[0-2])$/.test(period) || !consultant || consultant.length > 64) return bad(res, 400, '顾问营收明细查询参数无效');
+      const employee = requireEmployee(req, res); if (!employee) return;
+      if (!hasAnalysis(employee.employee_key, consultantRoiModuleKey, companyKey, period)) return bad(res, 403, '当前员工没有顾问投入产出比权限');
+      const details = consultantRevenueDetailsFor(employee.employee_key, period, consultant); if (!details) return bad(res, 404, '顾问不存在或当前不可见');
+      log(employee.employee_key, 'view_consultant_revenue_details', consultantRoiModuleKey, `${companyKey}/${period}`, { moduleKey: consultantRoiModuleKey, companyKey, period, rowCount: details.details.length });
+      return json(res, 200, details);
     }
     if (url.pathname === '/api/analysis/consultant-roi' && req.method === 'GET') {
       const companyKey = url.searchParams.get('company') || 'group'; const period = url.searchParams.get('period') || '2026-07';
