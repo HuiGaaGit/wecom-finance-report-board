@@ -7,7 +7,7 @@
 - 环境变量：`/data/secrets/wecom-finance-report-board/report-board.env`
 - 持久数据：`/data/data/wecom-finance-report-board`
 - 容器：`wecom-finance-report-board`
-- 当前生产镜像：`aqllm/finance-report-board:1.1.69`（生产验收与回滚信息见 `docs/PRODUCTION_OPERATIONS.md`）
+- 当前生产镜像：`aqllm/finance-report-board:1.1.70`（生产验收与回滚信息见 `docs/PRODUCTION_OPERATIONS.md`）
 - 当前源码版本：`1.1.70`（顾问年度营收/投入产出比双趋势与本月营收明细下钻）
 - 本机端口：`127.0.0.1:3180`
 - 正式地址：`https://anqiaoyiminxq.com/platform/finance/`
