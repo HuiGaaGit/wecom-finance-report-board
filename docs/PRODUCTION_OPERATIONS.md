@@ -1,8 +1,8 @@
 # 桉侨财务模块生产说明
 
-更新日期：2026-09-04
-当前生产版本：1.1.67
-最近发布包：1.1.67（已部署）
+更新日期：2026-09-05
+当前生产版本：1.1.69
+最近发布包：1.1.69（已部署）
 正式地址：<https://anqiaoyiminxq.com/platform/finance/>
 
 ## 1. 系统归属与隔离
@@ -75,7 +75,7 @@ ssh -F deploy/ssh_config wecom-finance-prod "hostname && whoami"
 
 - Compose 项目：`wecom-finance-report-board`
 - 容器：`wecom-finance-report-board`
-- 当前镜像：`aqllm/finance-report-board:1.1.67`
+- 当前镜像：`aqllm/finance-report-board:1.1.69`
 - 容器运行用户：`20117:20117`
 - 容器端口：`3180`
 - 主机监听：`127.0.0.1:3180`
@@ -618,3 +618,21 @@ cat /data/data/wecom-finance-report-board/backups/offsite-last-success.meta
 - 容器为 `healthy`，回环与公网健康接口均返回 `1.1.67/platform`；Nginx 语法和运行时隔离检查通过。真实统一登录会话中，广州和深圳同一期间分别返回本地区 145 条与 38 条记录，证明地区隔离生效；管理员配置入口、统计组合、两个月历史趋势和滑动切换均正常，`1280` 宽页面无横向溢出。
 - SQLite 完整性发布前后均为 `ok`；核心业务事实保持 8 家公司、238 个上传批次、238 份报表快照和 13,090 条报表行。新增模块及权限种子使模块、看板顺序、分析板块、角色权限和应用设置按预期增长，不修改原始报表与上传批次。发布前一致性备份为 `/data/data/wecom-finance-report-board/backups/report-board-20260904T123849Z.db`，SHA256 为 `CD68B86254AB9AAE845C21F53F1F522C72530FEADE838132E865DA9E1D07D59A`；发布后备份为 `/data/data/wecom-finance-report-board/backups/report-board-20260904T130534Z.db`，SHA256 为 `4B7C0E15E804D3B19B08180B8A1C4F1DE89ADA4780D62FB226A07B4624181625`。两者均为 `0600`、`20117:20117`。
 - 三个财务企微监听继续为 `enabled/active`，五个 systemd unit 哈希与发布前逐项一致；未修改小Q、AQLLM 共享配置、企微 CLI 或其他项目。完整回滚快照位于 `/data/backups/wecom-finance-report-board/pre-1.1.67-20260904T123849Z`，旧源码保留于 `/data/repos/wecom-finance-report-board-pre-1.1.67-20260904T130408Z`。回滚时恢复快照中的 Compose 和旧源码并启动 `aqllm/finance-report-board:1.1.64`；数据库完整时不得以旧备份覆盖现有业务数据。
+
+## 52. 按身份精简说明与管理员帮助问号生产发布（1.1.68）
+
+- `2026-09-05 12:49 CST` 使用发布包 `artifacts/wecom-finance-report-board-1.1.68.zip` 完成生产发布，SHA256 为 `F68B002503A649AD7EA74EE2A1CEDAE32A8DA5206C0284A5F552DD0A84FD0B72`。服务器 Docker tests 为 `110/110`；正式镜像为 `aqllm/finance-report-board:1.1.68`，镜像 ID 为 `sha256:fa4e7b9ea0355d34bc4925ad1d286a54e5e922fa8699b581c28a2ab1222b3e2a`。
+- 普通授权人员隐藏全站非必要说明、辅助口径、来源元数据及帮助入口；管理员把完整说明归并到页面标题、板块标题或指标名称旁的问号。帮助浮层支持鼠标、键盘和触屏，自动上下翻转并保持视口安全边距；必要操作提示、权限与异常警告、空数据处理以及业务表内真实“说明”字段继续显示。
+- 正式容器为 `healthy`，回环与公网健康接口均返回 `1.1.68/platform`；正式首页 HTTP 200 且页面版本元数据为 `1.1.68`。Nginx、运行时隔离、桌面与 `390×844` 手机端真实统一登录验收通过，页面无横向溢出，浏览器控制台无 warning/error。
+- SQLite 完整性发布前后均为 `ok`；核心业务事实保持 8 家公司、238 个上传批次、238 份报表快照和 13,090 条报表行。员工权限档案保持 10 份、角色预设保持 3 份；Alisa 的“地区总经理 + 青岛桉侨”已保存配置在真实页面复核无变化。页面验收新增 3 条审计日志，不涉及权限、上传、快照或报表行修改。
+- 发布前一致性备份为 `/data/data/wecom-finance-report-board/backups/report-board-20260905T044816Z.db`，SHA256 为 `401D163F193A3A024A2A9E0890595D0F4F1E267CF5875970217B6BB0592FD440`；发布后备份为 `/data/data/wecom-finance-report-board/backups/report-board-20260905T045158Z.db`，SHA256 为 `2136C9FA0C4D362A7BF52BD2669094E5B784DC53E59100A237CBF2C6C605E34E`。两者均为 `0600`、`20117:20117`。
+- 发布前完整回滚快照位于 `/data/backups/wecom-finance-report-board/pre-1.1.68-20260905T124815+0800`，旧源码保留于 `/data/repos/wecom-finance-report-board-pre-1.1.68-20260905T124815+0800`；上一镜像 `1.1.67` 未删除。三个财务企微监听继续为 `enabled/active`，五个 systemd unit 哈希与发布前逐项一致。回滚时恢复快照中的 Compose 和旧源码并启动 `aqllm/finance-report-board:1.1.67`；数据库完整时不得用旧备份覆盖现有业务数据。
+
+## 53. 财务简报费用与净利润说明恢复发布（1.1.69）
+
+- `2026-09-05 14:35 CST` 使用发布包 `artifacts/wecom-finance-report-board-1.1.69.zip` 完成生产发布，SHA256 为 `68EA70C2C50ADE28C6D4DB8720C3F631D76DAFBC41D2D320186BE416B2DB174D`。服务器 Docker tests 为 `110/110`；正式镜像为 `aqllm/finance-report-board:1.1.69`，镜像 ID 为 `sha256:d7244b86ce1974d4ee3dff7ed274227dcbaa3ad17b5912152c33e701209c805e`。
+- 财务数据简报中的销售费用、管理费用、财务费用和净利润说明恢复为管理员与普通授权人员均常驻展示；桌面端恢复原三栏排版，`390×844` 手机端说明自动占满整行。其他身份说明精简与管理员帮助问号规则保持不变。
+- 正式容器为 `healthy`，回环与公网健康接口均返回 `1.1.69/platform`；正式首页 HTTP 200 且页面版本元数据为 `1.1.69`。Nginx 与运行时隔离检查通过；真实统一登录后的桌面及手机页面无横向溢出，浏览器控制台无 warning/error。
+- SQLite 完整性发布前后均为 `ok`；核心业务事实保持 8 家公司、238 个上传批次、238 份报表快照和 13,090 条报表行，员工权限档案保持 10 份、角色预设保持 3 份。真实页面验收新增审计日志，不涉及权限、上传、快照或报表行修改。
+- 发布前一致性备份为 `/data/data/wecom-finance-report-board/backups/report-board-20260905T062941Z.db`，SHA256 为 `42D057CB53243628E91E478F22E2F38BA7748EDF23D76A164DC354DC8125C70B`；发布后备份为 `/data/data/wecom-finance-report-board/backups/report-board-20260905T063520Z.db`，SHA256 为 `5112293A2D99E91206850E8F6D73D555F8B6C6DD8FDE23D59772EDEADE39F98A`。两者均为 `0600`、`20117:20117`。
+- 发布前完整回滚快照位于 `/data/backups/wecom-finance-report-board/pre-1.1.69-20260905T142850+0800`，旧源码保留于 `/data/repos/wecom-finance-report-board-pre-1.1.69-20260905T142850+0800`；上一镜像 `1.1.68` 未删除。三个财务企微监听继续为 `enabled/active`，五个 systemd unit 哈希与发布前逐项一致。回滚时恢复快照中的 Compose 和旧源码并启动 `aqllm/finance-report-board:1.1.68`；数据库完整时不得用旧备份覆盖现有业务数据。

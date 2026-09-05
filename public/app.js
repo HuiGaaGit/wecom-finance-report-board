@@ -53,6 +53,119 @@ const platformReturnStorageKey = 'aqllm:safe-return-to';
 const appUrl = url => `${appBasePath}${String(url).startsWith('/') ? url : `/${url}`}`;
 const $ = selector => document.querySelector(selector);
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
+const roleInformationRules = [
+  { selector: '.analysis-source, .business-source', label: '数据来源与口径', anchor: 'page' },
+  { selector: '.original-source, .revenue-source-badge', label: '数据来源', anchor: 'page' },
+  { selector: '.consolidated-scope, .consolidated-entity-context', label: '合并范围与来源', anchor: 'page' },
+  { selector: '.revenue-source-meta, .revenue-scope-note', label: '数据来源与口径', anchor: 'section' },
+  { selector: '.panel-sub', label: '板块说明', anchor: 'section' },
+  { selector: '.metric-change', label: '指标说明', anchor: 'metric' },
+  { selector: '.standard-hint, .original-hint', label: '操作说明', anchor: 'section' },
+  { selector: '.home-heading > p, .home-step-title small', label: '范围说明', anchor: 'local' },
+  { selector: '.financial-brief-sheet > footer', label: '数据来源与口径', anchor: 'page' },
+  { selector: '.financial-brief-warning small, .revenue-cumulative-title p, .revenue-panel-heading > div > span, .revenue-dimension-button small, .revenue-combination-card > header > small, .revenue-combination-editor > header small, .intercompany-source-chip small, .expense-detail-modal-sub', label: '补充说明', anchor: 'local' },
+  { selector: '.permission-page-title p, .permission-mode-badge, .permission-section-title p, .permission-role-row > span, .permission-center-panel-head p, .permission-role-cards article > p, .permission-planned-note, .permission-inline-note, .permission-matrix-note, .permission-bundle-grid button small', label: '权限说明', anchor: 'section' },
+  { selector: '.permission-global-setting p, .permission-module-name > small, .permission-copy-box small, .permission-remove-box small, .permission-panel-heading small', label: '权限说明', anchor: 'local' },
+  { selector: '.share-security-note', label: '分享安全说明', anchor: 'section' },
+  { selector: '.upload-scope-hint, .upload-history-subhead small', label: '上传说明', anchor: 'section' }
+];
+let roleInformationMode = '';
+let openContextHelp = null;
+const isInformationAdmin = () => state.bootstrap?.canManagePermissions === true;
+const cleanInformationText = element => {
+  const children = [...element.children].filter(child => !child.classList.contains('context-help'));
+  const values = (children.length ? children : [element]).map(child => String(child.innerText || child.textContent || '').replace(/\s+/g, ' ').trim()).filter(Boolean);
+  return [...new Set(values)].join(' · ');
+};
+const informationAnchor = (element, preference) => {
+  const pageAnchor = element.closest('.page')?.querySelector('.page-title h1, .original-title, .financial-brief-heading h2') || pageHostFor(state.page)?.querySelector('.page-title h1, .original-title, .financial-brief-heading h2');
+  if (preference === 'metric') return element.parentElement?.querySelector('.metric-label') || pageAnchor;
+  if (preference === 'page') return pageAnchor;
+  if (preference === 'local') return element.parentElement?.querySelector(':scope > h1, :scope > h2, :scope > h3, :scope > strong') || element.closest('.financial-brief-item, .home-step-title, .home-heading, .revenue-dimension-button, .revenue-combination-card')?.querySelector('h1, h2, h3, strong') || pageAnchor;
+  return element.parentElement?.querySelector(':scope > h1, :scope > h2, :scope > h3, :scope > strong')
+    || element.closest('.toolbar, .permission-config-section, .permission-center-panel, .permission-role-cards article, .permission-global-setting, .panel, .share-card-dialog')?.querySelector('h1, h2, h3, strong')
+    || pageAnchor;
+};
+const closeContextHelp = wrapper => {
+  if (!wrapper) return;
+  wrapper.classList.remove('open', 'pinned');
+  wrapper.querySelector('.context-help-trigger')?.setAttribute('aria-expanded', 'false');
+  document.getElementById(wrapper.dataset.popoverId || '')?.setAttribute('aria-hidden', 'true');
+  document.getElementById(wrapper.dataset.popoverId || '')?.classList.remove('open');
+  if (openContextHelp === wrapper) openContextHelp = null;
+};
+const positionContextHelp = wrapper => {
+  const trigger = wrapper.querySelector('.context-help-trigger'); const popover = document.getElementById(wrapper.dataset.popoverId || '');
+  if (!trigger || !popover) return;
+  if (openContextHelp && openContextHelp !== wrapper) closeContextHelp(openContextHelp);
+  wrapper.classList.add('open'); popover.classList.add('open'); popover.setAttribute('aria-hidden', 'false'); trigger.setAttribute('aria-expanded', 'true');
+  popover.style.left = '12px'; popover.style.top = '12px';
+  const triggerRect = trigger.getBoundingClientRect(); const popoverWidth = popover.offsetWidth; const popoverHeight = popover.offsetHeight; const gap = 9; const edge = 12;
+  const viewportWidth = Math.min(document.documentElement.clientWidth || window.innerWidth, window.visualViewport?.width || window.innerWidth); const viewportHeight = Math.min(document.documentElement.clientHeight || window.innerHeight, window.visualViewport?.height || window.innerHeight);
+  const below = triggerRect.bottom + gap + popoverHeight <= viewportHeight - edge || triggerRect.top - gap - popoverHeight < edge;
+  const top = below ? triggerRect.bottom + gap : triggerRect.top - gap - popoverHeight;
+  const left = Math.min(viewportWidth - popoverWidth - edge, Math.max(edge, triggerRect.left + triggerRect.width / 2 - popoverWidth / 2));
+  popover.style.left = `${Math.round(left)}px`; popover.style.top = `${Math.round(Math.max(edge, top))}px`; popover.dataset.side = below ? 'bottom' : 'top';
+  popover.style.setProperty('--help-arrow-x', `${Math.round(Math.min(popoverWidth - 14, Math.max(14, triggerRect.left + triggerRect.width / 2 - left)))}px`);
+  openContextHelp = wrapper;
+};
+const bindContextHelp = wrapper => {
+  const trigger = wrapper.querySelector('.context-help-trigger'); if (!trigger || trigger.dataset.bound === 'true') return;
+  trigger.dataset.bound = 'true';
+  trigger.addEventListener('mouseenter', () => positionContextHelp(wrapper));
+  trigger.addEventListener('focus', () => positionContextHelp(wrapper));
+  trigger.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); const wasPinned = wrapper.classList.contains('pinned'); closeContextHelp(wrapper); if (!wasPinned) { wrapper.classList.add('pinned'); positionContextHelp(wrapper); } });
+  wrapper.addEventListener('mouseleave', () => { if (!wrapper.classList.contains('pinned') && !wrapper.contains(document.activeElement)) closeContextHelp(wrapper); });
+  trigger.addEventListener('blur', () => { if (!wrapper.classList.contains('pinned')) closeContextHelp(wrapper); });
+};
+const addContextHelp = (anchor, label, text) => {
+  if (!anchor || !text) return;
+  const interactive = anchor.closest('button, a, label');
+  if (interactive) anchor = interactive.closest('.permission-config-section, .panel, .page')?.querySelector('h1, h2, h3') || pageHostFor(state.page)?.querySelector('.page-title h1, h1, h2');
+  if (!anchor || anchor.closest('button, a, label')) return;
+  let wrapper = [...anchor.children].find(child => child.classList?.contains('context-help'));
+  if (!wrapper) {
+    wrapper = document.createElement('span'); wrapper.className = 'context-help';
+    const title = String(anchor.childNodes[0]?.textContent || anchor.textContent || '当前内容').replace(/\s+/g, ' ').trim(); const id = `context-help-${Math.random().toString(36).slice(2, 10)}`;
+    wrapper.dataset.popoverId = id;
+    wrapper.innerHTML = `<button type="button" class="context-help-trigger" aria-label="查看${escapeHtml(title)}说明" aria-expanded="false" aria-describedby="${id}">?</button>`;
+    document.body.insertAdjacentHTML('beforeend', `<span class="context-help-popover" id="${id}" role="tooltip" aria-hidden="true"><strong>${escapeHtml(title)}</strong><span class="context-help-lines"></span></span>`);
+    anchor.appendChild(wrapper); bindContextHelp(wrapper);
+  }
+  const lines = document.getElementById(wrapper.dataset.popoverId || '')?.querySelector('.context-help-lines');
+  if (!lines) return;
+  if (![...lines.children].some(item => item.dataset.text === text)) {
+    const line = document.createElement('span'); line.className = 'context-help-line'; line.dataset.text = text; line.innerHTML = `<b>${escapeHtml(label)}</b><span>${escapeHtml(text)}</span>`; lines.appendChild(line);
+  }
+};
+const pageContextExplanation = text => /来源|口径|归集|隔离|子表|统一导入|支持单独|管理员专用|数据总览|自动拆分/.test(text);
+const compactPageTitleContexts = (root, mode) => root.querySelectorAll('.page-title p').forEach(element => {
+  if (element.dataset.roleInformationMode === mode) return;
+  const original = element.dataset.roleInformationOriginal || String(element.textContent || '').replace(/\s+/g, ' ').trim();
+  element.dataset.roleInformationOriginal = original;
+  const parts = original.split(/\s*·\s*/).map(item => item.trim()).filter(Boolean); const explanations = parts.filter(pageContextExplanation);
+  if (!explanations.length) return;
+  const context = parts.filter(item => !pageContextExplanation(item)); element.dataset.roleInformationMode = mode;
+  if (context.length) element.textContent = context.join(' · '); else element.classList.add('role-information-collapsed');
+  if (mode === 'admin') addContextHelp(element.parentElement?.querySelector('h1'), '页面说明', explanations.join(' · '));
+});
+function applyRoleInformationDensity(root = document) {
+  if (!state.bootstrap) return;
+  const mode = isInformationAdmin() ? 'admin' : 'member';
+  document.body.classList.toggle('information-admin', mode === 'admin'); document.body.classList.add('information-compact');
+  if (roleInformationMode !== mode) {
+    document.querySelectorAll('.context-help, .context-help-popover').forEach(item => item.remove());
+    document.querySelectorAll('[data-role-information-mode]').forEach(item => item.removeAttribute('data-role-information-mode'));
+    openContextHelp = null; roleInformationMode = mode;
+  }
+  document.querySelectorAll('.context-help-popover').forEach(popover => { if (!document.querySelector(`.context-help[data-popover-id="${popover.id}"]`)) popover.remove(); });
+  roleInformationRules.forEach(rule => root.querySelectorAll(rule.selector).forEach(element => {
+    if (element.dataset.roleInformationMode === mode || element.closest('.context-help-popover')) return;
+    const text = cleanInformationText(element); element.dataset.roleInformationMode = mode; element.classList.add('role-information-collapsed');
+    if (mode === 'admin') addContextHelp(informationAnchor(element, rule.anchor), rule.label, text);
+  }));
+  compactPageTitleContexts(root, mode);
+}
 const money = value => `${Number(value || 0).toLocaleString('zh-CN', { maximumFractionDigits: 0 })}`;
 const reportNames = { balance_sheet: '资产负债表', income_statement: '利润表', consolidated_income_statement: '桉侨集团合并利润表', [revenueProfitReportType]: '（营收利润口径）合并利润表', [revenueStatisticsReportType]: '营收统计表', [payrollStatementReportType]: '每月工资表', [quotationLedgerReportType]: '集团报单表', [consultantSpendRevenueReportType]: '顾问消耗-营收表', cash_flow: '现金流量表', trial_balance: '科目余额表', journal: '序时账' };
 const showNotice = (message, error = false) => { const box = $('#notice'); box.textContent = message; box.classList.toggle('error', error); box.classList.remove('hidden'); window.clearTimeout(showNotice.timer); showNotice.timer = window.setTimeout(() => box.classList.add('hidden'), 3500); };
@@ -2151,12 +2264,22 @@ async function refresh({ reloadBootstrap = true } = {}) {
   else { state.reportType = state.page; await refreshReport(); }
   if (refreshRevision !== pageRequestRevision) return;
   activeHost?.removeAttribute('aria-busy');
+  applyRoleInformationDensity(activeHost || document);
   applyReportWatermark();
   recordCurrentPageView();
   restartPageArrival();
 }
 
 bindShareCard();
+document.addEventListener('click', event => { if (openContextHelp && !event.target.closest('.context-help')) closeContextHelp(openContextHelp); });
+document.addEventListener('keydown', event => { if (event.key === 'Escape' && openContextHelp) { const trigger = openContextHelp.querySelector('.context-help-trigger'); closeContextHelp(openContextHelp); trigger?.focus(); } });
+window.addEventListener('resize', () => closeContextHelp(openContextHelp), { passive: true });
+window.addEventListener('scroll', () => closeContextHelp(openContextHelp), { passive: true, capture: true });
+const roleInformationObserver = new MutationObserver(() => {
+  window.clearTimeout(roleInformationObserver.timer);
+  roleInformationObserver.timer = window.setTimeout(() => applyRoleInformationDensity(pageHostFor(state.page) || document), 0);
+});
+roleInformationObserver.observe(document.querySelector('.content') || document.body, { childList: true, subtree: true });
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && state.page === financialBriefModuleKey) { clearFinancialBriefAutoRefresh(); renderFinancialBrief({ trigger: 'resume' }); }
   if (document.visibilityState === 'visible' && state.page === consultantRoiModuleKey) { clearConsultantRoiAutoRefresh(); renderConsultantRoiInteractive({ trigger: 'resume' }); }

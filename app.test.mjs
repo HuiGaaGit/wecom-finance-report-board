@@ -1147,10 +1147,10 @@ test('上传页使用独立公司期间选择器且移除全局范围锁定', ()
 test('页面与后台运行版本一致且旧响应不能覆盖上传操作后的列表', async () => {
   const bootstrap = await request('/api/bootstrap?company=gz&period=2026-06');
   assert.equal(bootstrap.response.status, 200);
-  assert.equal(bootstrap.payload.appVersion, '1.1.67');
+  assert.equal(bootstrap.payload.appVersion, '1.1.69');
   const index = fs.readFileSync(path.join(projectDir, 'public', 'index.html'), 'utf8');
   const frontend = fs.readFileSync(path.join(projectDir, 'public', 'app.js'), 'utf8');
-  assert.match(index, /<meta name="app-version" content="1\.1\.67">/);
+  assert.match(index, /<meta name="app-version" content="1\.1\.69">/);
   assert.match(frontend, /const expectedAppVersion = document\.querySelector\('meta\[name="app-version"\]'\)/);
   assert.match(frontend, /bootstrap\?\.appVersion === expectedAppVersion/);
   assert.match(frontend, /APP_VERSION_MISMATCH/);
@@ -1233,6 +1233,31 @@ test('应收应付净额构成使用问号说明并可向右展开四类构成�
   assert.match(stylesheet, /\.components-expanded \.analysis-component-col\{display:table-cell/);
   assert.match(stylesheet, /\.net-position-table th:nth-child\(2\)\{text-align:right/);
   assert.match(stylesheet, /\.net-position-table th\.analysis-note-heading\{text-align:center/);
+});
+
+test('全站说明按身份收纳且管理员问号支持无障碍与视口避让', () => {
+  const frontend = fs.readFileSync(path.join(projectDir, 'public', 'app.js'), 'utf8');
+  const stylesheet = fs.readFileSync(path.join(projectDir, 'public', 'styles.css'), 'utf8');
+  const informationRules = frontend.slice(frontend.indexOf('const roleInformationRules'), frontend.indexOf('let roleInformationMode'));
+  assert.match(frontend, /const isInformationAdmin = \(\) => state\.bootstrap\?\.canManagePermissions === true/);
+  assert.match(frontend, /\.analysis-source, \.business-source/);
+  assert.match(frontend, /\.original-source, \.revenue-source-badge/);
+  assert.match(frontend, /\.consolidated-scope, \.consolidated-entity-context/);
+  assert.match(frontend, /\.permission-page-title p[\s\S]*\.permission-module-name > small/);
+  assert.doesNotMatch(informationRules, /financial-brief-item/);
+  assert.match(frontend, /mode === 'admin'\) addContextHelp/);
+  assert.match(frontend, /aria-expanded="false" aria-describedby/);
+  assert.match(frontend, /role="tooltip" aria-hidden="true"/);
+  assert.match(frontend, /triggerRect\.bottom \+ gap \+ popoverHeight <= viewportHeight/);
+  assert.match(frontend, /window\.visualViewport\?\.width \|\| window\.innerWidth/);
+  assert.match(frontend, /Math\.min\(viewportWidth - popoverWidth - edge/);
+  assert.match(frontend, /event\.key === 'Escape'/);
+  assert.match(frontend, /new MutationObserver/);
+  assert.match(stylesheet, /\.role-information-collapsed\{display:none!important\}/);
+  assert.match(stylesheet, /\.context-help-trigger:hover,\.context-help-trigger:focus-visible/);
+  assert.match(stylesheet, /\.context-help-popover\{position:fixed;z-index:420/);
+  assert.match(stylesheet, /body:not\(\.information-admin\) \.analysis-note-heading,body:not\(\.information-admin\) \.analysis-note\{display:none\}/);
+  assert.match(stylesheet, /body:not\(\.information-admin\) \.home-eyebrow/);
 });
 
 test('三类分析页的标注子模块均可独立授权且接口同步裁剪数据', async () => {
@@ -2747,6 +2772,7 @@ test('财务数据简报按集团与公司范围联合已发布报表自动取�
   const stylesheet = fs.readFileSync(path.join(projectDir, 'public', 'styles.css'), 'utf8');
   assert.match(advertisingHelper, /amount: debitAmount/); assert.doesNotMatch(advertisingHelper, /rawReportFor\('journal'|creditAmount|借方－贷方/);
   assert.match(frontend, /renderFinancialBrief/); assert.match(frontend, /预计营收/); assert.match(frontend, /其中广宣费 \$\{value\(m\.advertisingExpense\)\}/);
+  assert.match(frontend, /key: 'sellingExpense'[\s\S]*key: 'managementExpense'[\s\S]*key: 'financeExpense'[\s\S]*key: 'netProfit'[\s\S]*description:/);
   assert.match(frontend, /financial-brief-copy-button/); assert.match(frontend, /financialBriefPlainText/); assert.match(frontend, /class="financial-brief-item-add"[\s\S]*aria-label="在\$\{escapeHtml\(row\.label\)\}下添加二级说明"[\s\S]*>\+<\/button>/); assert.match(frontend, /\/api\/analysis\/financial-brief\/secondary-items/);
   const briefEditorSource = frontend.slice(frontend.indexOf('const openFinancialBriefItemEditor'), frontend.indexOf('const bindFinancialBriefActions'));
   assert.match(briefEditorSource, /maxlength="300"[^>]*aria-label="二级说明"[^>]*placeholder="自由填写说明文字"/); assert.doesNotMatch(briefEditorSource, /inputmode="decimal"|二级项目名称|二级项目金额/);

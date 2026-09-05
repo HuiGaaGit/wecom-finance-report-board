@@ -7,8 +7,8 @@
 - 环境变量：`/data/secrets/wecom-finance-report-board/report-board.env`
 - 持久数据：`/data/data/wecom-finance-report-board`
 - 容器：`wecom-finance-report-board`
-- 当前生产镜像：`aqllm/finance-report-board:1.1.67`（生产验收与回滚信息见 `docs/PRODUCTION_OPERATIONS.md`）
-- 当前源码版本：`1.1.67`（动态营收子表裁剪、旧版期间识别与分公司营收趋势分析）
+- 当前生产镜像：`aqllm/finance-report-board:1.1.69`（生产验收与回滚信息见 `docs/PRODUCTION_OPERATIONS.md`）
+- 当前源码版本：`1.1.69`（恢复财务简报费用与净利润说明常驻展示）
 - 本机端口：`127.0.0.1:3180`
 - 正式地址：`https://anqiaoyiminxq.com/platform/finance/`
 
@@ -33,6 +33,10 @@
 上传结构模型辅助复用同服务器 AQLLM 的智谱兼容接口与项目专用 Key，并使用经生产脱敏探针验证的 `glm-4-flash`，但不让财务容器读取整份共享 `LLM.env`。启用时由服务器管理员在不打印密钥的前提下，把统一配置中的接口地址、模型和 API Key 以 `UPLOAD_MAPPING_LLM_*` 四个项目专用变量写入 `/data/secrets/wecom-finance-report-board/report-board.env`，并设置 `UPLOAD_MAPPING_LLM_ENABLED=true`；该文件继续保持 `root` 专用权限。模型只接收字段结构白名单，不接收金额、客户、项目内容或原始文件。模型失败不会阻断上传，采纳结果仍须通过服务端字段和坐标校验。
 
 `1.1.67` 新增分公司“营收趋势分析”。服务端只从已发布的集团营收统计原文件动态重解析总营收明细，按月份字段或报价/签约/合同日期筛选当前上传期间，再按业绩归属隔离分公司数据；接口只返回聚合结果，不返回其他地区原始记录。管理员配置的数据标签组合保存在财务服务自身 `app_settings`，对所有分公司和员工统一生效，不写入 AQLLM 或共享数据库。
+
+`1.1.68` 将口径、辅助说明和数据来源按身份统一收纳。普通授权人员只保留操作、数据结果与必要状态；权限管理员通过页面标题、板块标题或指标名称旁的问号查看完整说明。帮助浮层使用固定门户层并自动上下翻转、左右限位，支持鼠标、键盘和触屏，不改变任何报表口径、接口返回或权限模型。
+
+`1.1.69` 恢复财务数据简报中销售费用、管理费用、财务费用和净利润的原始说明常驻展示，管理员和普通授权人员看到一致的三列原版排版；其他页面继续沿用 `1.1.68` 的身份说明收纳规则。
 
 `1.1.25` 使用专用运行身份 `20117:20117`。首次切换前先创建 SQLite 一致性备份，再执行 `deploy/harden-finance-data.sh`；该脚本只接受精确目录 `/data/data/wecom-finance-report-board`。SQLite 备份和异机备份状态文件均按 `0600` 创建。启动后必须执行 `node deploy/check-runtime-isolation.mjs`，验证 owner/mode、其他容器挂载、Docker Socket、网络成员和回环端口。
 
